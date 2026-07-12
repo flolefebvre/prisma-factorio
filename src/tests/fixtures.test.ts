@@ -3,7 +3,9 @@ import { Role } from "./generated/client/enums.ts";
 import type { PostCreateInput, TagCreateInput, UserCreateInput } from "./generated/client/models.ts";
 import { PostFactoryBase } from "./generated/prisma-factorio/Post.ts";
 import { TagFactoryBase } from "./generated/prisma-factorio/Tag.ts";
-import { UserFactoryBase } from "./generated/prisma-factorio/User.ts";
+// Imported through the generated barrel; `index.ts` is spelled out because
+// nodenext ESM resolution forbids extensionless directory imports.
+import { UserFactoryBase } from "./generated/prisma-factorio/index.ts";
 
 // The generated files import "prisma-factorio/factories", the package's own
 // name. Inside this repo that specifier bypasses the published dist build: the
@@ -40,20 +42,24 @@ test("every scalar type of the fixture matrix is accepted in a definition()", ()
     definition() {
       return {
         title: "Typed factories",
+        wordCount: 1200,
         views: 10n,
         rating: 4.5,
         price: "19.99",
         isPublished: true,
         metadata: { tags: ["intro"] },
         thumbnail: new Uint8Array([1, 2, 3]),
+        reviewedAt: new Date("2026-01-01T00:00:00Z"),
       };
     }
   }
 
   const post = PostFactory.new().make();
 
+  expect(post.wordCount).toBe(1200);
   expect(post.views).toBe(10n);
   expect(post.thumbnail).toEqual(new Uint8Array([1, 2, 3]));
+  expect(post.reviewedAt).toEqual(new Date("2026-01-01T00:00:00Z"));
 });
 
 test("a model whose fields all have defaults or are optional accepts an empty definition()", () => {

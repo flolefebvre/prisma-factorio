@@ -36,12 +36,14 @@ model User {
 model Post {
   id          Int       @id @default(autoincrement())
   title       String
+  wordCount   Int
   views       BigInt
   rating      Float
   price       Decimal
   isPublished Boolean
   metadata    Json
   thumbnail   Bytes
+  reviewedAt  DateTime
   publishedAt DateTime?
 }
 
