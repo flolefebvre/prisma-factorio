@@ -1,0 +1,63 @@
+{
+  "name": "prisma-factorio",
+  "version": "0.0.1",
+  "description": "Laravel-style model factories for Prisma, fully typed",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flolefebvre/prisma-factorio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/flolefebvre/prisma-factorio/issues"
+  },
+  "keywords": [
+    "prisma",
+    "factory",
+    "factories",
+    "testing",
+    "seeding",
+    "fixtures",
+    "laravel"
+  ],
+  "bin": {
+    "prisma-factorio": "./dist/generator.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./factories": "./dist/factories/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.12.0",
+  "scripts": {
+    "typecheck": "tsc --noEmit && echo '--typecheck OK--'",
+    "lint": "eslint . && echo '--lint OK--'",
+    "test": "vitest run && echo '--test OK--'",
+    "build": "tsc -p tsconfig.build.json && echo '--build OK--'",
+    "format": "prettier --write .",
+    "format:check": "prettier --check . && echo '--format:check OK--'",
+    "duplicates": "jscpd && echo '--duplicates OK--'",
+    "gates": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && echo '--gates OK--'"
+  },
+  "dependencies": {
+    "@prisma/generator-helper": "7.8.0"
+  },
+  "peerDependencies": {
+    "prisma": ">=7 <8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "eslint": "^10.7.0",
+    "jscpd": "^5.0.12",
+    "prettier": "^3.9.5",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.63.0",
+    "vitest": "^4.1.10"
+  }
+}

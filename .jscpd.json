@@ -1,0 +1,13 @@
+{
+  "threshold": 0,
+  "reporters": ["ai"],
+  "format": ["typescript"],
+  "path": ["src"],
+  "pattern": "**/*.ts",
+  "ignore": ["**/node_modules/**", "dist/**"],
+  "gitignore": true,
+  "absolute": true,
+  "minLines": 3,
+  "minTokens": 50,
+  "mode": "mild"
+}
