@@ -35,6 +35,7 @@
   },
   "packageManager": "pnpm@11.12.0",
   "scripts": {
+    "generate:fixtures": "prisma generate --schema src/tests/fixtures/schema.prisma && echo '--generate:fixtures OK--'",
     "typecheck": "tsc --noEmit && echo '--typecheck OK--'",
     "lint": "eslint . && echo '--lint OK--'",
     "test": "vitest run && echo '--test OK--'",
@@ -42,7 +43,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check . && echo '--format:check OK--'",
     "duplicates": "jscpd && echo '--duplicates OK--'",
-    "gates": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && echo '--gates OK--'"
+    "gates": "pnpm generate:fixtures && pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && echo '--gates OK--'"
   },
   "dependencies": {
     "@prisma/generator-helper": "7.8.0"
@@ -52,6 +53,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@prisma/client": "7.8.0",
     "@types/node": "^26.1.1",
     "eslint": "^10.7.0",
     "jscpd": "^5.0.12",

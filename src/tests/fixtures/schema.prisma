@@ -1,0 +1,57 @@
+// Fixture schema for the prisma-factorio test harness. Covers the scalar and
+// enum field-type matrix: required and optional variants of every scalar type,
+// @default and @updatedAt fields, and differing id strategies per model.
+
+datasource db {
+  provider = "sqlite"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/client"
+}
+
+// The provider path resolves relative to the Prisma CLI working directory, not
+// this schema file; generate via `pnpm generate:fixtures` from the package root.
+generator prismaFactorio {
+  provider = "node src/generator.ts"
+  output   = "../generated/prisma-factorio"
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+model User {
+  id         String   @id @default(uuid())
+  email      String
+  name       String?
+  role       Role
+  backupRole Role?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Post {
+  id          Int       @id @default(autoincrement())
+  title       String
+  views       BigInt
+  rating      Float
+  price       Decimal
+  isPublished Boolean
+  metadata    Json
+  thumbnail   Bytes
+  publishedAt DateTime?
+}
+
+model Tag {
+  id          Int      @id @default(autoincrement())
+  label       String   @default("untagged")
+  weight      Float?
+  totalViews  BigInt?
+  unitPrice   Decimal?
+  isFeatured  Boolean?
+  extra       Json?
+  fingerprint Bytes?
+}

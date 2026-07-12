@@ -9,7 +9,9 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
+    "rewriteRelativeImportExtensions": true,
     "skipLibCheck": true,
+    "types": ["node"],
     "noEmit": true
   },
   "include": ["src", "vitest.config.ts", "eslint.config.js"]
