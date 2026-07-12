@@ -12,7 +12,12 @@
     "rewriteRelativeImportExtensions": true,
     "skipLibCheck": true,
     "types": ["node"],
-    "noEmit": true
+    "noEmit": true,
+    // Resolves the package's own "prisma-factorio/factories" specifier, used
+    // by generated fixture code, to the source instead of the dist build.
+    "paths": {
+      "prisma-factorio/factories": ["./src/factories/index.ts"]
+    }
   },
   "include": ["src", "vitest.config.ts", "eslint.config.js"]
 }
