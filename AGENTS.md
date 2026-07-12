@@ -1,5 +1,9 @@
 # prisma-factorio
 
+## Language
+
+All content in this repository is written in English — skill files, documentation, code, and commit messages — regardless of the language used in conversation.
+
 ## Agent skills
 
 ### Issue tracker
