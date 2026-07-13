@@ -1,5 +1,5 @@
 import { expect, expectTypeOf, test, vi } from "vitest";
-import { initPrismaFactorio } from "../factories/index.ts";
+import { initPrismaFactorio, type StateInput } from "../factories/index.ts";
 import type { PrismaClient } from "./generated/client/client.ts";
 import { Role } from "./generated/client/enums.ts";
 import type { PostCreateInput, TagCreateInput, UserCreateInput, UserModel } from "./generated/client/models.ts";
@@ -148,6 +148,68 @@ test("the generated initPrismaFactorio only accepts the client generated for thi
   };
 
   expect(wrongClient).toBeDefined();
+});
+
+class StatefulUserFactory extends UserFactoryBase {
+  definition() {
+    return { email: "ada@example.com", role: Role.MEMBER };
+  }
+
+  admin() {
+    return this.state({ role: Role.ADMIN });
+  }
+
+  named(name: string) {
+    return this.state({ name });
+  }
+
+  emailFromName() {
+    return this.state((attrs) => ({ email: `${(attrs.name ?? "anonymous").toLowerCase()}@example.com` }));
+  }
+}
+
+test("named, parameterized, closure, and inline states chain in any order and combination", () => {
+  const closureLast = StatefulUserFactory.new().admin().named("Grace").emailFromName().make();
+  const inlineBetweenNamed = StatefulUserFactory.new().named("Grace").state({ backupRole: Role.MEMBER }).admin().make();
+
+  expect(closureLast).toEqual({ email: "grace@example.com", role: Role.ADMIN, name: "Grace" });
+  expect(inlineBetweenNamed).toEqual({
+    email: "ada@example.com",
+    role: Role.ADMIN,
+    name: "Grace",
+    backupRole: Role.MEMBER,
+  });
+});
+
+test("state() keeps the concrete factory type and the pipeline keeps the exact client types", () => {
+  const chained = StatefulUserFactory.new().admin().state({ name: "Ada" });
+
+  expectTypeOf(chained).toEqualTypeOf<StatefulUserFactory>();
+  expectTypeOf(chained.make({ name: "Ada" })).toEqualTypeOf<UserCreateInput>();
+  expectTypeOf<Parameters<UserFactoryBase["state"]>[0]>().toEqualTypeOf<StateInput<UserCreateInput>>();
+  expectTypeOf<Parameters<UserFactoryBase["make"]>[0]>().toEqualTypeOf<StateInput<UserCreateInput> | undefined>();
+  expectTypeOf<Parameters<UserFactoryBase["create"]>[0]>().toEqualTypeOf<StateInput<UserCreateInput> | undefined>();
+});
+
+test("unknown fields in a state partial or overrides argument are compile errors", () => {
+  const factory = StatefulUserFactory.new();
+
+  const unknownInState = () => {
+    // @ts-expect-error `nickname` is not a field of UserCreateInput
+    return factory.state({ nickname: "ada" });
+  };
+  const unknownInMakeOverrides = () => {
+    // @ts-expect-error `nickname` is not a field of UserCreateInput
+    return factory.make({ nickname: "ada" });
+  };
+  const unknownInCreateOverrides = () => {
+    // @ts-expect-error `nickname` is not a field of UserCreateInput
+    return factory.create({ nickname: "ada" });
+  };
+
+  expect(unknownInState).toBeDefined();
+  expect(unknownInMakeOverrides).toBeDefined();
+  expect(unknownInCreateOverrides).toBeDefined();
 });
 
 test("the generated base itself cannot start a chain because it has no definition()", () => {
