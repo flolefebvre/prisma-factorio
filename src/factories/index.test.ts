@@ -133,6 +133,33 @@ test("state() leaves the receiver untouched: two chains forked from one factory 
   expect(paperback.make()).toEqual({ title: "Paperback", pages: 300 });
 });
 
+test("a named state written as an arrow-function class field keeps the states chained before it", () => {
+  class ArrowBookFactory extends BookFactory {
+    paperback = () => this.state({ pages: 200 });
+  }
+
+  const input = ArrowBookFactory.new().state({ title: "Chained" }).paperback().make();
+
+  expect(input).toEqual({ title: "Chained", pages: 200 });
+});
+
+test("a subclass holding a native #private field read by definition() survives state() forking", () => {
+  class PrivateFieldBookFactory extends Factory<BookCreateInput, BookModel> {
+    protected readonly prismaDelegate = "book";
+
+    #defaultTitle = "Domain-Driven Design";
+
+    definition(): BookCreateInput {
+      return { title: this.#defaultTitle };
+    }
+  }
+
+  expect(PrivateFieldBookFactory.new().state({ pages: 500 }).make()).toEqual({
+    title: "Domain-Driven Design",
+    pages: 500,
+  });
+});
+
 test("state() returns an instance of the concrete factory subclass, so named states keep chaining", () => {
   expect(BookFactory.new().state({ pages: 1 })).toBeInstanceOf(BookFactory);
 });

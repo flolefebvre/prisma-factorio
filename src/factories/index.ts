@@ -175,7 +175,11 @@ export abstract class Factory<TCreateInput, TModel> {
    * UserFactory.new().state({ name: "Ada" }).state((attrs) => ({ email: `${attrs.name}@example.com` }));
    */
   state(input: StateInput<TCreateInput>): this {
-    const copy = Object.assign(Object.create(Object.getPrototypeOf(this) as object) as this, this);
+    // Fresh construction installs subclass class fields on the copy itself —
+    // arrow-function named states stay bound to the copy and native #private
+    // fields keep working. `states` is the only field to carry over: bulk-
+    // assigning the rest would copy arrow fields still bound to the receiver.
+    const copy = new (this.constructor as new () => this)();
     copy.states = [...this.states, input];
     return copy;
   }
