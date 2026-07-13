@@ -42,9 +42,12 @@ const WORKSPACE_YAML = `allowBuilds:
   prisma: true
 `;
 
+class SmokeFailure extends Error {}
+
+// Throws instead of calling process.exit: exiting inline would skip the
+// `finally` that removes the temp directory.
 function fail(step: string, detail: string): never {
-  console.error(`smoke: step "${step}" failed\n${detail}`);
-  process.exit(1);
+  throw new SmokeFailure(`smoke: step "${step}" failed\n${detail}`);
 }
 
 function runPnpm(step: string, args: readonly string[], cwd: string): void {
@@ -83,56 +86,68 @@ async function assertNoFile(step: string, filePath: string): Promise<void> {
   fail(step, `expected file to be deleted, but it exists: ${filePath}`);
 }
 
-try {
-  await access(join(packageRoot, "dist", "generator.js"));
-} catch {
-  fail("preflight", "dist/generator.js is missing; run `pnpm build` first (gates runs build before smoke)");
-}
-
-const repoPackageJson = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as {
-  devDependencies: Record<string, string>;
-};
-const prismaVersion = repoPackageJson.devDependencies["@prisma/client"];
-if (prismaVersion === undefined) {
-  fail("preflight", "could not read the @prisma/client version from package.json devDependencies");
-}
-
-const tempDir = await mkdtemp(join(tmpdir(), "prisma-factorio-smoke-"));
-try {
-  const tarball = join(tempDir, "prisma-factorio.tgz");
-  runPnpm("pack", ["pack", "--out", tarball], packageRoot);
-
-  const projectDir = join(tempDir, "project");
-  await mkdir(projectDir);
-  await writeFile(
-    join(projectDir, "package.json"),
-    `${JSON.stringify({ name: "prisma-factorio-smoke", private: true, type: "module" }, null, 2)}\n`,
-  );
-  await writeFile(join(projectDir, "pnpm-workspace.yaml"), WORKSPACE_YAML);
-  await writeFile(join(projectDir, "schema.prisma"), SCHEMA);
-
-  runPnpm("install", ["add", tarball, `prisma@${prismaVersion}`, `@prisma/client@${prismaVersion}`], projectDir);
-  runPnpm("generate", ["exec", "prisma", "generate", "--schema", "schema.prisma"], projectDir);
-
-  const factoryDir = join(projectDir, "generated", "prisma-factorio");
-  await assertFile("generate", join(projectDir, "generated", "client", "models.ts"));
-  for (const file of ["User.ts", "Post.ts", "index.ts"]) {
-    await assertFile("generate", join(factoryDir, file));
+async function main(): Promise<void> {
+  try {
+    await access(join(packageRoot, "dist", "generator.js"));
+  } catch {
+    fail("preflight", "dist/generator.js is missing; run `pnpm build` first (gates runs build before smoke)");
   }
-  const barrel = await readFile(join(factoryDir, "index.ts"), "utf8");
-  for (const exported of ["UserFactoryBase", "PostFactoryBase"]) {
-    if (!barrel.includes(exported)) {
-      fail("generate", `the barrel index.ts does not export ${exported}:\n${barrel}`);
+
+  const repoPackageJson = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as {
+    devDependencies: Record<string, string>;
+  };
+  const prismaVersion = repoPackageJson.devDependencies["@prisma/client"];
+  if (prismaVersion === undefined) {
+    fail("preflight", "could not read the @prisma/client version from package.json devDependencies");
+  }
+
+  const tempDir = await mkdtemp(join(tmpdir(), "prisma-factorio-smoke-"));
+  try {
+    const tarball = join(tempDir, "prisma-factorio.tgz");
+    runPnpm("pack", ["pack", "--out", tarball], packageRoot);
+
+    const projectDir = join(tempDir, "project");
+    await mkdir(projectDir);
+    await writeFile(
+      join(projectDir, "package.json"),
+      `${JSON.stringify({ name: "prisma-factorio-smoke", private: true, type: "module" }, null, 2)}\n`,
+    );
+    await writeFile(join(projectDir, "pnpm-workspace.yaml"), WORKSPACE_YAML);
+    await writeFile(join(projectDir, "schema.prisma"), SCHEMA);
+
+    runPnpm("install", ["add", tarball, `prisma@${prismaVersion}`, `@prisma/client@${prismaVersion}`], projectDir);
+    runPnpm("generate", ["exec", "prisma", "generate", "--schema", "schema.prisma"], projectDir);
+
+    const factoryDir = join(projectDir, "generated", "prisma-factorio");
+    await assertFile("generate", join(projectDir, "generated", "client", "models.ts"));
+    for (const file of ["User.ts", "Post.ts", "index.ts"]) {
+      await assertFile("generate", join(factoryDir, file));
     }
+    const barrel = await readFile(join(factoryDir, "index.ts"), "utf8");
+    for (const exported of ["UserFactoryBase", "PostFactoryBase"]) {
+      if (!barrel.includes(exported)) {
+        fail("generate", `the barrel index.ts does not export ${exported}:\n${barrel}`);
+      }
+    }
+
+    await writeFile(join(factoryDir, "Stale.ts"), `${GENERATED_FILE_MARKER}\nexport const stale = true;\n`);
+    await writeFile(join(factoryDir, "handwritten.ts"), "export const keep = true;\n");
+    runPnpm("regenerate", ["exec", "prisma", "generate", "--schema", "schema.prisma"], projectDir);
+    await assertNoFile("stale cleanup", join(factoryDir, "Stale.ts"));
+    await assertFile("stale cleanup", join(factoryDir, "handwritten.ts"));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
   }
 
-  await writeFile(join(factoryDir, "Stale.ts"), `${GENERATED_FILE_MARKER}\nexport const stale = true;\n`);
-  await writeFile(join(factoryDir, "handwritten.ts"), "export const keep = true;\n");
-  runPnpm("regenerate", ["exec", "prisma", "generate", "--schema", "schema.prisma"], projectDir);
-  await assertNoFile("stale cleanup", join(factoryDir, "Stale.ts"));
-  await assertFile("stale cleanup", join(factoryDir, "handwritten.ts"));
-} finally {
-  await rm(tempDir, { recursive: true, force: true });
+  console.log("smoke: the packed tarball generated factories through a real `prisma generate`");
 }
 
-console.log("smoke: the packed tarball generated factories through a real `prisma generate`");
+try {
+  await main();
+} catch (error) {
+  if (!(error instanceof SmokeFailure)) {
+    throw error;
+  }
+  console.error(error.message);
+  process.exitCode = 1;
+}
