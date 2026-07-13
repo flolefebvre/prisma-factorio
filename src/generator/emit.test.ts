@@ -59,12 +59,12 @@ test("a datamodel emits one factory base file per model plus a barrel index", ()
   const files = emitFactoryFiles({
     datamodel,
     outputDir: "/app/generated/prisma-factorio",
-    otherGenerators: [generatorConfigFixture({ provider: "prisma-client", output: "/app/generated/client" })],
+    otherGenerators: [generatorConfigFixture({ provider: "prisma-client", output: "/app/custom/client" })],
   });
 
   expect(files.map((file) => file.path)).toEqual(["User.ts", "Post.ts", "index.ts"]);
-  expect(files[0]?.content).toContain('from "../client/models.ts"');
-  expect(files[2]?.content).toContain('import type { PrismaClient } from "../client/client.ts";');
+  expect(files[0]?.content).toContain('from "../../custom/client/models.ts"');
+  expect(files[2]?.content).toContain('import type { PrismaClient } from "../../custom/client/client.ts";');
 });
 
 test("the barrel re-exports every model factory base from its model file", () => {
@@ -76,9 +76,9 @@ test("the barrel re-exports every model factory base from its model file", () =>
 });
 
 test("the barrel emits a typed initPrismaFactorio wrapper bound to the schema's PrismaClient", () => {
-  const file = emitBarrelFile([modelFixture({ name: "User" })], "../client");
+  const file = emitBarrelFile([modelFixture({ name: "User" })], "../../custom/client");
 
-  expect(file.content).toContain('import type { PrismaClient } from "../client/client.ts";');
+  expect(file.content).toContain('import type { PrismaClient } from "../../custom/client/client.ts";');
   expect(file.content).toContain(
     'import { initPrismaFactorio as initPrismaFactorioRuntime } from "prisma-factorio/factories";',
   );
