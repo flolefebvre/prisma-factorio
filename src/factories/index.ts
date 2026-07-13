@@ -64,6 +64,24 @@ export class PrismaFactorioNotInitializedError extends Error {
   }
 }
 
+/**
+ * What {@link Factory.state} (and the overrides argument of
+ * {@link Factory.make} / {@link Factory.create}) accepts: a partial of the
+ * model's `CreateInput`, or a closure computing one from the attributes
+ * evaluated so far in the chain (definition plus earlier states).
+ *
+ * @example
+ * UserFactory.new().state({ name: "Abigail Otwell" });
+ * UserFactory.new().state((attrs) => ({ email: `${attrs.name}@example.com` }));
+ */
+export type StateInput<TCreateInput> = Partial<TCreateInput> | ((attributes: TCreateInput) => Partial<TCreateInput>);
+
+function isStateClosure<TCreateInput>(
+  input: StateInput<TCreateInput>,
+): input is (attributes: TCreateInput) => Partial<TCreateInput> {
+  return typeof input === "function";
+}
+
 interface DelegateLike<TModel> {
   create(args: { data: unknown }): Promise<TModel>;
 }
@@ -96,8 +114,8 @@ function resolveClient(): object {
  * subclass per model, pinned to the model's Prisma `CreateInput` and model
  * types, and user code extends that subclass with a {@link Factory.definition}.
  *
- * Instances are immutable: no method mutates the factory, so future chain
- * steps return copies instead of modifying `this`.
+ * Instances are immutable: no method mutates the factory, so chain steps
+ * like {@link Factory.state} return copies instead of modifying `this`.
  *
  * @example
  * class UserFactory extends UserFactoryBase {
@@ -117,6 +135,8 @@ export abstract class Factory<TCreateInput, TModel> {
    * protected readonly prismaDelegate = "user";
    */
   protected abstract readonly prismaDelegate: string;
+
+  private states: readonly StateInput<TCreateInput>[] = [];
 
   /**
    * Declares the default attributes of the model. Called once per
@@ -140,24 +160,57 @@ export abstract class Factory<TCreateInput, TModel> {
   }
 
   /**
-   * Builds the model's `CreateInput` synchronously, re-evaluating
-   * {@link Factory.definition} on each call.
+   * Appends a state to the chain and returns a copy of the factory; the
+   * receiver is untouched. Nothing evaluates until {@link Factory.make} or
+   * {@link Factory.create}. Named states are this same method called from a
+   * factory method; inline call-site states call it directly.
    *
    * @example
-   * const input = UserFactory.new().make(); // { email: "...", role: "MEMBER" }
+   * // Named state in a factory class:
+   * suspended() {
+   *   return this.state({ status: "suspended" });
+   * }
+   * @example
+   * // Inline at the call site, closure form reading earlier attributes:
+   * UserFactory.new().state({ name: "Ada" }).state((attrs) => ({ email: `${attrs.name}@example.com` }));
    */
-  make(): TCreateInput {
-    return this.definition();
+  state(input: StateInput<TCreateInput>): this {
+    // Fresh construction installs subclass class fields on the copy itself —
+    // arrow-function named states stay bound to the copy and native #private
+    // fields keep working. `states` is the only field to carry over: bulk-
+    // assigning the rest would copy arrow fields still bound to the receiver.
+    const copy = new (this.constructor as new () => this)();
+    copy.states = [...this.states, input];
+    return copy;
+  }
+
+  /**
+   * Builds the model's `CreateInput` synchronously by running the whole
+   * pipeline: {@link Factory.definition} first, then states in chain order,
+   * then `overrides` last — shallow merge, last value wins per field.
+   * Everything, definition included, is re-evaluated on each call.
+   *
+   * @example
+   * const input = UserFactory.new().suspended().make({ name: "Ada" });
+   */
+  make(overrides?: StateInput<TCreateInput>): TCreateInput {
+    const pipeline = overrides === undefined ? this.states : [...this.states, overrides];
+    return pipeline.reduce<TCreateInput>(
+      (attributes, state) => ({ ...attributes, ...(isStateClosure(state) ? state(attributes) : state) }),
+      this.definition(),
+    );
   }
 
   /**
    * Persists one record through the Prisma client registered with
-   * {@link initPrismaFactorio} and resolves with the persisted row.
+   * {@link initPrismaFactorio} and resolves with the persisted row. The
+   * `overrides` argument is applied as a final state, exactly as
+   * `.state(overrides).create()`.
    *
    * @example
-   * const user = await UserFactory.new().create(); // row persisted via prisma.user.create
+   * const user = await UserFactory.new().create({ name: "Abigail" }); // row persisted via prisma.user.create
    */
-  async create(): Promise<TModel> {
+  async create(overrides?: StateInput<TCreateInput>): Promise<TModel> {
     // The registry cannot carry concrete client types; the generated base
     // pins prismaDelegate and TModel to the same model, so this single cast
     // is the whole untyped boundary.
@@ -168,6 +221,6 @@ export abstract class Factory<TCreateInput, TModel> {
         `The registered Prisma client has no "${this.prismaDelegate}" delegate; pass the client generated for this schema to initPrismaFactorio.`,
       );
     }
-    return delegate.create({ data: this.make() });
+    return delegate.create({ data: this.make(overrides) });
   }
 }
