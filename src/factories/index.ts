@@ -202,6 +202,23 @@ export abstract class Factory<TCreateInput, TModel> {
   }
 
   /**
+   * Sets how many instances the factory produces and flips the chain to the
+   * list-typed {@link ListFactory}: `make()` returns `TCreateInput[]` and
+   * `create()` resolves `TModel[]`. Count says how many, never what varies —
+   * pair it with {@link Factory.sequence} for per-instance variation. The
+   * receiver is untouched; `n` must be a non-negative integer.
+   *
+   * @example
+   * const users = await UserFactory.new().count(3).create(); // User[]
+   */
+  count(n: number): ListFactory<TCreateInput, TModel> {
+    if (!Number.isInteger(n) || n < 0) {
+      throw new TypeError(`count() needs a non-negative integer, got ${String(n)}.`);
+    }
+    return new ListFactory(this, n);
+  }
+
+  /**
    * Persists one record through the Prisma client registered with
    * {@link initPrismaFactorio} and resolves with the persisted row. The
    * `overrides` argument is applied as a final state, exactly as
@@ -222,5 +239,72 @@ export abstract class Factory<TCreateInput, TModel> {
       );
     }
     return delegate.create({ data: this.make(overrides) });
+  }
+}
+
+/**
+ * A factory chain that produces a fixed number of instances; entered through
+ * {@link Factory.count}, never constructed directly. The chain primitives keep
+ * working at their position — each returns a new list factory over a forked
+ * copy of the underlying factory, so immutability holds — and `make()` /
+ * `create()` produce lists instead of single values.
+ *
+ * @example
+ * const users = await UserFactory.new().count(3).create(); // User[]
+ */
+export class ListFactory<TCreateInput, TModel> {
+  constructor(
+    private readonly factory: Factory<TCreateInput, TModel>,
+    private readonly instances: number,
+  ) {}
+
+  /**
+   * Replaces how many instances the chain produces — the last count wins.
+   *
+   * @example
+   * UserFactory.new().count(5).count(2).make(); // 2 inputs
+   */
+  count(n: number): ListFactory<TCreateInput, TModel> {
+    return this.factory.count(n);
+  }
+
+  /**
+   * Appends a state at this chain position, exactly like {@link Factory.state},
+   * keeping the instance count.
+   *
+   * @example
+   * UserFactory.new().count(3).state({ role: "admin" }).make();
+   */
+  state(input: StateInput<TCreateInput>): ListFactory<TCreateInput, TModel> {
+    return this.factory.state(input).count(this.instances);
+  }
+
+  /**
+   * Builds one `CreateInput` per instance. The whole pipeline — definition,
+   * states, `overrides` — is re-evaluated for each instance, so random values
+   * differ across the list.
+   *
+   * @example
+   * const inputs = UserFactory.new().count(3).make(); // UserCreateInput[]
+   */
+  make(overrides?: StateInput<TCreateInput>): TCreateInput[] {
+    return Array.from({ length: this.instances }, () => this.factory.make(overrides));
+  }
+
+  /**
+   * Persists one record per instance through n individual `create` calls, run
+   * sequentially, and resolves with the rows in creation order. The calls are
+   * not wrapped in a transaction — a mid-batch failure leaves the earlier rows
+   * persisted; wrap the call in `$transaction` yourself when that matters.
+   *
+   * @example
+   * const users = await prisma.$transaction(() => UserFactory.new().count(3).create());
+   */
+  async create(overrides?: StateInput<TCreateInput>): Promise<TModel[]> {
+    const rows: TModel[] = [];
+    for (let index = 0; index < this.instances; index += 1) {
+      rows.push(await this.factory.create(overrides));
+    }
+    return rows;
   }
 }
