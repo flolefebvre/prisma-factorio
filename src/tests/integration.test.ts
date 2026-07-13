@@ -36,6 +36,19 @@ test("create() with a registered client instance persists a row a fresh query re
   expect(found?.role).toBe(Role.MEMBER);
 });
 
+test("count() with sequence() persists n rows, cycling the sequenced field and re-evaluating the definition per row", async () => {
+  const prisma = await openClient();
+  initPrismaFactorio({ prisma });
+
+  const created = await UserFactory.new().count(3).sequence({ role: Role.ADMIN }, { role: Role.MEMBER }).create();
+
+  const found = await prisma.user.findMany({ orderBy: { id: "asc" } });
+  expect(found).toHaveLength(3);
+  expect(found.map((row) => row.id)).toEqual(created.map((row) => row.id));
+  expect(found.map((row) => row.role)).toEqual([Role.ADMIN, Role.MEMBER, Role.ADMIN]);
+  expect(new Set(found.map((row) => row.email)).size).toBe(3);
+});
+
 test("a getter registration is resolved on every create(), so swapping the client redirects persistence", async () => {
   const first = await openClient();
   const second = await openClient();

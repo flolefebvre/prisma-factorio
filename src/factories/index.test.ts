@@ -259,20 +259,18 @@ test("count(n).make() returns n CreateInputs built from the pipeline", () => {
 });
 
 test("count(n).create() runs n individual delegate.create calls and resolves the rows in order", async () => {
-  const rows: BookModel[] = [
-    { id: 1, title: "A", pages: null },
-    { id: 2, title: "B", pages: null },
-    { id: 3, title: "C", pages: null },
-  ];
   let call = 0;
-  const create = vi.fn(() => Promise.resolve(rows[call++] as BookModel));
+  const create = vi.fn(() => {
+    call += 1;
+    return Promise.resolve({ id: call, title: "The Pragmatic Programmer", pages: null });
+  });
   initPrismaFactorio({ prisma: { book: { create } } });
 
   const created = await BookFactory.new().count(3).create();
 
   expect(create).toHaveBeenCalledTimes(3);
   expect(create).toHaveBeenCalledWith({ data: { title: "The Pragmatic Programmer" } });
-  expect(created).toEqual(rows);
+  expect(created.map((row) => row.id)).toEqual([1, 2, 3]);
 });
 
 test("count() rejects a negative or non-integer n with a TypeError at chain time", () => {
