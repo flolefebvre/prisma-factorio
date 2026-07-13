@@ -14,10 +14,22 @@ test("a model emits a file named after the model", () => {
   expect(file.path).toBe("User.ts");
 });
 
-test("the emitted base class is abstract and pins the Factory generic to the model CreateInput", () => {
+test("the emitted base class is abstract and pins the Factory generics to the model CreateInput and Model", () => {
   const file = emitModelFactoryFile(modelFixture({ name: "Post" }), "../client");
 
-  expect(file.content).toContain("export abstract class PostFactoryBase extends Factory<PostCreateInput> {}");
+  expect(file.content).toContain("export abstract class PostFactoryBase extends Factory<PostCreateInput, PostModel> {");
+});
+
+test("the emitted base class bakes the model's Prisma delegate name", () => {
+  const file = emitModelFactoryFile(modelFixture({ name: "Post" }), "../client");
+
+  expect(file.content).toContain('protected readonly prismaDelegate = "post";');
+});
+
+test("the baked delegate name lowercases only the first letter of a multi-word model name", () => {
+  const file = emitModelFactoryFile(modelFixture({ name: "UserProfile" }), "../client");
+
+  expect(file.content).toContain('protected readonly prismaDelegate = "userProfile";');
 });
 
 test("the emitted file imports Factory from the prisma-factorio runtime", () => {
@@ -26,10 +38,10 @@ test("the emitted file imports Factory from the prisma-factorio runtime", () => 
   expect(file.content).toContain('import { Factory } from "prisma-factorio/factories";');
 });
 
-test("the emitted file imports the model CreateInput type from the client models barrel", () => {
+test("the emitted file imports the model CreateInput and Model types from the client models barrel", () => {
   const file = emitModelFactoryFile(modelFixture({ name: "User" }), "../../custom/client");
 
-  expect(file.content).toContain('import type { UserCreateInput } from "../../custom/client/models.ts";');
+  expect(file.content).toContain('import type { UserCreateInput, UserModel } from "../../custom/client/models.ts";');
 });
 
 test("a datamodel emits one factory base file per model plus a barrel index", () => {

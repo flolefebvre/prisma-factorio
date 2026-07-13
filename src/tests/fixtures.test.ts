@@ -1,6 +1,7 @@
-import { expect, expectTypeOf, test } from "vitest";
+import { expect, expectTypeOf, test, vi } from "vitest";
+import { initPrismaFactorio } from "../factories/index.ts";
 import { Role } from "./generated/client/enums.ts";
-import type { PostCreateInput, TagCreateInput, UserCreateInput } from "./generated/client/models.ts";
+import type { PostCreateInput, TagCreateInput, UserCreateInput, UserModel } from "./generated/client/models.ts";
 import { PostFactoryBase } from "./generated/prisma-factorio/Post.ts";
 import { TagFactoryBase } from "./generated/prisma-factorio/Tag.ts";
 // Imported through the generated barrel; `index.ts` is spelled out because
@@ -106,6 +107,30 @@ test("omitting a required field in definition() is a compile error", () => {
   }
 
   expect(MissingRoleUserFactory).toBeDefined();
+});
+
+test("create() persists through the delegate named after the model and resolves the persisted row", async () => {
+  const persistedUser: UserModel = {
+    id: "00000000-0000-0000-0000-000000000001",
+    email: "ada@example.com",
+    name: null,
+    role: "ADMIN",
+    backupRole: null,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  };
+  const create = vi.fn(() => Promise.resolve(persistedUser));
+  initPrismaFactorio({ prisma: { user: { create } } });
+
+  const created = await UserFactory.new().create();
+
+  expect(create).toHaveBeenCalledExactlyOnceWith({ data: { email: "ada@example.com", role: Role.ADMIN } });
+  expect(created).toBe(persistedUser);
+});
+
+test("create() resolves with the row typed as the client's Model type", () => {
+  expectTypeOf<ReturnType<UserFactory["create"]>>().resolves.toEqualTypeOf<UserModel>();
+  expectTypeOf<UserFactoryBase["create"]>().returns.toEqualTypeOf<Promise<UserModel>>();
 });
 
 test("the generated base itself cannot start a chain because it has no definition()", () => {

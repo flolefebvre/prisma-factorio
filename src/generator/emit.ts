@@ -88,13 +88,22 @@ function detectClientOutputDir(otherGenerators: readonly GeneratorConfig[]): str
  */
 export function emitModelFactoryFile(model: DMMF.Model, clientImportDir: string): GeneratedFile {
   const createInput = `${model.name}CreateInput`;
+  const modelType = `${model.name}Model`;
   const content = `${GENERATED_FILE_MARKER}
 import { Factory } from "prisma-factorio/factories";
-import type { ${createInput} } from "${clientImportDir}/models.ts";
+import type { ${createInput}, ${modelType} } from "${clientImportDir}/models.ts";
 
-export abstract class ${model.name}FactoryBase extends Factory<${createInput}> {}
+export abstract class ${model.name}FactoryBase extends Factory<${createInput}, ${modelType}> {
+  protected readonly prismaDelegate = "${delegateName(model.name)}";
+}
 `;
   return { path: `${model.name}.ts`, content };
+}
+
+// The Prisma client exposes each model as a delegate property named with the
+// model name's first letter lowercased (model User -> prisma.user).
+function delegateName(modelName: string): string {
+  return modelName.charAt(0).toLowerCase() + modelName.slice(1);
 }
 
 /**

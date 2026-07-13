@@ -1,6 +1,12 @@
 import { expect, test } from "vitest";
-import { PACKAGE_NAME } from "./index.js";
+import { initPrismaFactorio, PACKAGE_NAME, PrismaFactorioNotInitializedError } from "./index.js";
+import * as factories from "./factories/index.ts";
 
 test("package entry point loads", () => {
   expect(PACKAGE_NAME).toBe("prisma-factorio");
+});
+
+test("the package root re-exports the factories runtime init API", () => {
+  expect(initPrismaFactorio).toBe(factories.initPrismaFactorio);
+  expect(PrismaFactorioNotInitializedError).toBe(factories.PrismaFactorioNotInitializedError);
 });
