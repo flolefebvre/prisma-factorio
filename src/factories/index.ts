@@ -82,6 +82,40 @@ function isStateClosure<TCreateInput>(
   return typeof input === "function";
 }
 
+/**
+ * What {@link Factory.sequence} accepts: one or more partials cycled over by
+ * instance index, or a single closure computing the partial from the 0-based
+ * index. Sequence says what varies per instance; it never sets how many
+ * instances there are — that is {@link Factory.count}.
+ *
+ * @example
+ * UserFactory.new().count(10).sequence({ role: "admin" }, { role: "member" });
+ * UserFactory.new().count(10).sequence((i) => ({ name: `User ${i}` }));
+ */
+export type SequenceInput<TCreateInput> =
+  readonly [Partial<TCreateInput>, ...Partial<TCreateInput>[]] | readonly [(index: number) => Partial<TCreateInput>];
+
+// Declared with method syntax so the attributes parameter checks bivariantly:
+// a bare function type would make `states` contravariant in TCreateInput and
+// concrete factories would stop satisfying the Factory<unknown, unknown>
+// constraint of Factory.new().
+type PipelineStep<TCreateInput> = {
+  step(attributes: TCreateInput, index: number): Partial<TCreateInput>;
+}["step"];
+
+function toPipelineStep<TCreateInput>(input: StateInput<TCreateInput>): PipelineStep<TCreateInput> {
+  return (attributes) => (isStateClosure(input) ? input(attributes) : input);
+}
+
+function sequenceStepAt<TCreateInput>(steps: SequenceInput<TCreateInput>): (index: number) => Partial<TCreateInput> {
+  const [first] = steps;
+  if (typeof first === "function") {
+    return first;
+  }
+  const values = steps as readonly Partial<TCreateInput>[];
+  return (index) => values[index % values.length] ?? {};
+}
+
 interface DelegateLike<TModel> {
   create(args: { data: unknown }): Promise<TModel>;
 }
@@ -136,7 +170,7 @@ export abstract class Factory<TCreateInput, TModel> {
    */
   protected abstract readonly prismaDelegate: string;
 
-  private states: readonly StateInput<TCreateInput>[] = [];
+  private states: readonly PipelineStep<TCreateInput>[] = [];
 
   /**
    * Declares the default attributes of the model. Called once per
@@ -175,12 +209,37 @@ export abstract class Factory<TCreateInput, TModel> {
    * UserFactory.new().state({ name: "Ada" }).state((attrs) => ({ email: `${attrs.name}@example.com` }));
    */
   state(input: StateInput<TCreateInput>): this {
+    return this.fork(toPipelineStep(input));
+  }
+
+  /**
+   * Appends a cyclic, index-driven state at this chain position and returns a
+   * copy of the factory. Partials are cycled over the 0-based instance index
+   * (`index % values.length`); the closure form computes the partial from that
+   * index. Sequence never sets how many instances there are: without
+   * {@link Factory.count} a single instance is built and only the first value
+   * is used.
+   *
+   * @example
+   * // 5 admins, 5 members:
+   * await UserFactory.new().count(10).sequence({ role: "admin" }, { role: "member" }).create();
+   * @example
+   * await UserFactory.new().count(10).sequence((i) => ({ name: `User ${String(i)}` })).create();
+   */
+  sequence(step: (index: number) => Partial<TCreateInput>): this;
+  sequence(...values: [Partial<TCreateInput>, ...Partial<TCreateInput>[]]): this;
+  sequence(...steps: SequenceInput<TCreateInput>): this {
+    const stepAt = sequenceStepAt(steps);
+    return this.fork((_attributes, index) => stepAt(index));
+  }
+
+  private fork(step: PipelineStep<TCreateInput>): this {
     // Fresh construction installs subclass class fields on the copy itself —
     // arrow-function named states stay bound to the copy and native #private
     // fields keep working. `states` is the only field to carry over: bulk-
     // assigning the rest would copy arrow fields still bound to the receiver.
     const copy = new (this.constructor as new () => this)();
-    copy.states = [...this.states, input];
+    copy.states = [...this.states, step];
     return copy;
   }
 
@@ -194,9 +253,13 @@ export abstract class Factory<TCreateInput, TModel> {
    * const input = UserFactory.new().suspended().make({ name: "Ada" });
    */
   make(overrides?: StateInput<TCreateInput>): TCreateInput {
-    const pipeline = overrides === undefined ? this.states : [...this.states, overrides];
+    return this.makeAt(0, overrides);
+  }
+
+  private makeAt(index: number, overrides?: StateInput<TCreateInput>): TCreateInput {
+    const pipeline = overrides === undefined ? this.states : [...this.states, toPipelineStep(overrides)];
     return pipeline.reduce<TCreateInput>(
-      (attributes, state) => ({ ...attributes, ...(isStateClosure(state) ? state(attributes) : state) }),
+      (attributes, step) => ({ ...attributes, ...step(attributes, index) }),
       this.definition(),
     );
   }
@@ -215,7 +278,14 @@ export abstract class Factory<TCreateInput, TModel> {
     if (!Number.isInteger(n) || n < 0) {
       throw new TypeError(`count() needs a non-negative integer, got ${String(n)}.`);
     }
-    return new ListFactory(this, n);
+    // The bound builders carry the private per-index pipeline into the list
+    // factory without widening the visibility of makeAt/createAt.
+    return new ListFactory(
+      this,
+      n,
+      (index, overrides) => this.makeAt(index, overrides),
+      (index, overrides) => this.createAt(index, overrides),
+    );
   }
 
   /**
@@ -228,6 +298,10 @@ export abstract class Factory<TCreateInput, TModel> {
    * const user = await UserFactory.new().create({ name: "Abigail" }); // row persisted via prisma.user.create
    */
   async create(overrides?: StateInput<TCreateInput>): Promise<TModel> {
+    return this.createAt(0, overrides);
+  }
+
+  private async createAt(index: number, overrides?: StateInput<TCreateInput>): Promise<TModel> {
     // The registry cannot carry concrete client types; the generated base
     // pins prismaDelegate and TModel to the same model, so this single cast
     // is the whole untyped boundary.
@@ -238,7 +312,7 @@ export abstract class Factory<TCreateInput, TModel> {
         `The registered Prisma client has no "${this.prismaDelegate}" delegate; pass the client generated for this schema to initPrismaFactorio.`,
       );
     }
-    return delegate.create({ data: this.make(overrides) });
+    return delegate.create({ data: this.makeAt(index, overrides) });
   }
 }
 
@@ -256,6 +330,8 @@ export class ListFactory<TCreateInput, TModel> {
   constructor(
     private readonly factory: Factory<TCreateInput, TModel>,
     private readonly instances: number,
+    private readonly buildAt: (index: number, overrides?: StateInput<TCreateInput>) => TCreateInput,
+    private readonly persistAt: (index: number, overrides?: StateInput<TCreateInput>) => Promise<TModel>,
   ) {}
 
   /**
@@ -280,6 +356,19 @@ export class ListFactory<TCreateInput, TModel> {
   }
 
   /**
+   * Appends a cyclic, index-driven state at this chain position, exactly like
+   * {@link Factory.sequence}, keeping the instance count.
+   *
+   * @example
+   * UserFactory.new().count(10).sequence({ role: "admin" }, { role: "member" }).make();
+   */
+  sequence(step: (index: number) => Partial<TCreateInput>): ListFactory<TCreateInput, TModel>;
+  sequence(...values: [Partial<TCreateInput>, ...Partial<TCreateInput>[]]): ListFactory<TCreateInput, TModel>;
+  sequence(...steps: SequenceInput<TCreateInput>): ListFactory<TCreateInput, TModel> {
+    return this.factory.sequence(sequenceStepAt(steps)).count(this.instances);
+  }
+
+  /**
    * Builds one `CreateInput` per instance. The whole pipeline — definition,
    * states, `overrides` — is re-evaluated for each instance, so random values
    * differ across the list.
@@ -288,7 +377,7 @@ export class ListFactory<TCreateInput, TModel> {
    * const inputs = UserFactory.new().count(3).make(); // UserCreateInput[]
    */
   make(overrides?: StateInput<TCreateInput>): TCreateInput[] {
-    return Array.from({ length: this.instances }, () => this.factory.make(overrides));
+    return Array.from({ length: this.instances }, (_, index) => this.buildAt(index, overrides));
   }
 
   /**
@@ -303,7 +392,7 @@ export class ListFactory<TCreateInput, TModel> {
   async create(overrides?: StateInput<TCreateInput>): Promise<TModel[]> {
     const rows: TModel[] = [];
     for (let index = 0; index < this.instances; index += 1) {
-      rows.push(await this.factory.create(overrides));
+      rows.push(await this.persistAt(index, overrides));
     }
     return rows;
   }

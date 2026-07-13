@@ -395,6 +395,77 @@ test("count() flips result types to lists — make() to CreateInput[], create() 
   expectTypeOf(BookFactory.new().create()).toEqualTypeOf<Promise<BookModel>>();
 });
 
+test("sequence(A, B) under count(3) cycles by instance index: A, B, then A again", () => {
+  const inputs = BookFactory.new().count(3).sequence({ pages: 100 }, { pages: 200 }).make();
+
+  expect(inputs.map((input) => input.pages)).toEqual([100, 200, 100]);
+});
+
+test("sequence() before count() cycles the same way — count and sequence are orthogonal", () => {
+  const inputs = BookFactory.new().sequence({ pages: 100 }, { pages: 200 }).count(3).make();
+
+  expect(inputs.map((input) => input.pages)).toEqual([100, 200, 100]);
+});
+
+test("the sequence closure receives the 0-based instance index", () => {
+  const seen: number[] = [];
+
+  BookFactory.new()
+    .count(3)
+    .sequence((index) => {
+      seen.push(index);
+      return { title: `Book ${String(index)}` };
+    })
+    .make();
+
+  expect(seen).toEqual([0, 1, 2]);
+});
+
+test("sequence() without count() builds a single instance from the first value only — the documented truncation pitfall", () => {
+  const input = BookFactory.new().sequence({ pages: 100 }, { pages: 200 }).make();
+
+  expect(input).toEqual({ title: "The Pragmatic Programmer", pages: 100 });
+});
+
+test("a state after a sequence overrides the sequenced field, and a sequence overrides an earlier state's field", () => {
+  const laterStateWins = BookFactory.new().count(2).sequence({ pages: 100 }, { pages: 200 }).state({ pages: 7 }).make();
+  const laterSequenceWins = BookFactory.new()
+    .state({ pages: 7 })
+    .count(2)
+    .sequence({ pages: 100 }, { pages: 200 })
+    .make();
+
+  expect(laterStateWins.map((input) => input.pages)).toEqual([7, 7]);
+  expect(laterSequenceWins.map((input) => input.pages)).toEqual([100, 200]);
+});
+
+test("sequence() leaves the receiver untouched and returns an instance of the concrete factory subclass", () => {
+  const base = BookFactory.new();
+  const sequenced = base.sequence({ pages: 1 });
+
+  expect(base.make()).toEqual({ title: "The Pragmatic Programmer" });
+  expect(sequenced).toBeInstanceOf(BookFactory);
+  expect(sequenced.make()).toEqual({ title: "The Pragmatic Programmer", pages: 1 });
+});
+
+test("counted create() applies the sequence per persisted row", async () => {
+  const { client, create } = fakeClient(persistedBook);
+  initPrismaFactorio({ prisma: client });
+
+  await BookFactory.new().count(3).sequence({ pages: 100 }, { pages: 200 }).create();
+
+  expect(create).toHaveBeenNthCalledWith(1, { data: { title: "The Pragmatic Programmer", pages: 100 } });
+  expect(create).toHaveBeenNthCalledWith(2, { data: { title: "The Pragmatic Programmer", pages: 200 } });
+  expect(create).toHaveBeenNthCalledWith(3, { data: { title: "The Pragmatic Programmer", pages: 100 } });
+});
+
+test("sequence() requires at least one step, on the factory and after count()", () => {
+  // @ts-expect-error — sequence() with no steps has nothing to cycle over
+  BookFactory.new().sequence();
+  // @ts-expect-error — sequence() with no steps has nothing to cycle over
+  BookFactory.new().count(2).sequence();
+});
+
 test("create() resolves with the row typed as the factory's model", () => {
   expectTypeOf<ReturnType<BookFactory["create"]>>().resolves.toEqualTypeOf<BookModel>();
   expectTypeOf<BookFactory["create"]>().returns.toEqualTypeOf<Promise<BookModel>>();
