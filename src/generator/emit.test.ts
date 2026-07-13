@@ -87,6 +87,29 @@ test("clientOutput overrides otherGenerators detection", () => {
   expect(dir).toBe("../../custom/client");
 });
 
+test("a factory output dir equal to the clientOutput dir fails naming both directories", () => {
+  const resolve = () =>
+    resolveClientImportDir({
+      outputDir: "/app/generated/shared",
+      otherGenerators: [generatorConfigFixture({ provider: "prisma-client", output: "/app/generated/client" })],
+      clientOutput: "/app/generated/shared",
+    });
+
+  expect(resolve).toThrow(/\/app\/generated\/shared.*\/app\/generated\/shared/);
+  expect(resolve).toThrow(/`output` must differ from the client output/);
+});
+
+test("a factory output dir equal to the detected prisma-client output dir fails naming both directories", () => {
+  const resolve = () =>
+    resolveClientImportDir({
+      outputDir: "/app/generated/client",
+      otherGenerators: [generatorConfigFixture({ provider: "prisma-client", output: "/app/generated/client" })],
+    });
+
+  expect(resolve).toThrow(/\/app\/generated\/client.*\/app\/generated\/client/);
+  expect(resolve).toThrow(/`output` must differ from the client output/);
+});
+
 test("zero prisma-client generators without clientOutput fails naming the clientOutput option", () => {
   const resolve = () =>
     resolveClientImportDir({

@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 // ESM named-export detection cannot see; only the default import works at runtime.
 import generatorHelper from "@prisma/generator-helper";
 import { emitFactoryFiles } from "./generator/emit.ts";
+import { schemaDir } from "./generator/schema-path.ts";
 
 const { generatorHandler } = generatorHelper;
 
@@ -28,9 +29,10 @@ generatorHandler({
       datamodel: options.dmmf.datamodel,
       outputDir: output,
       otherGenerators: options.otherGenerators,
-      // A relative clientOutput is anchored to the schema file, matching how
-      // Prisma resolves the `output` option of generator blocks.
-      ...(clientOutput === undefined ? {} : { clientOutput: resolve(dirname(options.schemaPath), clientOutput) }),
+      // A relative clientOutput is anchored to the schema, matching how Prisma
+      // resolves the `output` option of generator blocks; `schemaPath` may be a
+      // file or a multi-file schema directory.
+      ...(clientOutput === undefined ? {} : { clientOutput: resolve(schemaDir(options.schemaPath), clientOutput) }),
     });
     await Promise.all(
       files.map(async (file) => {

@@ -11,10 +11,11 @@ generator client {
   output   = "../generated/client"
 }
 
-// The provider path resolves relative to the Prisma CLI working directory, not
-// this schema file; generate via `pnpm generate:fixtures` from the package root.
+// `tsx` resolves from the PATH pnpm scripts set up, and the script path
+// resolves relative to the Prisma CLI working directory, not this schema
+// file; generate via `pnpm generate:fixtures` from the package root.
 generator prismaFactorio {
-  provider = "node src/generator.ts"
+  provider = "tsx src/generator.ts"
   output   = "../generated/prisma-factorio"
 }
 

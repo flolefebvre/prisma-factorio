@@ -1,4 +1,4 @@
-import { relative, sep } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import type { DMMF, GeneratorConfig } from "@prisma/generator-helper";
 
 const CLIENT_PROVIDER = "prisma-client";
@@ -22,7 +22,9 @@ export interface GeneratedFile {
  * Resolves the directory the generated factories import client types from, as
  * a relative import specifier from the factory output directory. The client
  * directory is `clientOutput` when given, otherwise the output of the single
- * `prisma-client` generator in `otherGenerators`.
+ * `prisma-client` generator in `otherGenerators`. Fails when the factory
+ * output directory equals the client directory, since the factories would
+ * overwrite the client files.
  *
  * @example
  * resolveClientImportDir({
@@ -36,6 +38,11 @@ export function resolveClientImportDir(params: {
   clientOutput?: string;
 }): string {
   const clientDir = params.clientOutput ?? detectClientOutputDir(params.otherGenerators);
+  if (resolve(params.outputDir) === resolve(clientDir)) {
+    throw new Error(
+      `prisma-factorio: the factory output directory "${params.outputDir}" is the same as the Prisma client output directory "${clientDir}"; the factory \`output\` must differ from the client output.`,
+    );
+  }
   const relativeDir = relative(params.outputDir, clientDir).split(sep).join("/");
   return relativeDir.startsWith(".") ? relativeDir : `./${relativeDir}`;
 }
