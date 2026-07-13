@@ -54,6 +54,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/client": "7.8.0",
     "@types/node": "^26.1.1",
     "eslint": "^10.7.0",
