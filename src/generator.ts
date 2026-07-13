@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 // @prisma/generator-helper is CommonJS with getter-based exports, which Node's
 // ESM named-export detection cannot see; only the default import works at runtime.
 import generatorHelper from "@prisma/generator-helper";
+import { removeStaleGeneratedFiles } from "./generator/cleanup.ts";
 import { emitFactoryFiles } from "./generator/emit.ts";
 import { schemaDir } from "./generator/schema-path.ts";
 
@@ -34,6 +35,7 @@ generatorHandler({
       // file or a multi-file schema directory.
       ...(clientOutput === undefined ? {} : { clientOutput: resolve(schemaDir(options.schemaPath), clientOutput) }),
     });
+    await removeStaleGeneratedFiles({ outputDir: output, keep: files.map((file) => file.path) });
     await Promise.all(
       files.map(async (file) => {
         const filePath = join(output, file.path);
