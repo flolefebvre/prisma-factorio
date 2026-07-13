@@ -1,5 +1,5 @@
 import { expect, expectTypeOf, test, vi } from "vitest";
-import { Factory, initPrismaFactorio } from "./index.ts";
+import { Factory, initPrismaFactorio, PrismaFactorioNotInitializedError } from "./index.ts";
 
 interface BookCreateInput {
   title: string;
@@ -64,7 +64,20 @@ test("create() before initPrismaFactorio rejects with a dedicated error naming i
   }
 
   await expect(FreshBookFactory.new().create()).rejects.toBeInstanceOf(fresh.PrismaFactorioNotInitializedError);
-  await expect(FreshBookFactory.new().create()).rejects.toThrow(/initPrismaFactorio/);
+  await expect(FreshBookFactory.new().create()).rejects.toThrow(
+    "No Prisma client is registered. Call initPrismaFactorio({ prisma }) before create().",
+  );
+});
+
+test("create() rejects with PrismaFactorioNotInitializedError when the registered getter returns undefined", async () => {
+  // A non-null-asserted global (`let client!: PrismaClient`) passes the type
+  // check yet yields undefined until assigned; the cast reproduces that state.
+  initPrismaFactorio({ prisma: () => undefined as unknown as object });
+
+  await expect(BookFactory.new().create()).rejects.toBeInstanceOf(PrismaFactorioNotInitializedError);
+  await expect(BookFactory.new().create()).rejects.toThrow(
+    "The registered Prisma client getter returned undefined — the client was not yet constructed when create() ran.",
+  );
 });
 
 test("create() persists { data: make() } through the registered client's model delegate", async () => {

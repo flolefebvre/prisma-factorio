@@ -3,7 +3,9 @@
 /**
  * A Prisma client instance, or a getter returning one. A getter is invoked
  * freshly on every {@link Factory.create} call, so the client may be swapped
- * or constructed lazily after registration.
+ * or constructed lazily after registration. The typed `initPrismaFactorio`
+ * wrapper in the generated barrel accepts the same two shapes, narrowed to
+ * the client generated for your schema.
  *
  * @example
  * initPrismaFactorio({ prisma: () => currentTestPrisma });
@@ -11,7 +13,8 @@
 export type PrismaClientSource = object | (() => object);
 
 /**
- * Options of {@link initPrismaFactorio}.
+ * Options of {@link initPrismaFactorio}. Prefer the typed wrapper in the
+ * generated barrel, which narrows `prisma` to your schema's `PrismaClient`.
  *
  * @example
  * const options: InitPrismaFactorioOptions = { prisma: new PrismaClient({ adapter }) };
@@ -27,22 +30,36 @@ let registeredClientSource: PrismaClientSource | undefined;
  * Call it once at startup, before the first `create()`. Calling it again
  * replaces the previous registration (last wins).
  *
+ * The default way to init is the typed wrapper of the same name in the
+ * generated barrel, which pins `prisma` to the client generated for your
+ * schema. This untyped runtime function is the escape hatch for clients the
+ * generated type would reject, such as mocks or partial clients.
+ *
  * @example
+ * // Default path: the typed wrapper emitted next to the generated factories.
+ * import { initPrismaFactorio } from "./generated/prisma-factorio/index.ts";
  * initPrismaFactorio({ prisma: new PrismaClient({ adapter }) });
+ *
+ * @example
+ * // Escape hatch: register a hand-rolled partial client for a unit test.
+ * import { initPrismaFactorio } from "prisma-factorio/factories";
+ * initPrismaFactorio({ prisma: { user: { create: async () => stubUser } } });
  */
 export function initPrismaFactorio(options: InitPrismaFactorioOptions): void {
   registeredClientSource = options.prisma;
 }
 
 /**
- * Rejection of {@link Factory.create} when no Prisma client is registered.
+ * Rejection of {@link Factory.create} when no usable Prisma client is
+ * available: {@link initPrismaFactorio} was never called, or the registered
+ * getter returned undefined because the client was not yet constructed.
  *
  * @example
  * await expect(UserFactory.new().create()).rejects.toBeInstanceOf(PrismaFactorioNotInitializedError);
  */
 export class PrismaFactorioNotInitializedError extends Error {
-  constructor() {
-    super("No Prisma client is registered. Call initPrismaFactorio({ prisma }) before create().");
+  constructor(message = "No Prisma client is registered. Call initPrismaFactorio({ prisma }) before create().") {
+    super(message);
     this.name = "PrismaFactorioNotInitializedError";
   }
 }
@@ -59,7 +76,19 @@ function resolveClient(): object {
   if (registeredClientSource === undefined) {
     throw new PrismaFactorioNotInitializedError();
   }
-  return isClientGetter(registeredClientSource) ? registeredClientSource() : registeredClientSource;
+  if (!isClientGetter(registeredClientSource)) {
+    return registeredClientSource;
+  }
+  // A getter typed with a non-null assertion (`let client!: PrismaClient`)
+  // can still yield nullish at runtime when create() runs before the client
+  // is assigned; without this guard that surfaces as an opaque TypeError.
+  const client = registeredClientSource() as object | null | undefined;
+  if (client === undefined || client === null) {
+    throw new PrismaFactorioNotInitializedError(
+      "The registered Prisma client getter returned undefined — the client was not yet constructed when create() ran.",
+    );
+  }
+  return client;
 }
 
 /**
