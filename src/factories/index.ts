@@ -116,6 +116,19 @@ function sequenceStepAt<TCreateInput>(steps: SequenceInput<TCreateInput>): (inde
   return (index) => values[index % values.length] ?? {};
 }
 
+function assertZeroArgConstructor(ctor: new () => unknown): void {
+  // A bare construct-signature type does not structurally carry Function's
+  // length/name, so reading them is the single untyped boundary here. `length`
+  // counts exactly the required parameters — default and rest parameters do
+  // not add to it.
+  const fn = ctor as unknown as { length: number; name: string };
+  if (fn.length > 0) {
+    throw new TypeError(
+      `${fn.name} declares ${String(fn.length)} required constructor parameter(s). Factory chains fork by fresh construction, so factory classes must be constructible with no arguments — pin per-factory values with class fields or named states instead.`,
+    );
+  }
+}
+
 interface DelegateLike<TModel> {
   create(args: { data: unknown }): Promise<TModel>;
 }
@@ -150,6 +163,13 @@ function resolveClient(): object {
  *
  * Instances are immutable: no method mutates the factory, so chain steps
  * like {@link Factory.state} return copies instead of modifying `this`.
+ *
+ * Subclasses must be constructible with no arguments and hold no mutable
+ * per-instance state: a chain step forks by fresh construction, so only the
+ * pipeline carries over — anything set through a constructor parameter is lost
+ * on the first fork. Pin per-factory values with class field initializers or
+ * named states instead. A required constructor parameter throws a `TypeError`
+ * at the first fork rather than silently producing wrong data.
  *
  * @example
  * class UserFactory extends UserFactoryBase {
@@ -190,6 +210,7 @@ export abstract class Factory<TCreateInput, TModel> {
    * const factory = UserFactory.new();
    */
   static new<TFactory extends Factory<unknown, unknown>>(this: new () => TFactory): TFactory {
+    assertZeroArgConstructor(this);
     return new this();
   }
 
@@ -238,7 +259,11 @@ export abstract class Factory<TCreateInput, TModel> {
     // arrow-function named states stay bound to the copy and native #private
     // fields keep working. `states` is the only field to carry over: bulk-
     // assigning the rest would copy arrow fields still bound to the receiver.
-    const copy = new (this.constructor as new () => this)();
+    // Fresh construction only holds when the subclass takes no constructor
+    // arguments, so the guard fires here, the first moment a fork happens.
+    const ctor = this.constructor as new () => this;
+    assertZeroArgConstructor(ctor);
+    const copy = new ctor();
     copy.states = [...this.states, step];
     return copy;
   }

@@ -486,3 +486,71 @@ test("create() resolves with the row typed as the factory's model", () => {
   expectTypeOf<ReturnType<BookFactory["create"]>>().resolves.toEqualTypeOf<BookModel>();
   expectTypeOf<BookFactory["create"]>().returns.toEqualTypeOf<Promise<BookModel>>();
 });
+
+class PinnedRoleFactory extends Factory<BookCreateInput, BookModel> {
+  protected readonly prismaDelegate = "book";
+
+  constructor(private readonly role: string) {
+    super();
+  }
+
+  definition(): BookCreateInput {
+    return { title: this.role };
+  }
+}
+
+test("state() on a factory whose class declares required constructor parameters throws a TypeError naming the class, the count, and the field/named-state alternative", () => {
+  const fork = () => new PinnedRoleFactory("boss").state({ pages: 1 });
+
+  expect(fork).toThrow(TypeError);
+  expect(fork).toThrow(/PinnedRoleFactory declares 1 required constructor parameter\(s\)/);
+  expect(fork).toThrow(/class field|named state/);
+});
+
+test("sequence() on a factory with required constructor parameters throws the same fork guard", () => {
+  expect(() => new PinnedRoleFactory("boss").sequence({ pages: 1 })).toThrow(
+    /PinnedRoleFactory declares 1 required constructor parameter/,
+  );
+});
+
+test("new() on a class with required constructor parameters throws the fork guard — the plain-JS hole the compile error already closes for TS callers", () => {
+  // TS callers cannot reach here: new()'s `this: new () => TFactory` rejects a
+  // required-param subclass at compile time. The cast models a plain-JS consumer
+  // (or a deliberate `as` cast) that reaches new() and hits the runtime guard.
+  const plainJs = PinnedRoleFactory as unknown as { new: () => unknown };
+
+  expect(() => plainJs.new()).toThrow(TypeError);
+  expect(() => plainJs.new()).toThrow(/PinnedRoleFactory declares 1 required constructor parameter/);
+});
+
+test("a directly-constructed factory with required constructor parameters and no chained states still works — the guard fires only when a fork happens", async () => {
+  const { client, create } = fakeClient(persistedBook);
+  initPrismaFactorio({ prisma: client });
+
+  expect(new PinnedRoleFactory("boss").make()).toEqual({ title: "boss" });
+  expect(new PinnedRoleFactory("boss").count(2).make()).toEqual([{ title: "boss" }, { title: "boss" }]);
+  await new PinnedRoleFactory("boss").create();
+
+  expect(create).toHaveBeenCalledExactlyOnceWith({ data: { title: "boss" } });
+});
+
+test("a constructor with only default parameters passes the guard but its value resets on the first fork — the documented residual hole", () => {
+  class DefaultRoleFactory extends Factory<BookCreateInput, BookModel> {
+    protected readonly prismaDelegate = "book";
+
+    constructor(private readonly role = "member") {
+      super();
+    }
+
+    definition(): BookCreateInput {
+      return { title: this.role };
+    }
+  }
+
+  // A default parameter does not count toward `length`, so the guard stays
+  // silent and a directly-constructed value survives an unforked make().
+  expect(new DefaultRoleFactory("admin").make()).toEqual({ title: "admin" });
+  // The first fork reconstructs with no arguments, resetting role to its
+  // default — the hole `length` cannot close, locked here as known behavior.
+  expect(new DefaultRoleFactory("admin").state({ pages: 1 }).make()).toEqual({ title: "member", pages: 1 });
+});
