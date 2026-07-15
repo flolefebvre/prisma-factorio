@@ -42,11 +42,16 @@ test("count() with sequence() persists n rows, cycling the sequenced field and r
 
   const created = await UserFactory.new().count(3).sequence({ role: Role.ADMIN }, { role: Role.MEMBER }).create();
 
-  const found = await prisma.user.findMany({ orderBy: { id: "asc" } });
-  expect(found).toHaveLength(3);
-  expect(found.map((row) => row.id)).toEqual(created.map((row) => row.id));
-  expect(found.map((row) => row.role)).toEqual([Role.ADMIN, Role.MEMBER, Role.ADMIN]);
-  expect(new Set(found.map((row) => row.email)).size).toBe(3);
+  // create() returns the rows in creation order, so the cycle reads off directly.
+  expect(created.map((row) => row.role)).toEqual([Role.ADMIN, Role.MEMBER, Role.ADMIN]);
+  // Distinct emails prove definition() re-ran for each instance.
+  expect(new Set(created.map((row) => row.email)).size).toBe(3);
+
+  // The rows really reached the database. Matched by id set, not position: the
+  // id is a random uuid, so a re-query cannot recover creation order.
+  const persisted = await prisma.user.findMany();
+  expect(persisted).toHaveLength(3);
+  expect(new Set(persisted.map((row) => row.id))).toEqual(new Set(created.map((row) => row.id)));
 });
 
 test("a getter registration is resolved on every create(), so swapping the client redirects persistence", async () => {

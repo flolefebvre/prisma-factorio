@@ -464,6 +464,24 @@ test("sequence() requires at least one step, on the factory and after count()", 
   BookFactory.new().count(2).sequence();
 });
 
+test("the pipeline's bivariant step stays contained: a concrete factory still satisfies the Factory<unknown, unknown> bound that new() constrains on", () => {
+  // PipelineStep's method-syntax bivariance exists solely so this holds; a bare
+  // function type would make the step parameter contravariant and a concrete
+  // factory would fail new()'s `this: new () => Factory<unknown, unknown>`.
+  expectTypeOf<BookFactory>().toExtend<Factory<unknown, unknown>>();
+});
+
+test("the bivariance never leaks into the public surface: state()/sequence() still reject a closure with an incompatible parameter or return", () => {
+  // @ts-expect-error — closure parameter is not the factory's CreateInput
+  BookFactory.new().state((attrs: { notAField: string }) => ({ title: attrs.notAField }));
+  // @ts-expect-error — closure returns a field the CreateInput does not have
+  BookFactory.new().state(() => ({ notAField: 1 }));
+  BookFactory.new()
+    .count(2)
+    // @ts-expect-error — the same soundness holds for the sequence closure
+    .sequence(() => ({ notAField: 1 }));
+});
+
 test("create() resolves with the row typed as the factory's model", () => {
   expectTypeOf<ReturnType<BookFactory["create"]>>().resolves.toEqualTypeOf<BookModel>();
   expectTypeOf<BookFactory["create"]>().returns.toEqualTypeOf<Promise<BookModel>>();

@@ -330,8 +330,8 @@ export class ListFactory<TCreateInput, TModel> {
   constructor(
     private readonly factory: Factory<TCreateInput, TModel>,
     private readonly instances: number,
-    private readonly buildAt: (index: number, overrides?: StateInput<TCreateInput>) => TCreateInput,
-    private readonly persistAt: (index: number, overrides?: StateInput<TCreateInput>) => Promise<TModel>,
+    private readonly makeAt: (index: number, overrides?: StateInput<TCreateInput>) => TCreateInput,
+    private readonly createAt: (index: number, overrides?: StateInput<TCreateInput>) => Promise<TModel>,
   ) {}
 
   /**
@@ -377,7 +377,7 @@ export class ListFactory<TCreateInput, TModel> {
    * const inputs = UserFactory.new().count(3).make(); // UserCreateInput[]
    */
   make(overrides?: StateInput<TCreateInput>): TCreateInput[] {
-    return Array.from({ length: this.instances }, (_, index) => this.buildAt(index, overrides));
+    return Array.from({ length: this.instances }, (_, index) => this.makeAt(index, overrides));
   }
 
   /**
@@ -392,7 +392,7 @@ export class ListFactory<TCreateInput, TModel> {
   async create(overrides?: StateInput<TCreateInput>): Promise<TModel[]> {
     const rows: TModel[] = [];
     for (let index = 0; index < this.instances; index += 1) {
-      rows.push(await this.persistAt(index, overrides));
+      rows.push(await this.createAt(index, overrides));
     }
     return rows;
   }
