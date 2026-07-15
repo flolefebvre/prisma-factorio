@@ -248,6 +248,240 @@ test("create() rejects naming the delegate when the registered client lacks it",
   await expect(BookFactory.new().create()).rejects.toThrow(/"book"/);
 });
 
+test("count(n).make() returns n CreateInputs built from the pipeline", () => {
+  const inputs = BookFactory.new().state({ pages: 42 }).count(3).make();
+
+  expect(inputs).toEqual([
+    { title: "The Pragmatic Programmer", pages: 42 },
+    { title: "The Pragmatic Programmer", pages: 42 },
+    { title: "The Pragmatic Programmer", pages: 42 },
+  ]);
+});
+
+test("count(n).create() runs n individual delegate.create calls and resolves the rows in order", async () => {
+  let call = 0;
+  const create = vi.fn(() => {
+    call += 1;
+    return Promise.resolve({ id: call, title: "The Pragmatic Programmer", pages: null });
+  });
+  initPrismaFactorio({ prisma: { book: { create } } });
+
+  const created = await BookFactory.new().count(3).create();
+
+  expect(create).toHaveBeenCalledTimes(3);
+  expect(create).toHaveBeenCalledWith({ data: { title: "The Pragmatic Programmer" } });
+  expect(created.map((row) => row.id)).toEqual([1, 2, 3]);
+});
+
+test("count() rejects a negative or non-integer n with a TypeError at chain time", () => {
+  expect(() => BookFactory.new().count(-1)).toThrow(TypeError);
+  expect(() => BookFactory.new().count(2.5)).toThrow(TypeError);
+  expect(() => BookFactory.new().count(Number.NaN)).toThrow(TypeError);
+});
+
+test("state() after count() keeps its chain position: it merges over earlier states and reads them in closure form", () => {
+  const inputs = BookFactory.new()
+    .state({ title: "Early", pages: 1 })
+    .count(2)
+    .state((attrs) => ({ title: `${attrs.title} Late` }))
+    .make();
+
+  expect(inputs).toEqual([
+    { title: "Early Late", pages: 1 },
+    { title: "Early Late", pages: 1 },
+  ]);
+});
+
+test("count() after count() — the last count wins", () => {
+  expect(BookFactory.new().count(5).count(2).make()).toHaveLength(2);
+});
+
+test("each of the n instances re-evaluates the whole pipeline: definition and closure states yield distinct values", () => {
+  let definitionCalls = 0;
+  class SerialBookFactory extends Factory<BookCreateInput, BookModel> {
+    protected readonly prismaDelegate = "book";
+
+    definition(): BookCreateInput {
+      definitionCalls += 1;
+      return { title: `Copy ${String(definitionCalls)}` };
+    }
+  }
+  let closureCalls = 0;
+  const closure = () => {
+    closureCalls += 1;
+    return { pages: closureCalls };
+  };
+
+  const inputs = SerialBookFactory.new().state(closure).count(3).make();
+
+  expect(inputs).toEqual([
+    { title: "Copy 1", pages: 1 },
+    { title: "Copy 2", pages: 2 },
+    { title: "Copy 3", pages: 3 },
+  ]);
+});
+
+test("counted create() runs sequentially: each delegate call starts only after the previous one settled", async () => {
+  let pending = 0;
+  let maxPending = 0;
+  const create = vi.fn(async () => {
+    pending += 1;
+    maxPending = Math.max(maxPending, pending);
+    await Promise.resolve();
+    pending -= 1;
+    return persistedBook;
+  });
+  initPrismaFactorio({ prisma: { book: { create } } });
+
+  await BookFactory.new().count(3).create();
+
+  expect(create).toHaveBeenCalledTimes(3);
+  expect(maxPending).toBe(1);
+});
+
+test("counted create() resolves a client getter freshly for every one of the n calls", async () => {
+  const { client, create } = fakeClient(persistedBook);
+  const getter = vi.fn(() => client);
+  initPrismaFactorio({ prisma: getter });
+
+  await BookFactory.new().count(3).create();
+
+  expect(getter).toHaveBeenCalledTimes(3);
+  expect(create).toHaveBeenCalledTimes(3);
+});
+
+test("make(overrides) on a counted factory applies the overrides to every instance, closure form seeing per-instance attributes", () => {
+  let n = 0;
+  class NumberedBookFactory extends Factory<BookCreateInput, BookModel> {
+    protected readonly prismaDelegate = "book";
+
+    definition(): BookCreateInput {
+      n += 1;
+      return { title: `Vol ${String(n)}` };
+    }
+  }
+
+  const inputs = NumberedBookFactory.new()
+    .count(2)
+    .make((attrs) => ({ title: `${attrs.title}!` }));
+
+  expect(inputs).toEqual([{ title: "Vol 1!" }, { title: "Vol 2!" }]);
+});
+
+test("count() leaves the receiver untouched: the original factory still makes a single input", () => {
+  const factory = BookFactory.new();
+  factory.count(3);
+
+  expect(factory.make()).toEqual({ title: "The Pragmatic Programmer" });
+});
+
+test("count(0) makes an empty list and create() persists nothing", async () => {
+  const { client, create } = fakeClient(persistedBook);
+  initPrismaFactorio({ prisma: client });
+
+  expect(BookFactory.new().count(0).make()).toEqual([]);
+  expect(await BookFactory.new().count(0).create()).toEqual([]);
+  expect(create).not.toHaveBeenCalled();
+});
+
+test("count() flips result types to lists — make() to CreateInput[], create() to Promise<Model[]> — with no unions", () => {
+  const counted = BookFactory.new().count(2);
+
+  expectTypeOf(counted.make()).toEqualTypeOf<BookCreateInput[]>();
+  expectTypeOf(counted.create()).toEqualTypeOf<Promise<BookModel[]>>();
+  expectTypeOf(BookFactory.new().make()).toEqualTypeOf<BookCreateInput>();
+  expectTypeOf(BookFactory.new().create()).toEqualTypeOf<Promise<BookModel>>();
+});
+
+test("sequence(A, B) under count(3) cycles by instance index: A, B, then A again", () => {
+  const inputs = BookFactory.new().count(3).sequence({ pages: 100 }, { pages: 200 }).make();
+
+  expect(inputs.map((input) => input.pages)).toEqual([100, 200, 100]);
+});
+
+test("sequence() before count() cycles the same way — count and sequence are orthogonal", () => {
+  const inputs = BookFactory.new().sequence({ pages: 100 }, { pages: 200 }).count(3).make();
+
+  expect(inputs.map((input) => input.pages)).toEqual([100, 200, 100]);
+});
+
+test("the sequence closure receives the 0-based instance index", () => {
+  const seen: number[] = [];
+
+  BookFactory.new()
+    .count(3)
+    .sequence((index) => {
+      seen.push(index);
+      return { title: `Book ${String(index)}` };
+    })
+    .make();
+
+  expect(seen).toEqual([0, 1, 2]);
+});
+
+test("sequence() without count() builds a single instance from the first value only — the documented truncation pitfall", () => {
+  const input = BookFactory.new().sequence({ pages: 100 }, { pages: 200 }).make();
+
+  expect(input).toEqual({ title: "The Pragmatic Programmer", pages: 100 });
+});
+
+test("a state after a sequence overrides the sequenced field, and a sequence overrides an earlier state's field", () => {
+  const laterStateWins = BookFactory.new().count(2).sequence({ pages: 100 }, { pages: 200 }).state({ pages: 7 }).make();
+  const laterSequenceWins = BookFactory.new()
+    .state({ pages: 7 })
+    .count(2)
+    .sequence({ pages: 100 }, { pages: 200 })
+    .make();
+
+  expect(laterStateWins.map((input) => input.pages)).toEqual([7, 7]);
+  expect(laterSequenceWins.map((input) => input.pages)).toEqual([100, 200]);
+});
+
+test("sequence() leaves the receiver untouched and returns an instance of the concrete factory subclass", () => {
+  const base = BookFactory.new();
+  const sequenced = base.sequence({ pages: 1 });
+
+  expect(base.make()).toEqual({ title: "The Pragmatic Programmer" });
+  expect(sequenced).toBeInstanceOf(BookFactory);
+  expect(sequenced.make()).toEqual({ title: "The Pragmatic Programmer", pages: 1 });
+});
+
+test("counted create() applies the sequence per persisted row", async () => {
+  const { client, create } = fakeClient(persistedBook);
+  initPrismaFactorio({ prisma: client });
+
+  await BookFactory.new().count(3).sequence({ pages: 100 }, { pages: 200 }).create();
+
+  expect(create).toHaveBeenNthCalledWith(1, { data: { title: "The Pragmatic Programmer", pages: 100 } });
+  expect(create).toHaveBeenNthCalledWith(2, { data: { title: "The Pragmatic Programmer", pages: 200 } });
+  expect(create).toHaveBeenNthCalledWith(3, { data: { title: "The Pragmatic Programmer", pages: 100 } });
+});
+
+test("sequence() requires at least one step, on the factory and after count()", () => {
+  // @ts-expect-error — sequence() with no steps has nothing to cycle over
+  BookFactory.new().sequence();
+  // @ts-expect-error — sequence() with no steps has nothing to cycle over
+  BookFactory.new().count(2).sequence();
+});
+
+test("the pipeline's bivariant step stays contained: a concrete factory still satisfies the Factory<unknown, unknown> bound that new() constrains on", () => {
+  // PipelineStep's method-syntax bivariance exists solely so this holds; a bare
+  // function type would make the step parameter contravariant and a concrete
+  // factory would fail new()'s `this: new () => Factory<unknown, unknown>`.
+  expectTypeOf<BookFactory>().toExtend<Factory<unknown, unknown>>();
+});
+
+test("the bivariance never leaks into the public surface: state()/sequence() still reject a closure with an incompatible parameter or return", () => {
+  // @ts-expect-error — closure parameter is not the factory's CreateInput
+  BookFactory.new().state((attrs: { notAField: string }) => ({ title: attrs.notAField }));
+  // @ts-expect-error — closure returns a field the CreateInput does not have
+  BookFactory.new().state(() => ({ notAField: 1 }));
+  BookFactory.new()
+    .count(2)
+    // @ts-expect-error — the same soundness holds for the sequence closure
+    .sequence(() => ({ notAField: 1 }));
+});
+
 test("create() resolves with the row typed as the factory's model", () => {
   expectTypeOf<ReturnType<BookFactory["create"]>>().resolves.toEqualTypeOf<BookModel>();
   expectTypeOf<BookFactory["create"]>().returns.toEqualTypeOf<Promise<BookModel>>();
