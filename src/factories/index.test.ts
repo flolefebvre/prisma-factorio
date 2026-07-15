@@ -533,3 +533,24 @@ test("a directly-constructed factory with required constructor parameters and no
 
   expect(create).toHaveBeenCalledExactlyOnceWith({ data: { title: "boss" } });
 });
+
+test("a constructor with only default parameters passes the guard but its value resets on the first fork — the documented residual hole", () => {
+  class DefaultRoleFactory extends Factory<BookCreateInput, BookModel> {
+    protected readonly prismaDelegate = "book";
+
+    constructor(private readonly role = "member") {
+      super();
+    }
+
+    definition(): BookCreateInput {
+      return { title: this.role };
+    }
+  }
+
+  // A default parameter does not count toward `length`, so the guard stays
+  // silent and a directly-constructed value survives an unforked make().
+  expect(new DefaultRoleFactory("admin").make()).toEqual({ title: "admin" });
+  // The first fork reconstructs with no arguments, resetting role to its
+  // default — the hole `length` cannot close, locked here as known behavior.
+  expect(new DefaultRoleFactory("admin").state({ pages: 1 }).make()).toEqual({ title: "member", pages: 1 });
+});
