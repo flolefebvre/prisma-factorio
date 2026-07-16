@@ -1,5 +1,5 @@
 import { expect, expectTypeOf, test, vi } from "vitest";
-import { initPrismaFactorio, type StateInput } from "../factories/index.ts";
+import { FactoryCycleError, initPrismaFactorio, type StateInput } from "../factories/index.ts";
 import type { PrismaClient } from "./generated/client/client.ts";
 import { Role } from "./generated/client/enums.ts";
 import type { PostCreateInput, TagCreateInput, UserCreateInput, UserModel } from "./generated/client/models.ts";
@@ -8,9 +8,25 @@ import { TagFactoryBase } from "./generated/prisma-factorio/Tag.ts";
 // Imported through the generated barrel; `index.ts` is spelled out because
 // nodenext ESM resolution forbids extensionless directory imports.
 import {
+  ChickenFactoryBase,
+  EggFactoryBase,
   initPrismaFactorio as initGeneratedPrismaFactorio,
   UserFactoryBase,
 } from "./generated/prisma-factorio/index.ts";
+
+// Every required scalar of the fixture Post, shared so factory-as-value tests
+// vary only the relation field.
+const postScalars = {
+  title: "Typed factories",
+  wordCount: 1200,
+  views: 10n,
+  rating: 4.5,
+  price: "19.99",
+  isPublished: true,
+  metadata: { tags: ["intro"] },
+  thumbnail: new Uint8Array([1, 2, 3]),
+  reviewedAt: new Date("2026-01-01T00:00:00Z"),
+};
 
 // The generated files import "prisma-factorio/factories", the package's own
 // name. Inside this repo that specifier bypasses the published dist build: the
@@ -45,17 +61,7 @@ test("definition() is re-evaluated on every make() call", () => {
 test("every scalar type of the fixture matrix is accepted in a definition()", () => {
   class PostFactory extends PostFactoryBase {
     definition() {
-      return {
-        title: "Typed factories",
-        wordCount: 1200,
-        views: 10n,
-        rating: 4.5,
-        price: "19.99",
-        isPublished: true,
-        metadata: { tags: ["intro"] },
-        thumbnail: new Uint8Array([1, 2, 3]),
-        reviewedAt: new Date("2026-01-01T00:00:00Z"),
-      };
+      return { ...postScalars, author: UserFactory.new() };
     }
   }
 
@@ -184,11 +190,15 @@ test("named, parameterized, closure, and inline states chain in any order and co
 test("state() keeps the concrete factory type and the pipeline keeps the exact client types", () => {
   const chained = StatefulUserFactory.new().admin().state({ name: "Ada" });
 
+  // A relation back-reference (User.posts) widens the definition type, so the
+  // pipeline's inputs are StateInput of that definition, while make() still
+  // returns the exact client CreateInput.
+  type UserDefinition = ReturnType<UserFactoryBase["definition"]>;
   expectTypeOf(chained).toEqualTypeOf<StatefulUserFactory>();
   expectTypeOf(chained.make({ name: "Ada" })).toEqualTypeOf<UserCreateInput>();
-  expectTypeOf<Parameters<UserFactoryBase["state"]>[0]>().toEqualTypeOf<StateInput<UserCreateInput>>();
-  expectTypeOf<Parameters<UserFactoryBase["make"]>[0]>().toEqualTypeOf<StateInput<UserCreateInput> | undefined>();
-  expectTypeOf<Parameters<UserFactoryBase["create"]>[0]>().toEqualTypeOf<StateInput<UserCreateInput> | undefined>();
+  expectTypeOf<Parameters<UserFactoryBase["state"]>[0]>().toEqualTypeOf<StateInput<UserDefinition>>();
+  expectTypeOf<Parameters<UserFactoryBase["make"]>[0]>().toEqualTypeOf<StateInput<UserDefinition> | undefined>();
+  expectTypeOf<Parameters<UserFactoryBase["create"]>[0]>().toEqualTypeOf<StateInput<UserDefinition> | undefined>();
 });
 
 test("unknown fields in a state partial or overrides argument are compile errors", () => {
@@ -217,4 +227,76 @@ test("the generated base itself cannot start a chain because it has no definitio
   const chain = () => UserFactoryBase.new();
 
   expect(chain).toBeDefined();
+});
+
+test("a required belongsTo covered by a factory-as-value satisfies the definition coverage check", () => {
+  class AuthoredPostFactory extends PostFactoryBase {
+    definition() {
+      return { ...postScalars, author: UserFactory.new() };
+    }
+  }
+
+  const input = AuthoredPostFactory.new().make();
+
+  expect(input.author).toEqual({ create: { email: "ada@example.com", role: Role.ADMIN } });
+  expectTypeOf(input).toEqualTypeOf<PostCreateInput>();
+});
+
+test("omitting the required belongsTo relation in a Post definition is a compile error", () => {
+  class MissingAuthorPostFactory extends PostFactoryBase {
+    // @ts-expect-error definition() misses the required relation `author`
+    definition() {
+      return { ...postScalars };
+    }
+  }
+
+  expect(MissingAuthorPostFactory).toBeDefined();
+});
+
+test("the lazy () => factory form resolves identically to the eager form on a generated factory", () => {
+  class EagerPostFactory extends PostFactoryBase {
+    definition() {
+      return { ...postScalars, author: UserFactory.new() };
+    }
+  }
+  class LazyPostFactory extends PostFactoryBase {
+    definition() {
+      return { ...postScalars, author: () => UserFactory.new() };
+    }
+  }
+
+  expect(LazyPostFactory.new().make().author).toEqual(EagerPostFactory.new().make().author);
+});
+
+test("a relation supplied through overrides short-circuits the generated factory-as-value", () => {
+  class ThrowingUserFactory extends UserFactoryBase {
+    definition(): { email: string; role: Role } {
+      throw new Error("the nested factory must not be evaluated when the relation is supplied");
+    }
+  }
+  class PostWithThrowingAuthor extends PostFactoryBase {
+    definition() {
+      return { ...postScalars, author: ThrowingUserFactory.new() };
+    }
+  }
+
+  const input = PostWithThrowingAuthor.new().make({ author: { connect: { id: "u-1" } } });
+
+  expect(input.author).toEqual({ connect: { id: "u-1" } });
+});
+
+test("a definition-level cycle between two generated factories throws FactoryCycleError naming the cycle", () => {
+  class ChickenFactory extends ChickenFactoryBase {
+    definition() {
+      return { name: "Hen", egg: EggFactory.new() };
+    }
+  }
+  class EggFactory extends EggFactoryBase {
+    definition() {
+      return { code: "E-1", chicken: ChickenFactory.new() };
+    }
+  }
+
+  expect(() => ChickenFactory.new().make()).toThrow(FactoryCycleError);
+  expect(() => ChickenFactory.new().make()).toThrow(/ChickenFactory.*EggFactory.*ChickenFactory/);
 });
