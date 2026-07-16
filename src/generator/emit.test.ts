@@ -62,15 +62,16 @@ test("a model with a to-one relation pins a third definition generic that widens
   );
 
   expect(file.content).toContain(
-    "export abstract class PostFactoryBase extends Factory<\n" +
+    "export abstract class PostFactoryBase<TResult = PostModel> extends Factory<\n" +
       "  PostCreateInput,\n" +
       "  PostModel,\n" +
-      "  PostFactoryDefinition\n" +
+      "  PostFactoryDefinition,\n" +
+      "  TResult\n" +
       "> {",
   );
   expect(file.content).toContain("type PostRelationFactories = {\n  author: FactoryValue<UserFactoryBase>;\n};");
   expect(file.content).toContain(
-    "type PostFactoryDefinition = {\n" +
+    "export type PostFactoryDefinition = {\n" +
       "  [K in keyof PostCreateInput]: K extends keyof PostRelationFactories\n" +
       "    ? PostCreateInput[K] | PostRelationFactories[K]\n" +
       "    : PostCreateInput[K];\n" +
@@ -88,7 +89,7 @@ test("a relational model imports FactoryValue from the runtime and each related 
   );
 
   expect(file.content).toContain('import { Factory, type FactoryValue } from "prisma-factorio/factories";');
-  expect(file.content).toContain('import type { UserFactoryBase } from "./User.ts";');
+  expect(file.content).toContain('import type { UserFactoryBase, UserFactoryDefinition } from "./User.ts";');
 });
 
 test("multiple relations to distinct models each import once and appear in the relation map", () => {
@@ -103,8 +104,10 @@ test("multiple relations to distinct models each import once and appear in the r
     "../client",
   );
 
-  expect(file.content).toContain('import type { UserFactoryBase } from "./User.ts";');
-  expect(file.content).toContain('import type { CategoryFactoryBase } from "./Category.ts";');
+  expect(file.content).toContain('import type { UserFactoryBase, UserFactoryDefinition } from "./User.ts";');
+  expect(file.content).toContain(
+    'import type { CategoryFactoryBase, CategoryFactoryDefinition } from "./Category.ts";',
+  );
   expect(file.content).toContain(
     "type PostRelationFactories = {\n" +
       "  author: FactoryValue<UserFactoryBase>;\n" +
@@ -125,7 +128,7 @@ test("two relations to the same model import that base only once", () => {
     "../client",
   );
 
-  const imports = file.content.match(/import type \{ UserFactoryBase \} from "\.\/User\.ts";/g);
+  const imports = file.content.match(/import type \{ UserFactoryBase, UserFactoryDefinition \} from "\.\/User\.ts";/g);
   expect(imports).toHaveLength(1);
 });
 
@@ -139,7 +142,56 @@ test("a self-relation widens the field without importing the model's own base", 
   );
 
   expect(file.content).toContain("parent: FactoryValue<CategoryFactoryBase>;");
-  expect(file.content).not.toContain('import type { CategoryFactoryBase } from "./Category.ts";');
+  expect(file.content).not.toContain(
+    'import type { CategoryFactoryBase, CategoryFactoryDefinition } from "./Category.ts";',
+  );
+});
+
+test("a to-one relation emits a forX method whose overloads grow TResult and whose body bakes the id field", () => {
+  const post = modelFixture({
+    name: "Post",
+    fields: [fieldFixture({ name: "author", kind: "object", type: "User", relationName: "Author" })],
+  });
+  const user = modelFixture({ name: "User", fields: [fieldFixture({ name: "id", type: "String", isId: true })] });
+
+  const file = emitModelFactoryFile(post, "../client", [post, user]);
+
+  expect(file.content).toContain(
+    "  forAuthor<TChild>(factory: UserFactoryBase<TChild>): PostFactoryBase<TResult & { author: TChild }>;",
+  );
+  expect(file.content).toContain(
+    "  forAuthor(arg: UserModel | Partial<UserFactoryDefinition>): PostFactoryBase<TResult & { author: UserModel }>;",
+  );
+  expect(file.content).toContain('    return this.declareToOne("author", "User", "id", "forAuthor", arg);');
+});
+
+test("a to-many relation emits a hasX method with count, factory, list, and array forms and imports ListFactory", () => {
+  const user = modelFixture({
+    name: "User",
+    fields: [fieldFixture({ name: "posts", kind: "object", type: "Post", isList: true, relationName: "Author" })],
+  });
+  const post = modelFixture({
+    name: "Post",
+    fields: [
+      fieldFixture({ name: "id", type: "Int", isId: true }),
+      fieldFixture({ name: "author", kind: "object", type: "User", relationName: "Author" }),
+    ],
+  });
+
+  const file = emitModelFactoryFile(user, "../client", [user, post]);
+
+  expect(file.content).toContain(
+    'import { Factory, type FactoryValue, type ListFactory } from "prisma-factorio/factories";',
+  );
+  expect(file.content).toContain(
+    "  hasPosts(count: number, overrides?: Partial<PostFactoryDefinition>): UserFactoryBase<TResult & { posts: PostModel[] }>;",
+  );
+  expect(file.content).toContain(
+    "  hasPosts<TChild>(factories: PostFactoryBase<TChild>[]): UserFactoryBase<TResult & { posts: TChild[] }>;",
+  );
+  // The baked inverse field is the child's belongsTo that points back at the
+  // parent, dropped from each child so the nesting does not re-create it.
+  expect(file.content).toContain('    return this.declareToMany("posts", "Post", "author", arg, overrides);');
 });
 
 test("the emitted file imports Factory from the prisma-factorio runtime", () => {

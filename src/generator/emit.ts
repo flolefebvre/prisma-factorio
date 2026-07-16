@@ -86,14 +86,18 @@ function detectClientOutputDir(otherGenerators: readonly GeneratorConfig[]): str
  * @example
  * emitModelFactoryFile(model, "../client").path; // "User.ts" for a model named User
  */
-export function emitModelFactoryFile(model: DMMF.Model, clientImportDir: string): GeneratedFile {
+export function emitModelFactoryFile(
+  model: DMMF.Model,
+  clientImportDir: string,
+  models: readonly DMMF.Model[] = [model],
+): GeneratedFile {
   const createInput = `${model.name}CreateInput`;
   const modelType = `${model.name}Model`;
   const relations = model.fields.filter((field) => field.kind === "object");
   const content =
     relations.length === 0
       ? emitPlainBase(model, createInput, modelType, clientImportDir)
-      : emitRelationalBase(model, relations, createInput, modelType, clientImportDir);
+      : emitRelationalBase(model, relations, createInput, modelType, clientImportDir, models);
   return { path: `${model.name}.ts`, content };
 }
 
@@ -108,51 +112,134 @@ export abstract class ${model.name}FactoryBase extends Factory<${createInput}, $
 `;
 }
 
-// A relational base pins a third Factory generic: a homomorphic mapped type
+// What one relation contributes to the base: how its magic method is named and
+// typed, and the runtime metadata baked into that method's body.
+interface RelationMeta {
+  field: string;
+  target: string;
+  isList: boolean;
+  method: string;
+  idField: string;
+  inverseField: string;
+}
+
+function relationMeta(field: DMMF.Field, models: readonly DMMF.Model[]): RelationMeta {
+  const target = models.find((model) => model.name === field.type);
+  const prefix = field.isList ? "has" : "for";
+  return {
+    field: field.name,
+    target: field.type,
+    isList: field.isList,
+    method: `${prefix}${capitalize(field.name)}`,
+    idField: target?.fields.find((candidate) => candidate.isId)?.name ?? "id",
+    inverseField:
+      target?.fields.find(
+        (candidate) =>
+          candidate.kind === "object" && candidate.relationName === field.relationName && candidate.name !== field.name,
+      )?.name ?? "",
+  };
+}
+
+// A relational base pins the third Factory generic — a homomorphic mapped type
 // over the CreateInput that widens each relation field to also accept a
-// FactoryValue of the related model's factory, preserving the field's
-// optionality so a to-many relation stays optional in the definition.
+// FactoryValue of the related model's factory — plus a fourth `TResult` generic
+// the magic methods thread the built relation tree through. It emits `forX` per
+// to-one relation and `hasX` per to-many, named from the schema's relation
+// fields.
 function emitRelationalBase(
   model: DMMF.Model,
   relations: readonly DMMF.Field[],
   createInput: string,
   modelType: string,
   clientImportDir: string,
+  models: readonly DMMF.Model[],
 ): string {
-  const relationImports = relatedFactoryImports(model, relations);
+  const metas = relations.map((field) => relationMeta(field, models));
   const definition = `${model.name}FactoryDefinition`;
   const relationMap = `${model.name}RelationFactories`;
   const mapEntries = relations.map((field) => `  ${field.name}: FactoryValue<${field.type}FactoryBase>;`).join("\n");
+  const runtimeImport = metas.some((meta) => meta.isList)
+    ? `import { Factory, type FactoryValue, type ListFactory } from "prisma-factorio/factories";`
+    : `import { Factory, type FactoryValue } from "prisma-factorio/factories";`;
+  const methods = metas.map((meta) => emitRelationMethod(model.name, meta)).join("\n\n");
   return `${GENERATED_FILE_MARKER}
-import { Factory, type FactoryValue } from "prisma-factorio/factories";
-import type { ${createInput}, ${modelType} } from "${clientImportDir}/models.ts";
-${relationImports}
+${runtimeImport}
+import type { ${clientTypeNames(model, relations).join(", ")} } from "${clientImportDir}/models.ts";
+${relatedFactoryImports(model, relations)}
 type ${relationMap} = {
 ${mapEntries}
 };
 
-type ${definition} = {
+export type ${definition} = {
   [K in keyof ${createInput}]: K extends keyof ${relationMap}
     ? ${createInput}[K] | ${relationMap}[K]
     : ${createInput}[K];
 };
 
-export abstract class ${model.name}FactoryBase extends Factory<
+export abstract class ${model.name}FactoryBase<TResult = ${modelType}> extends Factory<
   ${createInput},
   ${modelType},
-  ${definition}
+  ${definition},
+  TResult
 > {
   protected readonly prismaDelegate = "${delegateName(model.name)}";
+
+${methods}
 }
 `;
 }
 
-// Type-only imports of the related factory bases, one per distinct related
-// model in first-appearance order. The model's own base is skipped: a
-// self-relation references a class declared in this same file.
+// The `forX` (to-one) or `hasX` (to-many) method for one relation: typed
+// overloads that grow `TResult` by the built relation, over a single
+// implementation delegating to the runtime with the schema metadata baked in.
+function emitRelationMethod(modelName: string, meta: RelationMeta): string {
+  const self = `${modelName}FactoryBase`;
+  const factoryBase = `${meta.target}FactoryBase`;
+  const definition = `${meta.target}FactoryDefinition`;
+  const model = `${meta.target}Model`;
+  if (meta.isList) {
+    return `  ${meta.method}(count: number, overrides?: Partial<${definition}>): ${self}<TResult & { ${meta.field}: ${model}[] }>;
+  ${meta.method}<TChild>(
+    factory: ${factoryBase}<TChild> | ListFactory<${meta.target}CreateInput, ${model}, ${definition}, TChild>,
+  ): ${self}<TResult & { ${meta.field}: TChild[] }>;
+  ${meta.method}<TChild>(factories: ${factoryBase}<TChild>[]): ${self}<TResult & { ${meta.field}: TChild[] }>;
+  ${meta.method}(arg: unknown, overrides?: unknown): unknown {
+    return this.declareToMany("${meta.field}", "${meta.target}", "${meta.inverseField}", arg, overrides);
+  }`;
+  }
+  return `  ${meta.method}<TChild>(factory: ${factoryBase}<TChild>): ${self}<TResult & { ${meta.field}: TChild }>;
+  ${meta.method}(arg: ${model} | Partial<${definition}>): ${self}<TResult & { ${meta.field}: ${model} }>;
+  ${meta.method}(arg: unknown): unknown {
+    return this.declareToOne("${meta.field}", "${meta.target}", "${meta.idField}", "${meta.method}", arg);
+  }`;
+}
+
+// Every client type name the file references: the model's own CreateInput and
+// Model, plus each distinct related model's CreateInput and Model, deduplicated
+// in first-appearance order.
+function clientTypeNames(model: DMMF.Model, relations: readonly DMMF.Field[]): string[] {
+  const names = [`${model.name}CreateInput`, `${model.name}Model`];
+  for (const target of distinctRelatedModels(model, relations)) {
+    names.push(`${target}CreateInput`, `${target}Model`);
+  }
+  return names;
+}
+
+// Type-only imports of the related factory bases and their definition types,
+// one per distinct related model in first-appearance order. The model's own
+// base is skipped: a self-relation references types declared in this same file.
 function relatedFactoryImports(model: DMMF.Model, relations: readonly DMMF.Field[]): string {
-  const relatedModels = [...new Set(relations.map((field) => field.type))].filter((name) => name !== model.name);
-  return relatedModels.map((name) => `import type { ${name}FactoryBase } from "./${name}.ts";\n`).join("");
+  return distinctRelatedModels(model, relations)
+    .map((name) => `import type { ${name}FactoryBase, ${name}FactoryDefinition } from "./${name}.ts";\n`)
+    .join("");
+}
+
+function distinctRelatedModels(model: DMMF.Model, relations: readonly DMMF.Field[]): string[] {
+  return [...new Set(relations.map((field) => field.type))].filter((name) => name !== model.name);
+}
+
+function capitalize(name: string): string {
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 // The Prisma client exposes each model as a delegate property named with the
@@ -228,6 +315,8 @@ export function emitFactoryFiles(params: {
   clientOutput?: string;
 }): GeneratedFile[] {
   const clientImportDir = resolveClientImportDir(params);
-  const modelFiles = params.datamodel.models.map((model) => emitModelFactoryFile(model, clientImportDir));
+  const modelFiles = params.datamodel.models.map((model) =>
+    emitModelFactoryFile(model, clientImportDir, params.datamodel.models),
+  );
   return [...modelFiles, emitBarrelFile(params.datamodel.models, clientImportDir)];
 }

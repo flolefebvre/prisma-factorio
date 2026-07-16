@@ -131,6 +131,26 @@ export function resolveRegisteredFactory(modelName: string): Factory<unknown, un
 }
 
 /**
+ * Thrown when a `forX(overrides)` call has no default factory to override: the
+ * factory's definition holds plain data (or nothing) for that relation instead
+ * of a factory-as-value. The message names the relation and how to fix it.
+ *
+ * @example
+ * // Post's definition sets `author` to a connect object, not a factory:
+ * expect(() => PostFactory.new().forAuthor({ name: "X" }).make()).toThrow(RelationDefaultFactoryError);
+ */
+export class RelationDefaultFactoryError extends Error {
+  constructor(field: string, methodName: string) {
+    super(
+      `Cannot apply overrides through ${methodName}(): the definition value for relation "${field}" is ` +
+        `not a factory, so there is no default factory to apply the overrides to. Set "${field}" to a ` +
+        `factory-as-value in the definition, or pass a factory or an existing row to ${methodName}() instead.`,
+    );
+    this.name = "RelationDefaultFactoryError";
+  }
+}
+
+/**
  * A relation field's value inside a {@link Factory.definition}: the related
  * model's factory directly, or a thunk returning it. The thunk form exists
  * only to break a TypeScript import cycle between two factory files; mutual
@@ -168,10 +188,24 @@ export class FactoryCycleError extends Error {
 }
 
 /**
+ * The parent's evaluated attributes, passed as the second argument to a child's
+ * state closures when the child is born through a magic relationship method. A
+ * factory cannot know which parent will nest it, so this defaults to a loose
+ * record; annotate the parameter with the parent's `CreateInput` at the call
+ * site to recover types. At the top level (no nesting) it is an empty object.
+ *
+ * @example
+ * PostFactory.new().state((attrs, parent: UserCreateInput) => ({ title: `by ${parent.name}` }));
+ */
+export type ParentAttributes = Record<string, unknown>;
+
+/**
  * What {@link Factory.state} (and the overrides argument of
  * {@link Factory.make} / {@link Factory.create}) accepts: a partial of the
  * factory's definition type, or a closure computing one from the attributes
- * evaluated so far in the chain (definition plus earlier states). For a model
+ * evaluated so far in the chain (definition plus earlier states). The closure's
+ * second argument is the {@link ParentAttributes} of the nesting parent, only
+ * populated for a child born through a magic relationship method. For a model
  * with relations the definition type widens each relation field to also accept
  * a {@link FactoryValue}, so a closure may observe an unresolved factory there.
  *
@@ -179,11 +213,12 @@ export class FactoryCycleError extends Error {
  * UserFactory.new().state({ name: "Abigail Otwell" });
  * UserFactory.new().state((attrs) => ({ email: `${attrs.name}@example.com` }));
  */
-export type StateInput<TCreateInput> = Partial<TCreateInput> | ((attributes: TCreateInput) => Partial<TCreateInput>);
+export type StateInput<TCreateInput, TParent = ParentAttributes> =
+  Partial<TCreateInput> | ((attributes: TCreateInput, parent: TParent) => Partial<TCreateInput>);
 
-function isStateClosure<TCreateInput>(
-  input: StateInput<TCreateInput>,
-): input is (attributes: TCreateInput) => Partial<TCreateInput> {
+function isStateClosure<TCreateInput, TParent>(
+  input: StateInput<TCreateInput, TParent>,
+): input is (attributes: TCreateInput, parent: TParent) => Partial<TCreateInput> {
   return typeof input === "function";
 }
 
@@ -205,11 +240,11 @@ export type SequenceInput<TCreateInput> =
 // concrete factories would stop satisfying the Factory<unknown, unknown>
 // constraint of Factory.new().
 type PipelineStep<TCreateInput> = {
-  step(attributes: TCreateInput, index: number): Partial<TCreateInput>;
+  step(attributes: TCreateInput, index: number, parent: ParentAttributes): Partial<TCreateInput>;
 }["step"];
 
 function toPipelineStep<TCreateInput>(input: StateInput<TCreateInput>): PipelineStep<TCreateInput> {
-  return (attributes) => (isStateClosure(input) ? input(attributes) : input);
+  return (attributes, _index, parent) => (isStateClosure(input) ? input(attributes, parent) : input);
 }
 
 function sequenceStepAt<TCreateInput>(steps: SequenceInput<TCreateInput>): (index: number) => Partial<TCreateInput> {
@@ -234,8 +269,34 @@ function assertZeroArgConstructor(ctor: new () => unknown): void {
   }
 }
 
-interface DelegateLike<TModel> {
-  create(args: { data: unknown }): Promise<TModel>;
+interface DelegateLike {
+  create(args: { data: unknown; include?: unknown }): Promise<unknown>;
+}
+
+// A relation declared on the chain by a magic method (`hasX` / `forX`), carried
+// through forks alongside the state pipeline. `build` turns the parent's
+// evaluated attributes into the Prisma nested-write value for `field`; `include`
+// is what that field contributes to the create call's `include`, so the
+// declared relation reaches the typed return.
+interface RelationDeclaration {
+  field: string;
+  include: unknown;
+  build(parentAttributes: Record<string, unknown>, lineage: ReadonlySet<FactoryConstructor>): unknown;
+}
+
+// Merges the `include` contributions of several children of one to-many
+// relation into a single value: `true` when no child loaded sub-relations,
+// otherwise a `{ include }` whose map unions every child's loaded relations.
+function mergeIncludeValues(values: readonly unknown[]): unknown {
+  const merged: Record<string, unknown> = {};
+  let nested = false;
+  for (const value of values) {
+    if (typeof value === "object" && value !== null && "include" in value) {
+      nested = true;
+      Object.assign(merged, (value as { include: Record<string, unknown> }).include);
+    }
+  }
+  return nested ? { include: merged } : true;
 }
 
 // A factory subclass constructor, keyed by identity for cycle detection and
@@ -298,7 +359,7 @@ function resolveClient(): object {
  * }
  * const user = await UserFactory.new().create();
  */
-export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput> {
+export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, TResult = TModel> {
   /**
    * Name of the Prisma client delegate {@link Factory.create} persists
    * through — the model name with its first letter lowercased. Baked into
@@ -310,6 +371,8 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput> 
   protected abstract readonly prismaDelegate: string;
 
   private states: readonly PipelineStep<TDefinition>[] = [];
+
+  private relations: readonly RelationDeclaration[] = [];
 
   /**
    * Declares the default attributes of the model. Called once per
@@ -376,16 +439,22 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput> 
   }
 
   private fork(step: PipelineStep<TDefinition>): this {
-    // Fresh construction installs subclass class fields on the copy itself —
-    // arrow-function named states stay bound to the copy and native #private
-    // fields keep working. `states` is the only field to carry over: bulk-
-    // assigning the rest would copy arrow fields still bound to the receiver.
-    // Fresh construction only holds when the subclass takes no constructor
-    // arguments, so the guard fires here, the first moment a fork happens.
+    return this.forkInto([...this.states, step], this.relations);
+  }
+
+  // Forks by fresh construction, carrying only the chain state — the state
+  // pipeline and the declared relations. Fresh construction installs subclass
+  // class fields on the copy itself, so arrow-function named states stay bound
+  // to the copy and native #private fields keep working; bulk-copying the rest
+  // would carry arrow fields still bound to the receiver. It only holds when the
+  // subclass takes no constructor arguments, so the guard fires here, the first
+  // moment a fork happens.
+  private forkInto(states: readonly PipelineStep<TDefinition>[], relations: readonly RelationDeclaration[]): this {
     const ctor = this.constructor as new () => this;
     assertZeroArgConstructor(ctor);
     const copy = new ctor();
-    copy.states = [...this.states, step];
+    copy.states = states;
+    copy.relations = relations;
     return copy;
   }
 
@@ -403,28 +472,57 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput> 
   }
 
   private makeAt(index: number, overrides?: StateInput<TDefinition>): TCreateInput {
-    return this.resolve(this.evaluate(index, overrides), new Set([this.constructor as FactoryConstructor]));
+    return this.buildInput(index, overrides, {}, new Set([this.constructor as FactoryConstructor]));
   }
 
-  private evaluate(index: number, overrides?: StateInput<TDefinition>): TDefinition {
+  // The single build path: evaluate the pipeline (threading the nesting parent
+  // into closures), fold in the declared magic relations, then resolve any
+  // remaining factory-as-values. `lineage` already contains this factory's
+  // constructor on entry, so a definition cycling straight back to it is caught.
+  private buildInput(
+    index: number,
+    overrides: StateInput<TDefinition> | undefined,
+    parent: ParentAttributes,
+    lineage: ReadonlySet<FactoryConstructor>,
+  ): TCreateInput {
+    const attributes = this.evaluate(index, overrides, parent);
+    const withRelations = this.applyRelations(attributes, lineage);
+    return this.resolve(withRelations, lineage);
+  }
+
+  private evaluate(
+    index: number,
+    overrides: StateInput<TDefinition> | undefined,
+    parent: ParentAttributes,
+  ): TDefinition {
     const pipeline = overrides === undefined ? this.states : [...this.states, toPipelineStep(overrides)];
     return pipeline.reduce<TDefinition>(
-      (attributes, step) => ({ ...attributes, ...step(attributes, index) }),
+      (attributes, step) => ({ ...attributes, ...step(attributes, index, parent) }),
       this.definition(),
     );
   }
 
-  // Runs the pipeline afresh under an inherited resolution lineage; called on a
-  // child factory only after its constructor was added to `lineage`, so a
-  // definition cycling back to it is caught before recursing again.
-  private makeUnder(lineage: ReadonlySet<FactoryConstructor>): TCreateInput {
-    return this.resolve(this.evaluate(0, undefined), lineage);
+  // Overwrites each magic-declared relation field with its Prisma nested-write
+  // value. Running before resolve, this both short-circuits the definition's
+  // own factory-as-value for that field (it is replaced by plain write data the
+  // resolver leaves untouched) and hands each child the parent's evaluated
+  // attributes.
+  private applyRelations(attributes: TDefinition, lineage: ReadonlySet<FactoryConstructor>): TDefinition {
+    if (this.relations.length === 0) {
+      return attributes;
+    }
+    const merged = { ...attributes } as Record<string, unknown>;
+    for (const relation of this.relations) {
+      merged[relation.field] = relation.build(merged, lineage);
+    }
+    return merged as TDefinition;
   }
 
   // Turns the evaluated definition into a CreateInput by replacing every
   // top-level factory-as-value with its nested `{ create: … }`. Values the
-  // pipeline already resolved to plain data (a caller-supplied relation) are
-  // not factories, so they pass through untouched — the short-circuit rule.
+  // pipeline already resolved to plain data (a caller-supplied relation, or a
+  // magic-declared relation) are not factories, so they pass through untouched
+  // — the short-circuit rule.
   private resolve(attributes: TDefinition, lineage: ReadonlySet<FactoryConstructor>): TCreateInput {
     const source = attributes as Record<string, unknown>;
     const resolved: Record<string, unknown> = {};
@@ -439,11 +537,148 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput> 
     if (factory === undefined) {
       return value;
     }
+    return { create: this.buildChild(factory, {}, undefined, 0, lineage) };
+  }
+
+  // Builds one nested child input under an extended lineage: guards the cycle,
+  // runs the child's own full build with `parent` as its closures' second
+  // argument, then drops `inverseField` so a child born through a to-many magic
+  // method does not re-create the parent it is already nested under.
+  private buildChild(
+    factory: Factory<unknown, unknown, unknown>,
+    parent: ParentAttributes,
+    inverseField: string | undefined,
+    index: number,
+    lineage: ReadonlySet<FactoryConstructor>,
+  ): unknown {
     const constructor = factory.constructor as FactoryConstructor;
     if (lineage.has(constructor)) {
       throw new FactoryCycleError([...lineage, constructor]);
     }
-    return { create: factory.makeUnder(new Set(lineage).add(constructor)) };
+    const input = factory.buildInput(index, undefined, parent, new Set(lineage).add(constructor)) as Record<
+      string,
+      unknown
+    >;
+    if (inverseField !== undefined && inverseField in input) {
+      // Drop the child's back-reference to this parent: the nesting already
+      // links them, so keeping the child's own factory-as-value there would
+      // create a second parent.
+      const withoutBackReference: Record<string, unknown> = {};
+      for (const key of Object.keys(input)) {
+        if (key !== inverseField) {
+          withoutBackReference[key] = input[key];
+        }
+      }
+      return withoutBackReference;
+    }
+    return input;
+  }
+
+  // Appends a to-one relation (`forX`) to the chain. The value is resolved at
+  // build time: an existing row connects, a factory nests a create, and a plain
+  // overrides object is applied as a state to the definition's factory-as-value
+  // for that relation.
+  protected declareToOne(field: string, targetModel: string, idField: string, methodName: string, arg: unknown): this {
+    const include = arg instanceof Factory ? arg.includeValue() : true;
+    const declaration: RelationDeclaration = {
+      field,
+      include,
+      build: (parentAttributes, lineage) => this.buildToOne(field, idField, methodName, arg, parentAttributes, lineage),
+    };
+    return this.forkInto(this.states, [...this.relations, declaration]);
+  }
+
+  private buildToOne(
+    field: string,
+    idField: string,
+    methodName: string,
+    arg: unknown,
+    parentAttributes: Record<string, unknown>,
+    lineage: ReadonlySet<FactoryConstructor>,
+  ): unknown {
+    if (arg instanceof Factory) {
+      return { create: this.buildChild(arg, parentAttributes, undefined, 0, lineage) };
+    }
+    const record = arg as Record<string, unknown>;
+    if (idField in record && record[idField] !== undefined) {
+      return { connect: { [idField]: record[idField] } };
+    }
+    const defaultFactory = asFactory(parentAttributes[field]);
+    if (defaultFactory === undefined) {
+      throw new RelationDefaultFactoryError(field, methodName);
+    }
+    const configured = defaultFactory.state(record);
+    return { create: this.buildChild(configured, parentAttributes, undefined, 0, lineage) };
+  }
+
+  // Appends a to-many relation (`hasX`) to the chain. `inverseField` is the
+  // child's back-reference to this parent, dropped from each built child.
+  protected declareToMany(
+    field: string,
+    targetModel: string,
+    inverseField: string,
+    arg: unknown,
+    overrides: unknown,
+  ): this {
+    const include = this.toManyIncludeValue(arg);
+    const declaration: RelationDeclaration = {
+      field,
+      include,
+      build: (parentAttributes, lineage) =>
+        this.buildToMany(targetModel, inverseField, arg, overrides, parentAttributes, lineage),
+    };
+    return this.forkInto(this.states, [...this.relations, declaration]);
+  }
+
+  private buildToMany(
+    targetModel: string,
+    inverseField: string,
+    arg: unknown,
+    overrides: unknown,
+    parentAttributes: Record<string, unknown>,
+    lineage: ReadonlySet<FactoryConstructor>,
+  ): unknown {
+    const requests = resolveChildRequests(targetModel, arg, overrides);
+    const create = requests.map((request) =>
+      this.buildChild(request.factory, parentAttributes, inverseField, request.index, lineage),
+    );
+    return { create };
+  }
+
+  // What a to-many relation's declared children contribute to the create call's
+  // `include`: `true` for the registry short forms and for children with no
+  // magic chain of their own, otherwise the child chain's own nested include.
+  private toManyIncludeValue(arg: unknown): unknown {
+    if (arg instanceof ListFactory) {
+      return arg.underlyingFactory().includeValue();
+    }
+    if (arg instanceof Factory) {
+      return arg.includeValue();
+    }
+    if (Array.isArray(arg)) {
+      return mergeIncludeValues(arg.map((factory: Factory<unknown, unknown, unknown>) => factory.includeValue()));
+    }
+    return true;
+  }
+
+  // This chain's contribution as a nested include value: `true` when it declared
+  // no relations, otherwise `{ include: <its relation map> }`.
+  private includeValue(): unknown {
+    const map = this.includeMap();
+    return map === undefined ? true : { include: map };
+  }
+
+  // The `include` map of the relations this chain declared, or undefined when it
+  // declared none.
+  private includeMap(): Record<string, unknown> | undefined {
+    if (this.relations.length === 0) {
+      return undefined;
+    }
+    const map: Record<string, unknown> = {};
+    for (const relation of this.relations) {
+      map[relation.field] = relation.include;
+    }
+    return map;
   }
 
   /**
@@ -456,7 +691,7 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput> 
    * @example
    * const users = await UserFactory.new().count(3).create(); // User[]
    */
-  count(n: number): ListFactory<TCreateInput, TModel, TDefinition> {
+  count(n: number): ListFactory<TCreateInput, TModel, TDefinition, TResult> {
     if (!Number.isInteger(n) || n < 0) {
       throw new TypeError(`count() needs a non-negative integer, got ${String(n)}.`);
     }
@@ -479,22 +714,27 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput> 
    * @example
    * const user = await UserFactory.new().create({ name: "Abigail" }); // row persisted via prisma.user.create
    */
-  async create(overrides?: StateInput<TDefinition>): Promise<TModel> {
+  async create(overrides?: StateInput<TDefinition>): Promise<TResult> {
     return this.createAt(0, overrides);
   }
 
-  private async createAt(index: number, overrides?: StateInput<TDefinition>): Promise<TModel> {
+  private async createAt(index: number, overrides?: StateInput<TDefinition>): Promise<TResult> {
     // The registry cannot carry concrete client types; the generated base
-    // pins prismaDelegate and TModel to the same model, so this single cast
+    // pins prismaDelegate and TResult to the same model, so this single cast
     // is the whole untyped boundary.
-    const delegates = resolveClient() as Record<string, DelegateLike<TModel> | undefined>;
+    const delegates = resolveClient() as Record<string, DelegateLike | undefined>;
     const delegate = delegates[this.prismaDelegate];
     if (delegate === undefined) {
       throw new TypeError(
         `The registered Prisma client has no "${this.prismaDelegate}" delegate; pass the client generated for this schema to initPrismaFactorio.`,
       );
     }
-    return delegate.create({ data: this.makeAt(index, overrides) });
+    const data = this.makeAt(index, overrides);
+    // Every relation the chain declared is loaded back, so the persisted row
+    // carries exactly the tree the return type promises.
+    const include = this.includeMap();
+    const args = include === undefined ? { data } : { data, include };
+    return delegate.create(args) as Promise<TResult>;
   }
 }
 
@@ -508,13 +748,36 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput> 
  * @example
  * const users = await UserFactory.new().count(3).create(); // User[]
  */
-export class ListFactory<TCreateInput, TModel, TDefinition = TCreateInput> {
+export class ListFactory<TCreateInput, TModel, TDefinition = TCreateInput, TResult = TModel> {
   constructor(
-    private readonly factory: Factory<TCreateInput, TModel, TDefinition>,
+    private readonly factory: Factory<TCreateInput, TModel, TDefinition, TResult>,
     private readonly instances: number,
     private readonly makeAt: (index: number, overrides?: StateInput<TDefinition>) => TCreateInput,
-    private readonly createAt: (index: number, overrides?: StateInput<TDefinition>) => Promise<TModel>,
+    private readonly createAt: (index: number, overrides?: StateInput<TDefinition>) => Promise<TResult>,
   ) {}
+
+  /**
+   * The underlying single factory, used by a parent's to-many magic method to
+   * build this list as nested children. Internal to the runtime.
+   *
+   * @example
+   * UserFactory.new().hasPosts(PostFactory.new().count(3)); // reads the list's factory
+   */
+  underlyingFactory(): Factory<TCreateInput, TModel, TDefinition, TResult> {
+    return this.factory;
+  }
+
+  /**
+   * How many instances this list produces, used alongside
+   * {@link ListFactory.underlyingFactory} when nesting the list as children.
+   * Internal to the runtime.
+   *
+   * @example
+   * UserFactory.new().hasPosts(PostFactory.new().count(3)); // reads the count 3
+   */
+  size(): number {
+    return this.instances;
+  }
 
   /**
    * Replaces how many instances the chain produces — the last count wins.
@@ -522,7 +785,7 @@ export class ListFactory<TCreateInput, TModel, TDefinition = TCreateInput> {
    * @example
    * UserFactory.new().count(5).count(2).make(); // 2 inputs
    */
-  count(n: number): ListFactory<TCreateInput, TModel, TDefinition> {
+  count(n: number): ListFactory<TCreateInput, TModel, TDefinition, TResult> {
     return this.factory.count(n);
   }
 
@@ -533,7 +796,7 @@ export class ListFactory<TCreateInput, TModel, TDefinition = TCreateInput> {
    * @example
    * UserFactory.new().count(3).state({ role: "admin" }).make();
    */
-  state(input: StateInput<TDefinition>): ListFactory<TCreateInput, TModel, TDefinition> {
+  state(input: StateInput<TDefinition>): ListFactory<TCreateInput, TModel, TDefinition, TResult> {
     return this.factory.state(input).count(this.instances);
   }
 
@@ -544,11 +807,11 @@ export class ListFactory<TCreateInput, TModel, TDefinition = TCreateInput> {
    * @example
    * UserFactory.new().count(10).sequence({ role: "admin" }, { role: "member" }).make();
    */
-  sequence(step: (index: number) => Partial<TDefinition>): ListFactory<TCreateInput, TModel, TDefinition>;
+  sequence(step: (index: number) => Partial<TDefinition>): ListFactory<TCreateInput, TModel, TDefinition, TResult>;
   sequence(
     ...values: [Partial<TDefinition>, ...Partial<TDefinition>[]]
-  ): ListFactory<TCreateInput, TModel, TDefinition>;
-  sequence(...steps: SequenceInput<TDefinition>): ListFactory<TCreateInput, TModel, TDefinition> {
+  ): ListFactory<TCreateInput, TModel, TDefinition, TResult>;
+  sequence(...steps: SequenceInput<TDefinition>): ListFactory<TCreateInput, TModel, TDefinition, TResult> {
     return this.factory.sequence(sequenceStepAt(steps)).count(this.instances);
   }
 
@@ -573,11 +836,45 @@ export class ListFactory<TCreateInput, TModel, TDefinition = TCreateInput> {
    * @example
    * const users = await prisma.$transaction(() => UserFactory.new().count(3).create());
    */
-  async create(overrides?: StateInput<TDefinition>): Promise<TModel[]> {
-    const rows: TModel[] = [];
+  async create(overrides?: StateInput<TDefinition>): Promise<TResult[]> {
+    const rows: TResult[] = [];
     for (let index = 0; index < this.instances; index += 1) {
       rows.push(await this.createAt(index, overrides));
     }
     return rows;
   }
+}
+
+interface ChildRequest {
+  factory: Factory<unknown, unknown, unknown>;
+  index: number;
+}
+
+// Normalizes a to-many magic method's argument into one build request per
+// child: a count draws from the registered default factory (with the uniform
+// overrides applied), a list factory expands to its instance count, a single
+// factory is one child, and an array is one child per element.
+function resolveChildRequests(targetModel: string, arg: unknown, overrides: unknown): ChildRequest[] {
+  if (typeof arg === "number") {
+    const base = applyChildOverrides(resolveRegisteredFactory(targetModel), overrides);
+    return Array.from({ length: arg }, (_unused, index) => ({ factory: base, index }));
+  }
+  if (arg instanceof ListFactory) {
+    const factory = arg.underlyingFactory() as Factory<unknown, unknown, unknown>;
+    return Array.from({ length: arg.size() }, (_unused, index) => ({ factory, index }));
+  }
+  if (arg instanceof Factory) {
+    return [{ factory: arg, index: 0 }];
+  }
+  if (Array.isArray(arg)) {
+    return (arg as Factory<unknown, unknown, unknown>[]).map((factory, index) => ({ factory, index }));
+  }
+  throw new TypeError("A to-many magic method expects a count, a factory, a list factory, or an array of factories.");
+}
+
+function applyChildOverrides(
+  factory: Factory<unknown, unknown, unknown>,
+  overrides: unknown,
+): Factory<unknown, unknown, unknown> {
+  return overrides === undefined ? factory : factory.state(overrides as StateInput<unknown>);
 }

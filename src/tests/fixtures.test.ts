@@ -2,7 +2,13 @@ import { expect, expectTypeOf, test, vi } from "vitest";
 import { FactoryCycleError, initPrismaFactorio, type StateInput } from "../factories/index.ts";
 import type { PrismaClient } from "./generated/client/client.ts";
 import { Role } from "./generated/client/enums.ts";
-import type { PostCreateInput, TagCreateInput, UserCreateInput, UserModel } from "./generated/client/models.ts";
+import type {
+  PostCreateInput,
+  PostModel,
+  TagCreateInput,
+  UserCreateInput,
+  UserModel,
+} from "./generated/client/models.ts";
 import { PostFactoryBase } from "./generated/prisma-factorio/Post.ts";
 import { TagFactoryBase } from "./generated/prisma-factorio/Tag.ts";
 // Imported through the generated barrel; `index.ts` is spelled out because
@@ -37,6 +43,18 @@ const postScalars = {
 class UserFactory extends UserFactoryBase {
   definition() {
     return { email: "ada@example.com", role: Role.ADMIN };
+  }
+
+  admin() {
+    return this.state({ role: Role.ADMIN });
+  }
+}
+
+// A Post whose required author belongsTo is covered by a factory-as-value, so
+// the magic `forAuthor` short forms have a default factory to build on.
+class PostFactory extends PostFactoryBase {
+  definition() {
+    return { ...postScalars, author: UserFactory.new() };
   }
 }
 
@@ -316,4 +334,62 @@ test("a definition-level cycle between two generated factories throws FactoryCyc
 
   expect(() => ChickenFactory.new().make()).toThrow(FactoryCycleError);
   expect(() => ChickenFactory.new().make()).toThrow(/ChickenFactory.*EggFactory.*ChickenFactory/);
+});
+
+test("forAuthor(overrides) builds on the definition's default author factory", () => {
+  const input = PostFactory.new().forAuthor({ name: "Jessica Archer" }).make();
+
+  expect(input.author).toEqual({ create: { email: "ada@example.com", role: Role.ADMIN, name: "Jessica Archer" } });
+});
+
+test("forAuthor(existingRow) connects the row by id and drops the default factory", () => {
+  const existing: UserModel = {
+    id: "00000000-0000-0000-0000-000000000009",
+    email: "grace@example.com",
+    name: "Grace",
+    role: Role.MEMBER,
+    backupRole: null,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  };
+
+  const input = PostFactory.new().forAuthor(existing).make();
+
+  expect(input.author).toEqual({ connect: { id: existing.id } });
+});
+
+test("forAuthor(factory) nests a create from the configured factory", () => {
+  const input = PostFactory.new()
+    .forAuthor(UserFactory.new().admin().state({ name: "Ada" }))
+    .make();
+
+  expect(input.author).toEqual({ create: { email: "ada@example.com", role: Role.ADMIN, name: "Ada" } });
+});
+
+test("a second same-model relation gets its own forReviewer method, distinct from forAuthor", () => {
+  const input = PostFactory.new()
+    .forAuthor({ name: "Author" })
+    .forReviewer({
+      id: "reviewer-1",
+      email: "r",
+      name: null,
+      role: Role.MEMBER,
+      backupRole: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    })
+    .make();
+
+  expect(input.author).toEqual({ create: { email: "ada@example.com", role: Role.ADMIN, name: "Author" } });
+  expect(input.reviewer).toEqual({ connect: { id: "reviewer-1" } });
+});
+
+test("forAuthor grows create()'s return type with the built relation; the bare chain stays PostModel", () => {
+  expectTypeOf(PostFactory.new().create()).resolves.toEqualTypeOf<PostModel>();
+  expectTypeOf(PostFactory.new().forAuthor({ name: "X" }).create()).resolves.toEqualTypeOf<
+    PostModel & { author: UserModel }
+  >();
+  expectTypeOf(PostFactory.new().forAuthor({ name: "X" }).forReviewer({ name: "Y" }).create()).resolves.toEqualTypeOf<
+    PostModel & { author: UserModel } & { reviewer: UserModel }
+  >();
 });

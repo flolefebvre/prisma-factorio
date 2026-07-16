@@ -6,6 +6,7 @@ import {
   initPrismaFactorio,
   PrismaFactorioNotInitializedError,
   registerFactories,
+  RelationDefaultFactoryError,
   resolveRegisteredFactory,
 } from "./index.ts";
 
@@ -703,6 +704,101 @@ test("create() persists the resolved nested create in a single delegate.create c
 
   expect(create).toHaveBeenCalledExactlyOnceWith({
     data: { title: "TDD by Example", author: { create: { name: "Kent Beck" } } },
+  });
+});
+
+// A hand-rolled to-one magic method mirroring the generated `forX`: it names
+// the relation field, the target model, its id field, and the method, exactly
+// as the generator bakes them.
+class MagicBookFactory extends Factory<AuthoredBookCreateInput, BookModel, AuthoredBookDefinition> {
+  protected readonly prismaDelegate = "book";
+
+  definition(): AuthoredBookDefinition {
+    return { title: "TDD", author: AuthorFactory.new() };
+  }
+
+  forAuthor(arg: AuthorModel | Partial<AuthorCreateInput> | AuthorFactory): this {
+    return this.declareToOne("author", "Author", "id", "forAuthor", arg);
+  }
+}
+
+test("forX(existingRow) connects the row by its id and never evaluates the definition factory", () => {
+  class ThrowingAuthorFactory extends Factory<AuthorCreateInput, AuthorModel> {
+    protected readonly prismaDelegate = "author";
+
+    definition(): AuthorCreateInput {
+      throw new Error("the definition factory must not be evaluated when an existing row is connected");
+    }
+  }
+  class ConnectingBookFactory extends Factory<AuthoredBookCreateInput, BookModel, AuthoredBookDefinition> {
+    protected readonly prismaDelegate = "book";
+
+    definition(): AuthoredBookDefinition {
+      return { title: "TDD", author: ThrowingAuthorFactory.new() };
+    }
+
+    forAuthor(arg: AuthorModel): this {
+      return this.declareToOne("author", "Author", "id", "forAuthor", arg);
+    }
+  }
+  const existing: AuthorModel = { id: 42, name: "Kent Beck", country: "USA" };
+
+  const input = ConnectingBookFactory.new().forAuthor(existing).make();
+
+  expect(input.author).toEqual({ connect: { id: 42 } });
+});
+
+test("forX(factory) nests a create built from the passed factory", () => {
+  const input = MagicBookFactory.new()
+    .forAuthor(AuthorFactory.new().state({ name: "Martin Fowler" }))
+    .make();
+
+  expect(input.author).toEqual({ create: { name: "Martin Fowler" } });
+});
+
+test("forX(overrides) applies the overrides as a state on the definition's factory-as-value", () => {
+  const input = MagicBookFactory.new().forAuthor({ country: "UK" }).make();
+
+  expect(input.author).toEqual({ create: { name: "Kent Beck", country: "UK" } });
+});
+
+test("forX(overrides) throws RelationDefaultFactoryError when the definition holds no factory for the relation", () => {
+  class PlainAuthorBookFactory extends Factory<AuthoredBookCreateInput, BookModel, AuthoredBookDefinition> {
+    protected readonly prismaDelegate = "book";
+
+    definition(): AuthoredBookDefinition {
+      return { title: "TDD", author: { connect: { id: 1 } } };
+    }
+
+    forAuthor(arg: Partial<AuthorCreateInput>): this {
+      return this.declareToOne("author", "Author", "id", "forAuthor", arg);
+    }
+  }
+
+  const build = () => PlainAuthorBookFactory.new().forAuthor({ country: "UK" }).make();
+
+  expect(build).toThrow(RelationDefaultFactoryError);
+  expect(build).toThrow(/relation "author"/);
+  expect(build).toThrow(/forAuthor\(\)/);
+});
+
+test("forX returns a copy: the receiver keeps the definition's own author", () => {
+  const base = MagicBookFactory.new();
+  const connected = base.forAuthor({ id: 7, name: "Erich", country: null });
+
+  expect(base.make().author).toEqual({ create: { name: "Kent Beck" } });
+  expect(connected.make().author).toEqual({ connect: { id: 7 } });
+});
+
+test("forX loads the relation into the create call's include so the return carries it", async () => {
+  const create = vi.fn(() => Promise.resolve(persistedBook));
+  initPrismaFactorio({ prisma: { book: { create } } });
+
+  await MagicBookFactory.new().forAuthor({ id: 9, name: "Grace", country: null }).create();
+
+  expect(create).toHaveBeenCalledExactlyOnceWith({
+    data: { title: "TDD", author: { connect: { id: 9 } } },
+    include: { author: true },
   });
 });
 
