@@ -90,6 +90,16 @@ model Tag {
   postTags    PostTag[]
 }
 
+// Self-relation: a category nests categories, so the generated factory's magic
+// methods (`hasChildren`, `forParent`) target the model's own class.
+model Category {
+  id       Int        @id @default(autoincrement())
+  name     String
+  parentId Int?
+  parent   Category?  @relation("Subcategories", fields: [parentId], references: [id])
+  children Category[] @relation("Subcategories")
+}
+
 // Explicit join model for the Post/Tag many-to-many: its two required
 // belongsTo relations are ordinary to-one magic-method targets (forPost /
 // forTag) and `active` / `note` are pivot columns like any other field. The

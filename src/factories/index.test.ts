@@ -1034,3 +1034,59 @@ test("hasX(n) without a registered factory throws FactoryNotRegisteredError at b
   expect(() => FreshParentFactory.new().hasKids(2).make()).toThrow(fresh.FactoryNotRegisteredError);
   expect(() => FreshParentFactory.new().hasKids(2).make()).toThrow(/model "UnregisteredChild"/);
 });
+
+// A hand-rolled self-relation, the shape the generator emits for a tree model
+// (Category.children / Category.parent both target Category).
+interface CategoryCreateInput {
+  name: string;
+  children?: unknown;
+  parent?: unknown;
+}
+class CategoryFactory extends Factory<CategoryCreateInput, { id: number }> {
+  protected readonly prismaDelegate = "category";
+
+  definition(): CategoryCreateInput {
+    return { name: "root" };
+  }
+
+  hasChildren(arg: unknown, overrides?: unknown): this {
+    return this.declareToMany("children", "Category", "parent", arg, overrides);
+  }
+
+  forParent(arg: unknown): this {
+    return this.declareToOne("parent", "Category", "id", "forParent", arg);
+  }
+}
+
+test("a self-relation magic method nests its own class without a false cycle error", () => {
+  registerFactories({ Category: CategoryFactory });
+
+  const withChildren = CategoryFactory.new().hasChildren(2).make() as {
+    children: { create: { name: string }[] };
+  };
+  const withParent = CategoryFactory.new()
+    .forParent(CategoryFactory.new().state({ name: "ancestor" }))
+    .make() as { parent: { create: { name: string } } };
+
+  expect(withChildren.children.create).toEqual([{ name: "root" }, { name: "root" }]);
+  expect(withParent.parent.create).toEqual({ name: "ancestor" });
+});
+
+test("a genuine definition-level self-cycle is still caught even reached through a magic child", () => {
+  class SelfDefinitionCategoryFactory extends Factory<CategoryCreateInput, { id: number }> {
+    protected readonly prismaDelegate = "category";
+
+    definition(): CategoryCreateInput {
+      // `sibling` is a non-back-reference self factory-as-value: an unbounded
+      // definition cycle that must still throw, even for a magic child.
+      return { name: "n", parent: SelfDefinitionCategoryFactory.new() };
+    }
+
+    hasChildren(arg: unknown): this {
+      return this.declareToMany("children", "Category", "unrelated", arg, undefined);
+    }
+  }
+  registerFactories({ Category: SelfDefinitionCategoryFactory });
+
+  expect(() => SelfDefinitionCategoryFactory.new().hasChildren(1).make()).toThrow(FactoryCycleError);
+});

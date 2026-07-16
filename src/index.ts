@@ -1,5 +1,6 @@
 export const PACKAGE_NAME = "prisma-factorio";
 export {
+  FactoryCycleError,
   FactoryNotRegisteredError,
   initPrismaFactorio,
   ListFactory,

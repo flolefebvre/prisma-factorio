@@ -14,6 +14,10 @@ For every relation field in the schema the generator emits a typed method on tha
 
 - **Chaining order.** A magic method returns the base type carrying the accumulated `TResult`, not the concrete user subclass, so user-defined named states must come before magic methods in a chain (`UserFactory.new().admin().hasPosts(3)`, not the reverse). This mirrors the existing "named states before `.count()`" constraint of `ListFactory`.
 
+- **`forX(existing-row)` vs `forX(overrides)` distinguished by the id field.** An argument object carrying the target model's id field (with a defined value) is treated as an existing row to connect; otherwise it is applied as overrides on the default factory. A consequence: passing overrides that happen to set the id resolves to a connect, not a create — set the id through the built factory instead.
+
+- **Self-relations nest their own class.** A magic-method child is a finite, caller-written node, so it starts a fresh resolution lineage: `hasChildren` / `forParent` on a tree model legitimately build the same class, while the child's own definition factory-as-values are still cycle-checked against that fresh lineage. Only definition-driven factory-as-value resolution (which auto-expands) accumulates the ancestor lineage that raises `FactoryCycleError`.
+
 - **Explicit join models get no dedicated API.** A join model (pivot columns, two required belongsTo) is an ordinary model with its own factory; its belongsTo relations are factory-as-values and its `forX` methods attach existing rows. There is no `hasAttached` or join-model heuristic.
 
 ## Consequences

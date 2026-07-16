@@ -5,6 +5,7 @@ import type { PrismaClient } from "./generated/client/client.ts";
 import type { UserCreateInput } from "./generated/client/models.ts";
 import { Role } from "./generated/client/enums.ts";
 import {
+  CategoryFactoryBase,
   PostFactoryBase,
   PostTagFactoryBase,
   registerFactories,
@@ -51,9 +52,21 @@ class PostTagFactory extends PostTagFactoryBase {
   }
 }
 
-// The magic short forms (`hasPosts(3)`, `hasTags(2)`, `hasPostTags(3)`) resolve
-// their default child factory here.
-registerFactories({ User: UserFactory, Post: PostFactory, Tag: TagFactory, PostTag: PostTagFactory });
+class CategoryFactory extends CategoryFactoryBase {
+  definition() {
+    return { name: `category-${randomUUID()}` };
+  }
+}
+
+// The magic short forms (`hasPosts(3)`, `hasTags(2)`, `hasPostTags(3)`,
+// `hasChildren(2)`) resolve their default child factory here.
+registerFactories({
+  User: UserFactory,
+  Post: PostFactory,
+  Tag: TagFactory,
+  PostTag: PostTagFactory,
+  Category: CategoryFactory,
+});
 
 const openClients: PrismaClient[] = [];
 
@@ -264,4 +277,24 @@ test("explicit join, pattern 4: creating from the join side builds both belongsT
   expect(await prisma.tag.findMany()).toHaveLength(1);
   const persisted = await prisma.postTag.findUnique({ where: { id: postTag.id } });
   expect(persisted).not.toBeNull();
+});
+
+test("a self-relation nests its own class: hasChildren and forParent build a real tree", async () => {
+  const prisma = await openClient();
+  initPrismaFactorio({ prisma });
+
+  const parent = await CategoryFactory.new().hasChildren(2).create();
+  const child = await CategoryFactory.new()
+    .forParent(CategoryFactory.new().state({ name: "ancestor" }))
+    .create();
+
+  // hasChildren: one parent with two children linked back to it.
+  expect(parent.children).toHaveLength(2);
+  const linked = await prisma.category.findMany({ where: { parentId: parent.id } });
+  expect(linked).toHaveLength(2);
+  // forParent: the child points at the freshly created ancestor (the typed
+  // return makes `parent` non-nullable, since the chain built it).
+  expect(child.parent.name).toBe("ancestor");
+  const ancestor = await prisma.category.findUnique({ where: { id: child.parentId ?? -1 } });
+  expect(ancestor?.name).toBe("ancestor");
 });

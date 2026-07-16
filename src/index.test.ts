@@ -1,5 +1,6 @@
 import { expect, expectTypeOf, test } from "vitest";
 import {
+  FactoryCycleError,
   FactoryNotRegisteredError,
   initPrismaFactorio,
   ListFactory,
@@ -34,4 +35,5 @@ test("the package root re-exports the registry API and the magic-method error cl
   expect(registerFactories).toBe(factories.registerFactories);
   expect(FactoryNotRegisteredError).toBe(factories.FactoryNotRegisteredError);
   expect(RelationDefaultFactoryError).toBe(factories.RelationDefaultFactoryError);
+  expect(FactoryCycleError).toBe(factories.FactoryCycleError);
 });

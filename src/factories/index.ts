@@ -281,7 +281,7 @@ interface DelegateLike {
 interface RelationDeclaration {
   field: string;
   include: unknown;
-  build(parentAttributes: Record<string, unknown>, lineage: ReadonlySet<FactoryConstructor>): unknown;
+  build(parentAttributes: Record<string, unknown>): unknown;
 }
 
 // Returns a shallow copy of `source` without `key`. Used to drop a nested
@@ -504,7 +504,7 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
   ): TCreateInput {
     const evaluated = this.evaluate(index, overrides, parent);
     const attributes = omitField === undefined ? evaluated : omitKey(evaluated, omitField);
-    const withRelations = this.applyRelations(attributes, lineage);
+    const withRelations = this.applyRelations(attributes);
     return this.resolve(withRelations, lineage);
   }
 
@@ -525,13 +525,13 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
   // own factory-as-value for that field (it is replaced by plain write data the
   // resolver leaves untouched) and hands each child the parent's evaluated
   // attributes.
-  private applyRelations(attributes: TDefinition, lineage: ReadonlySet<FactoryConstructor>): TDefinition {
+  private applyRelations(attributes: TDefinition): TDefinition {
     if (this.relations.length === 0) {
       return attributes;
     }
     const merged = { ...attributes } as Record<string, unknown>;
     for (const relation of this.relations) {
-      merged[relation.field] = relation.build(merged, lineage);
+      merged[relation.field] = relation.build(merged);
     }
     return merged as TDefinition;
   }
@@ -555,28 +555,30 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
     if (factory === undefined) {
       return value;
     }
-    return { create: this.buildChild(factory, {}, undefined, 0, lineage) };
-  }
-
-  // Builds one nested child input under an extended lineage: guards the cycle,
-  // then runs the child's own full build with `parent` as its closures' second
-  // argument. `inverseField` — the child's back-reference to a nesting parent —
-  // is dropped inside that build, before it can resolve, so a child born through
-  // a to-many magic method never re-creates the parent it is already nested
-  // under (and cannot cycle on it).
-  private buildChild(
-    factory: Factory<unknown, unknown, unknown>,
-    parent: ParentAttributes,
-    inverseField: string | undefined,
-    index: number,
-    lineage: ReadonlySet<FactoryConstructor>,
-  ): unknown {
     const constructor = factory.constructor as FactoryConstructor;
     if (lineage.has(constructor)) {
       throw new FactoryCycleError([...lineage, constructor]);
     }
+    return { create: factory.buildInput(0, undefined, {}, new Set(lineage).add(constructor)) };
+  }
+
+  // Builds one nested child requested explicitly through a magic method. Such a
+  // child is a finite, caller-written node, so it starts a fresh resolution
+  // lineage — a self-relation (`hasChildren`, `forParent`) nests its own class
+  // legitimately, while the child's own definition factory-as-values are still
+  // cycle-checked against that fresh lineage. `parent` reaches the child's state
+  // closures; `inverseField` — the child's back-reference to this parent — is
+  // dropped inside the build, before it can resolve, so the nesting never
+  // re-creates the parent it is already linked to.
+  private buildMagicChild(
+    factory: Factory<unknown, unknown, unknown>,
+    parent: ParentAttributes,
+    inverseField: string | undefined,
+    index: number,
+  ): unknown {
+    const constructor = factory.constructor as FactoryConstructor;
     const omitField = inverseField === undefined || inverseField === "" ? undefined : inverseField;
-    return factory.buildInput(index, undefined, parent, new Set(lineage).add(constructor), omitField);
+    return factory.buildInput(index, undefined, parent, new Set([constructor]), omitField);
   }
 
   // Appends a to-one relation (`forX`) to the chain. The value is resolved at
@@ -588,7 +590,7 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
     const declaration: RelationDeclaration = {
       field,
       include,
-      build: (parentAttributes, lineage) => this.buildToOne(field, idField, methodName, arg, parentAttributes, lineage),
+      build: (parentAttributes) => this.buildToOne(field, idField, methodName, arg, parentAttributes),
     };
     return this.forkInto(this.states, [...this.relations, declaration]);
   }
@@ -599,10 +601,9 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
     methodName: string,
     arg: unknown,
     parentAttributes: Record<string, unknown>,
-    lineage: ReadonlySet<FactoryConstructor>,
   ): unknown {
     if (arg instanceof Factory) {
-      return { create: this.buildChild(arg, parentAttributes, undefined, 0, lineage) };
+      return { create: this.buildMagicChild(arg, parentAttributes, undefined, 0) };
     }
     const record = arg as Record<string, unknown>;
     if (idField in record && record[idField] !== undefined) {
@@ -613,7 +614,7 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
       throw new RelationDefaultFactoryError(field, methodName);
     }
     const configured = defaultFactory.state(record);
-    return { create: this.buildChild(configured, parentAttributes, undefined, 0, lineage) };
+    return { create: this.buildMagicChild(configured, parentAttributes, undefined, 0) };
   }
 
   // Appends a to-many relation (`hasX`) to the chain. `inverseField` is the
@@ -629,8 +630,7 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
     const declaration: RelationDeclaration = {
       field,
       include,
-      build: (parentAttributes, lineage) =>
-        this.buildToMany(targetModel, inverseField, arg, overrides, parentAttributes, lineage),
+      build: (parentAttributes) => this.buildToMany(targetModel, inverseField, arg, overrides, parentAttributes),
     };
     return this.forkInto(this.states, [...this.relations, declaration]);
   }
@@ -641,11 +641,10 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
     arg: unknown,
     overrides: unknown,
     parentAttributes: Record<string, unknown>,
-    lineage: ReadonlySet<FactoryConstructor>,
   ): unknown {
     const requests = resolveChildRequests(targetModel, arg, overrides);
     const create = requests.map((request) =>
-      this.buildChild(request.factory, parentAttributes, inverseField, request.index, lineage),
+      this.buildMagicChild(request.factory, parentAttributes, inverseField, request.index),
     );
     return { create };
   }
