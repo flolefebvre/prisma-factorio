@@ -89,7 +89,16 @@ function detectClientOutputDir(otherGenerators: readonly GeneratorConfig[]): str
 export function emitModelFactoryFile(model: DMMF.Model, clientImportDir: string): GeneratedFile {
   const createInput = `${model.name}CreateInput`;
   const modelType = `${model.name}Model`;
-  const content = `${GENERATED_FILE_MARKER}
+  const relations = model.fields.filter((field) => field.kind === "object");
+  const content =
+    relations.length === 0
+      ? emitPlainBase(model, createInput, modelType, clientImportDir)
+      : emitRelationalBase(model, relations, createInput, modelType, clientImportDir);
+  return { path: `${model.name}.ts`, content };
+}
+
+function emitPlainBase(model: DMMF.Model, createInput: string, modelType: string, clientImportDir: string): string {
+  return `${GENERATED_FILE_MARKER}
 import { Factory } from "prisma-factorio/factories";
 import type { ${createInput}, ${modelType} } from "${clientImportDir}/models.ts";
 
@@ -97,7 +106,53 @@ export abstract class ${model.name}FactoryBase extends Factory<${createInput}, $
   protected readonly prismaDelegate = "${delegateName(model.name)}";
 }
 `;
-  return { path: `${model.name}.ts`, content };
+}
+
+// A relational base pins a third Factory generic: a homomorphic mapped type
+// over the CreateInput that widens each relation field to also accept a
+// FactoryValue of the related model's factory, preserving the field's
+// optionality so a to-many relation stays optional in the definition.
+function emitRelationalBase(
+  model: DMMF.Model,
+  relations: readonly DMMF.Field[],
+  createInput: string,
+  modelType: string,
+  clientImportDir: string,
+): string {
+  const relationImports = relatedFactoryImports(model, relations);
+  const definition = `${model.name}FactoryDefinition`;
+  const relationMap = `${model.name}RelationFactories`;
+  const mapEntries = relations.map((field) => `  ${field.name}: FactoryValue<${field.type}FactoryBase>;`).join("\n");
+  return `${GENERATED_FILE_MARKER}
+import { Factory, type FactoryValue } from "prisma-factorio/factories";
+import type { ${createInput}, ${modelType} } from "${clientImportDir}/models.ts";
+${relationImports}
+type ${relationMap} = {
+${mapEntries}
+};
+
+type ${definition} = {
+  [K in keyof ${createInput}]: K extends keyof ${relationMap}
+    ? ${createInput}[K] | ${relationMap}[K]
+    : ${createInput}[K];
+};
+
+export abstract class ${model.name}FactoryBase extends Factory<
+  ${createInput},
+  ${modelType},
+  ${definition}
+> {
+  protected readonly prismaDelegate = "${delegateName(model.name)}";
+}
+`;
+}
+
+// Type-only imports of the related factory bases, one per distinct related
+// model in first-appearance order. The model's own base is skipped: a
+// self-relation references a class declared in this same file.
+function relatedFactoryImports(model: DMMF.Model, relations: readonly DMMF.Field[]): string {
+  const relatedModels = [...new Set(relations.map((field) => field.type))].filter((name) => name !== model.name);
+  return relatedModels.map((name) => `import type { ${name}FactoryBase } from "./${name}.ts";\n`).join("");
 }
 
 // The Prisma client exposes each model as a delegate property named with the

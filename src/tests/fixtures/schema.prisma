@@ -32,6 +32,7 @@ model User {
   backupRole Role?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+  posts      Post[]
 }
 
 model Post {
@@ -46,6 +47,24 @@ model Post {
   thumbnail   Bytes
   reviewedAt  DateTime
   publishedAt DateTime?
+  authorId    String
+  author      User      @relation(fields: [authorId], references: [id])
+}
+
+// Mutual-reference pair exercising factory-as-value cycle detection: a Chicken
+// requires an Egg (belongsTo), an Egg optionally references its Chicken, so two
+// generated factories can reference each other's factory in definition().
+model Chicken {
+  id    Int    @id @default(autoincrement())
+  name  String
+  eggId Int    @unique
+  egg   Egg    @relation(fields: [eggId], references: [id])
+}
+
+model Egg {
+  id      Int      @id @default(autoincrement())
+  code    String
+  chicken Chicken?
 }
 
 model Tag {

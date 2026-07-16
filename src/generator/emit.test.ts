@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { datamodelFixture, generatorConfigFixture, modelFixture } from "../tests/dmmf.ts";
+import { datamodelFixture, fieldFixture, generatorConfigFixture, modelFixture } from "../tests/dmmf.ts";
 import {
   emitBarrelFile,
   emitFactoryFiles,
@@ -39,6 +39,107 @@ test("an acronym-led model name bakes Prisma's lowerFirst delegate name verbatim
   const file = emitModelFactoryFile(modelFixture({ name: "APIKey" }), "../client");
 
   expect(file.content).toContain('protected readonly prismaDelegate = "aPIKey";');
+});
+
+test("a model with no relation fields emits the unchanged two-generic base with no definition type", () => {
+  const file = emitModelFactoryFile(
+    modelFixture({ name: "User", fields: [fieldFixture({ name: "email" })] }),
+    "../client",
+  );
+
+  expect(file.content).toContain("export abstract class UserFactoryBase extends Factory<UserCreateInput, UserModel> {");
+  expect(file.content).not.toContain("FactoryDefinition");
+  expect(file.content).not.toContain("FactoryValue");
+});
+
+test("a model with a to-one relation pins a third definition generic that widens the relation field", () => {
+  const file = emitModelFactoryFile(
+    modelFixture({
+      name: "Post",
+      fields: [fieldFixture({ name: "title" }), fieldFixture({ name: "author", kind: "object", type: "User" })],
+    }),
+    "../client",
+  );
+
+  expect(file.content).toContain(
+    "export abstract class PostFactoryBase extends Factory<\n" +
+      "  PostCreateInput,\n" +
+      "  PostModel,\n" +
+      "  PostFactoryDefinition\n" +
+      "> {",
+  );
+  expect(file.content).toContain("type PostRelationFactories = {\n  author: FactoryValue<UserFactoryBase>;\n};");
+  expect(file.content).toContain(
+    "type PostFactoryDefinition = {\n" +
+      "  [K in keyof PostCreateInput]: K extends keyof PostRelationFactories\n" +
+      "    ? PostCreateInput[K] | PostRelationFactories[K]\n" +
+      "    : PostCreateInput[K];\n" +
+      "};",
+  );
+});
+
+test("a relational model imports FactoryValue from the runtime and each related base from its sibling file", () => {
+  const file = emitModelFactoryFile(
+    modelFixture({
+      name: "Post",
+      fields: [fieldFixture({ name: "author", kind: "object", type: "User" })],
+    }),
+    "../client",
+  );
+
+  expect(file.content).toContain('import { Factory, type FactoryValue } from "prisma-factorio/factories";');
+  expect(file.content).toContain('import type { UserFactoryBase } from "./User.ts";');
+});
+
+test("multiple relations to distinct models each import once and appear in the relation map", () => {
+  const file = emitModelFactoryFile(
+    modelFixture({
+      name: "Post",
+      fields: [
+        fieldFixture({ name: "author", kind: "object", type: "User" }),
+        fieldFixture({ name: "category", kind: "object", type: "Category" }),
+      ],
+    }),
+    "../client",
+  );
+
+  expect(file.content).toContain('import type { UserFactoryBase } from "./User.ts";');
+  expect(file.content).toContain('import type { CategoryFactoryBase } from "./Category.ts";');
+  expect(file.content).toContain(
+    "type PostRelationFactories = {\n" +
+      "  author: FactoryValue<UserFactoryBase>;\n" +
+      "  category: FactoryValue<CategoryFactoryBase>;\n" +
+      "};",
+  );
+});
+
+test("two relations to the same model import that base only once", () => {
+  const file = emitModelFactoryFile(
+    modelFixture({
+      name: "Message",
+      fields: [
+        fieldFixture({ name: "sender", kind: "object", type: "User" }),
+        fieldFixture({ name: "recipient", kind: "object", type: "User" }),
+      ],
+    }),
+    "../client",
+  );
+
+  const imports = file.content.match(/import type \{ UserFactoryBase \} from "\.\/User\.ts";/g);
+  expect(imports).toHaveLength(1);
+});
+
+test("a self-relation widens the field without importing the model's own base", () => {
+  const file = emitModelFactoryFile(
+    modelFixture({
+      name: "Category",
+      fields: [fieldFixture({ name: "parent", kind: "object", type: "Category" })],
+    }),
+    "../client",
+  );
+
+  expect(file.content).toContain("parent: FactoryValue<CategoryFactoryBase>;");
+  expect(file.content).not.toContain('import type { CategoryFactoryBase } from "./Category.ts";');
 });
 
 test("the emitted file imports Factory from the prisma-factorio runtime", () => {

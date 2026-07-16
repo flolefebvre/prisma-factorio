@@ -65,10 +65,49 @@ export class PrismaFactorioNotInitializedError extends Error {
 }
 
 /**
+ * A relation field's value inside a {@link Factory.definition}: the related
+ * model's factory directly, or a thunk returning it. The thunk form exists
+ * only to break a TypeScript import cycle between two factory files; mutual
+ * definition references are otherwise legitimate. Either form resolves lazily
+ * at {@link Factory.make} / {@link Factory.create} time to a nested
+ * `{ create: <the child's evaluated CreateInput> }`.
+ *
+ * @example
+ * definition() {
+ *   return { title: "Hello", author: UserFactory.new() };          // eager
+ *   // return { title: "Hello", author: () => UserFactory.new() }; // lazy
+ * }
+ */
+export type FactoryValue<TFactory extends Factory<unknown, unknown, unknown>> = TFactory | (() => TFactory);
+
+/**
+ * Rejection of {@link Factory.make} / {@link Factory.create} when a
+ * factory-as-value definition references, directly or transitively, a factory
+ * already being resolved higher in the same tree — an unresolvable cycle that
+ * would otherwise overflow the stack. The message names the factories in the
+ * cycle in resolution order.
+ *
+ * @example
+ * // ChickenFactory's definition uses EggFactory and vice-versa:
+ * expect(() => ChickenFactory.new().make()).toThrow(FactoryCycleError);
+ */
+export class FactoryCycleError extends Error {
+  constructor(cycle: readonly { name: string }[]) {
+    const names = cycle.map((constructor) => constructor.name).join(" → ");
+    super(
+      `Factory-as-value cycle detected: ${names}. A definition whose factory-as-value leads back to a factory already being resolved cannot terminate; break the cycle by supplying that relation through a state or overrides.`,
+    );
+    this.name = "FactoryCycleError";
+  }
+}
+
+/**
  * What {@link Factory.state} (and the overrides argument of
  * {@link Factory.make} / {@link Factory.create}) accepts: a partial of the
- * model's `CreateInput`, or a closure computing one from the attributes
- * evaluated so far in the chain (definition plus earlier states).
+ * factory's definition type, or a closure computing one from the attributes
+ * evaluated so far in the chain (definition plus earlier states). For a model
+ * with relations the definition type widens each relation field to also accept
+ * a {@link FactoryValue}, so a closure may observe an unresolved factory there.
  *
  * @example
  * UserFactory.new().state({ name: "Abigail Otwell" });
@@ -133,6 +172,20 @@ interface DelegateLike<TModel> {
   create(args: { data: unknown }): Promise<TModel>;
 }
 
+// A factory subclass constructor, keyed by identity for cycle detection and
+// carrying `name` for the FactoryCycleError message.
+type FactoryConstructor = (new () => Factory<unknown, unknown, unknown>) & { name: string };
+
+// A factory-as-value is either the factory itself or a thunk returning one.
+// Any other value — including a caller-supplied relation object — is not a
+// factory and returns undefined, so resolution leaves it untouched. A
+// top-level function value only ever appears as the thunk form here, since a
+// CreateInput never holds a function.
+function asFactory(value: unknown): Factory<unknown, unknown, unknown> | undefined {
+  const candidate = typeof value === "function" ? (value as () => unknown)() : value;
+  return candidate instanceof Factory ? candidate : undefined;
+}
+
 function isClientGetter(source: PrismaClientSource): source is () => object {
   return typeof source === "function";
 }
@@ -179,7 +232,7 @@ function resolveClient(): object {
  * }
  * const user = await UserFactory.new().create();
  */
-export abstract class Factory<TCreateInput, TModel> {
+export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput> {
   /**
    * Name of the Prisma client delegate {@link Factory.create} persists
    * through — the model name with its first letter lowercased. Baked into
@@ -190,18 +243,20 @@ export abstract class Factory<TCreateInput, TModel> {
    */
   protected abstract readonly prismaDelegate: string;
 
-  private states: readonly PipelineStep<TCreateInput>[] = [];
+  private states: readonly PipelineStep<TDefinition>[] = [];
 
   /**
    * Declares the default attributes of the model. Called once per
-   * {@link Factory.make}, so values are computed fresh for every record.
+   * {@link Factory.make}, so values are computed fresh for every record. A
+   * relation field may hold a {@link FactoryValue} of the related model, which
+   * resolves to a nested create at make time.
    *
    * @example
    * definition() {
    *   return { email: `user-${crypto.randomUUID()}@example.com`, role: Role.MEMBER };
    * }
    */
-  abstract definition(): TCreateInput;
+  abstract definition(): TDefinition;
 
   /**
    * Creates a factory instance; the entry point of every factory chain.
@@ -229,7 +284,7 @@ export abstract class Factory<TCreateInput, TModel> {
    * // Inline at the call site, closure form reading earlier attributes:
    * UserFactory.new().state({ name: "Ada" }).state((attrs) => ({ email: `${attrs.name}@example.com` }));
    */
-  state(input: StateInput<TCreateInput>): this {
+  state(input: StateInput<TDefinition>): this {
     return this.fork(toPipelineStep(input));
   }
 
@@ -247,14 +302,14 @@ export abstract class Factory<TCreateInput, TModel> {
    * @example
    * await UserFactory.new().count(10).sequence((i) => ({ name: `User ${String(i)}` })).create();
    */
-  sequence(step: (index: number) => Partial<TCreateInput>): this;
-  sequence(...values: [Partial<TCreateInput>, ...Partial<TCreateInput>[]]): this;
-  sequence(...steps: SequenceInput<TCreateInput>): this {
+  sequence(step: (index: number) => Partial<TDefinition>): this;
+  sequence(...values: [Partial<TDefinition>, ...Partial<TDefinition>[]]): this;
+  sequence(...steps: SequenceInput<TDefinition>): this {
     const stepAt = sequenceStepAt(steps);
     return this.fork((_attributes, index) => stepAt(index));
   }
 
-  private fork(step: PipelineStep<TCreateInput>): this {
+  private fork(step: PipelineStep<TDefinition>): this {
     // Fresh construction installs subclass class fields on the copy itself —
     // arrow-function named states stay bound to the copy and native #private
     // fields keep working. `states` is the only field to carry over: bulk-
@@ -277,16 +332,52 @@ export abstract class Factory<TCreateInput, TModel> {
    * @example
    * const input = UserFactory.new().suspended().make({ name: "Ada" });
    */
-  make(overrides?: StateInput<TCreateInput>): TCreateInput {
+  make(overrides?: StateInput<TDefinition>): TCreateInput {
     return this.makeAt(0, overrides);
   }
 
-  private makeAt(index: number, overrides?: StateInput<TCreateInput>): TCreateInput {
+  private makeAt(index: number, overrides?: StateInput<TDefinition>): TCreateInput {
+    return this.resolve(this.evaluate(index, overrides), new Set([this.constructor as FactoryConstructor]));
+  }
+
+  private evaluate(index: number, overrides?: StateInput<TDefinition>): TDefinition {
     const pipeline = overrides === undefined ? this.states : [...this.states, toPipelineStep(overrides)];
-    return pipeline.reduce<TCreateInput>(
+    return pipeline.reduce<TDefinition>(
       (attributes, step) => ({ ...attributes, ...step(attributes, index) }),
       this.definition(),
     );
+  }
+
+  // Runs the pipeline afresh under an inherited resolution lineage; called on a
+  // child factory only after its constructor was added to `lineage`, so a
+  // definition cycling back to it is caught before recursing again.
+  private makeUnder(lineage: ReadonlySet<FactoryConstructor>): TCreateInput {
+    return this.resolve(this.evaluate(0, undefined), lineage);
+  }
+
+  // Turns the evaluated definition into a CreateInput by replacing every
+  // top-level factory-as-value with its nested `{ create: … }`. Values the
+  // pipeline already resolved to plain data (a caller-supplied relation) are
+  // not factories, so they pass through untouched — the short-circuit rule.
+  private resolve(attributes: TDefinition, lineage: ReadonlySet<FactoryConstructor>): TCreateInput {
+    const source = attributes as Record<string, unknown>;
+    const resolved: Record<string, unknown> = {};
+    for (const key of Object.keys(source)) {
+      resolved[key] = this.resolveValue(source[key], lineage);
+    }
+    return resolved as TCreateInput;
+  }
+
+  private resolveValue(value: unknown, lineage: ReadonlySet<FactoryConstructor>): unknown {
+    const factory = asFactory(value);
+    if (factory === undefined) {
+      return value;
+    }
+    const constructor = factory.constructor as FactoryConstructor;
+    if (lineage.has(constructor)) {
+      throw new FactoryCycleError([...lineage, constructor]);
+    }
+    return { create: factory.makeUnder(new Set(lineage).add(constructor)) };
   }
 
   /**
@@ -299,7 +390,7 @@ export abstract class Factory<TCreateInput, TModel> {
    * @example
    * const users = await UserFactory.new().count(3).create(); // User[]
    */
-  count(n: number): ListFactory<TCreateInput, TModel> {
+  count(n: number): ListFactory<TCreateInput, TModel, TDefinition> {
     if (!Number.isInteger(n) || n < 0) {
       throw new TypeError(`count() needs a non-negative integer, got ${String(n)}.`);
     }
@@ -322,11 +413,11 @@ export abstract class Factory<TCreateInput, TModel> {
    * @example
    * const user = await UserFactory.new().create({ name: "Abigail" }); // row persisted via prisma.user.create
    */
-  async create(overrides?: StateInput<TCreateInput>): Promise<TModel> {
+  async create(overrides?: StateInput<TDefinition>): Promise<TModel> {
     return this.createAt(0, overrides);
   }
 
-  private async createAt(index: number, overrides?: StateInput<TCreateInput>): Promise<TModel> {
+  private async createAt(index: number, overrides?: StateInput<TDefinition>): Promise<TModel> {
     // The registry cannot carry concrete client types; the generated base
     // pins prismaDelegate and TModel to the same model, so this single cast
     // is the whole untyped boundary.
@@ -351,12 +442,12 @@ export abstract class Factory<TCreateInput, TModel> {
  * @example
  * const users = await UserFactory.new().count(3).create(); // User[]
  */
-export class ListFactory<TCreateInput, TModel> {
+export class ListFactory<TCreateInput, TModel, TDefinition = TCreateInput> {
   constructor(
-    private readonly factory: Factory<TCreateInput, TModel>,
+    private readonly factory: Factory<TCreateInput, TModel, TDefinition>,
     private readonly instances: number,
-    private readonly makeAt: (index: number, overrides?: StateInput<TCreateInput>) => TCreateInput,
-    private readonly createAt: (index: number, overrides?: StateInput<TCreateInput>) => Promise<TModel>,
+    private readonly makeAt: (index: number, overrides?: StateInput<TDefinition>) => TCreateInput,
+    private readonly createAt: (index: number, overrides?: StateInput<TDefinition>) => Promise<TModel>,
   ) {}
 
   /**
@@ -365,7 +456,7 @@ export class ListFactory<TCreateInput, TModel> {
    * @example
    * UserFactory.new().count(5).count(2).make(); // 2 inputs
    */
-  count(n: number): ListFactory<TCreateInput, TModel> {
+  count(n: number): ListFactory<TCreateInput, TModel, TDefinition> {
     return this.factory.count(n);
   }
 
@@ -376,7 +467,7 @@ export class ListFactory<TCreateInput, TModel> {
    * @example
    * UserFactory.new().count(3).state({ role: "admin" }).make();
    */
-  state(input: StateInput<TCreateInput>): ListFactory<TCreateInput, TModel> {
+  state(input: StateInput<TDefinition>): ListFactory<TCreateInput, TModel, TDefinition> {
     return this.factory.state(input).count(this.instances);
   }
 
@@ -387,9 +478,11 @@ export class ListFactory<TCreateInput, TModel> {
    * @example
    * UserFactory.new().count(10).sequence({ role: "admin" }, { role: "member" }).make();
    */
-  sequence(step: (index: number) => Partial<TCreateInput>): ListFactory<TCreateInput, TModel>;
-  sequence(...values: [Partial<TCreateInput>, ...Partial<TCreateInput>[]]): ListFactory<TCreateInput, TModel>;
-  sequence(...steps: SequenceInput<TCreateInput>): ListFactory<TCreateInput, TModel> {
+  sequence(step: (index: number) => Partial<TDefinition>): ListFactory<TCreateInput, TModel, TDefinition>;
+  sequence(
+    ...values: [Partial<TDefinition>, ...Partial<TDefinition>[]]
+  ): ListFactory<TCreateInput, TModel, TDefinition>;
+  sequence(...steps: SequenceInput<TDefinition>): ListFactory<TCreateInput, TModel, TDefinition> {
     return this.factory.sequence(sequenceStepAt(steps)).count(this.instances);
   }
 
@@ -401,7 +494,7 @@ export class ListFactory<TCreateInput, TModel> {
    * @example
    * const inputs = UserFactory.new().count(3).make(); // UserCreateInput[]
    */
-  make(overrides?: StateInput<TCreateInput>): TCreateInput[] {
+  make(overrides?: StateInput<TDefinition>): TCreateInput[] {
     return Array.from({ length: this.instances }, (_, index) => this.makeAt(index, overrides));
   }
 
@@ -414,7 +507,7 @@ export class ListFactory<TCreateInput, TModel> {
    * @example
    * const users = await prisma.$transaction(() => UserFactory.new().count(3).create());
    */
-  async create(overrides?: StateInput<TCreateInput>): Promise<TModel[]> {
+  async create(overrides?: StateInput<TDefinition>): Promise<TModel[]> {
     const rows: TModel[] = [];
     for (let index = 0; index < this.instances; index += 1) {
       rows.push(await this.createAt(index, overrides));
