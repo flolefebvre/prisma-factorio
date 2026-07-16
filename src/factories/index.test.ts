@@ -1,5 +1,11 @@
 import { expect, expectTypeOf, test, vi } from "vitest";
-import { Factory, initPrismaFactorio, PrismaFactorioNotInitializedError } from "./index.ts";
+import {
+  Factory,
+  FactoryCycleError,
+  type FactoryValue,
+  initPrismaFactorio,
+  PrismaFactorioNotInitializedError,
+} from "./index.ts";
 
 interface BookCreateInput {
   title: string;
@@ -532,6 +538,236 @@ test("a directly-constructed factory with required constructor parameters and no
   await new PinnedRoleFactory("boss").create();
 
   expect(create).toHaveBeenCalledExactlyOnceWith({ data: { title: "boss" } });
+});
+
+interface AuthorCreateInput {
+  name: string;
+  country?: string | undefined;
+}
+
+interface AuthorModel {
+  id: number;
+  name: string;
+  country: string | null;
+}
+
+class AuthorFactory extends Factory<AuthorCreateInput, AuthorModel> {
+  protected readonly prismaDelegate = "author";
+
+  definition(): AuthorCreateInput {
+    return { name: "Kent Beck" };
+  }
+}
+
+// A book whose author relation is a Prisma-style nested-create input; the
+// definition type widens that field to also accept the author factory.
+interface AuthoredBookCreateInput {
+  title: string;
+  author: { create?: AuthorCreateInput; connect?: { id: number } };
+}
+
+type AuthoredBookDefinition = Omit<AuthoredBookCreateInput, "author"> & {
+  author: AuthoredBookCreateInput["author"] | FactoryValue<AuthorFactory>;
+};
+
+class AuthoredBookFactory extends Factory<AuthoredBookCreateInput, BookModel, AuthoredBookDefinition> {
+  protected readonly prismaDelegate = "book";
+
+  definition(): AuthoredBookDefinition {
+    return { title: "TDD by Example", author: AuthorFactory.new() };
+  }
+}
+
+test("make() resolves a factory-as-value into a nested { create: <child CreateInput> }", () => {
+  expect(AuthoredBookFactory.new().make()).toEqual({
+    title: "TDD by Example",
+    author: { create: { name: "Kent Beck" } },
+  });
+});
+
+test("the lazy () => factory form resolves identically to the eager form", () => {
+  class LazyAuthoredBookFactory extends Factory<AuthoredBookCreateInput, BookModel, AuthoredBookDefinition> {
+    protected readonly prismaDelegate = "book";
+
+    definition(): AuthoredBookDefinition {
+      return { title: "TDD by Example", author: () => AuthorFactory.new() };
+    }
+  }
+
+  expect(LazyAuthoredBookFactory.new().make().author).toEqual({ create: { name: "Kent Beck" } });
+});
+
+test("make() on a factory-as-value definition is typed as the model CreateInput, not the widened definition", () => {
+  expectTypeOf(AuthoredBookFactory.new().make()).toEqualTypeOf<AuthoredBookCreateInput>();
+  expectTypeOf(AuthoredBookFactory.new().create()).resolves.toEqualTypeOf<BookModel>();
+});
+
+test("FactoryValue<TFactory> admits the factory instance and a thunk returning it", () => {
+  expectTypeOf<AuthorFactory>().toExtend<FactoryValue<AuthorFactory>>();
+  expectTypeOf<() => AuthorFactory>().toExtend<FactoryValue<AuthorFactory>>();
+});
+
+test("a relation supplied by overrides short-circuits: the nested factory is never evaluated", () => {
+  class ThrowingAuthorFactory extends Factory<AuthorCreateInput, AuthorModel> {
+    protected readonly prismaDelegate = "author";
+
+    definition(): AuthorCreateInput {
+      throw new Error("the nested factory must not be evaluated when the relation is supplied");
+    }
+  }
+  class BookWithThrowingAuthor extends Factory<AuthoredBookCreateInput, BookModel, AuthoredBookDefinition> {
+    protected readonly prismaDelegate = "book";
+
+    definition(): AuthoredBookDefinition {
+      return { title: "TDD", author: ThrowingAuthorFactory.new() };
+    }
+  }
+
+  const supplied = BookWithThrowingAuthor.new().make({ author: { connect: { id: 7 } } });
+
+  expect(supplied.author).toEqual({ connect: { id: 7 } });
+});
+
+test("a relation supplied by a state short-circuits the nested factory the same way", () => {
+  let evaluated = 0;
+  class CountingAuthorFactory extends Factory<AuthorCreateInput, AuthorModel> {
+    protected readonly prismaDelegate = "author";
+
+    definition(): AuthorCreateInput {
+      evaluated += 1;
+      return { name: "Kent Beck" };
+    }
+  }
+  class BookWithCountingAuthor extends Factory<AuthoredBookCreateInput, BookModel, AuthoredBookDefinition> {
+    protected readonly prismaDelegate = "book";
+
+    definition(): AuthoredBookDefinition {
+      return { title: "TDD", author: CountingAuthorFactory.new() };
+    }
+  }
+
+  const supplied = BookWithCountingAuthor.new()
+    .state({ author: { connect: { id: 3 } } })
+    .make();
+
+  expect(supplied.author).toEqual({ connect: { id: 3 } });
+  expect(evaluated).toBe(0);
+});
+
+test("create() persists the resolved nested create in a single delegate.create call", async () => {
+  const create = vi.fn(() => Promise.resolve(persistedBook));
+  initPrismaFactorio({ prisma: { book: { create } } });
+
+  await AuthoredBookFactory.new().create();
+
+  expect(create).toHaveBeenCalledExactlyOnceWith({
+    data: { title: "TDD by Example", author: { create: { name: "Kent Beck" } } },
+  });
+});
+
+test("resolution recurses: a factory-as-value nested inside a resolved child is itself resolved", () => {
+  interface AgentCreateInput {
+    name: string;
+  }
+  class AgentFactory extends Factory<AgentCreateInput, { id: number }> {
+    protected readonly prismaDelegate = "agent";
+
+    definition(): AgentCreateInput {
+      return { name: "Sue" };
+    }
+  }
+  interface AgentedAuthorCreateInput {
+    name: string;
+    agent: { create?: AgentCreateInput };
+  }
+  type AgentedAuthorDefinition = Omit<AgentedAuthorCreateInput, "agent"> & {
+    agent: AgentedAuthorCreateInput["agent"] | FactoryValue<AgentFactory>;
+  };
+  class AgentedAuthorFactory extends Factory<AgentedAuthorCreateInput, AuthorModel, AgentedAuthorDefinition> {
+    protected readonly prismaDelegate = "author";
+
+    definition(): AgentedAuthorDefinition {
+      return { name: "Erich", agent: AgentFactory.new() };
+    }
+  }
+  interface AuthoredBookWithAgentDefinition {
+    title: string;
+    author: { create?: AgentedAuthorCreateInput } | FactoryValue<AgentedAuthorFactory>;
+  }
+  class DeepBookFactory extends Factory<
+    { title: string; author: { create?: AgentedAuthorCreateInput } },
+    BookModel,
+    AuthoredBookWithAgentDefinition
+  > {
+    protected readonly prismaDelegate = "book";
+
+    definition(): AuthoredBookWithAgentDefinition {
+      return { title: "Patterns", author: AgentedAuthorFactory.new() };
+    }
+  }
+
+  expect(DeepBookFactory.new().make()).toEqual({
+    title: "Patterns",
+    author: { create: { name: "Erich", agent: { create: { name: "Sue" } } } },
+  });
+});
+
+interface ChickenCreateInput {
+  name: string;
+  egg: { create?: EggCreateInput; connect?: { id: number } };
+}
+
+interface EggCreateInput {
+  code: string;
+  chicken: { create?: ChickenCreateInput; connect?: { id: number } };
+}
+
+type ChickenDefinition = Omit<ChickenCreateInput, "egg"> & {
+  egg: ChickenCreateInput["egg"] | FactoryValue<EggFactory>;
+};
+
+type EggDefinition = Omit<EggCreateInput, "chicken"> & {
+  chicken: EggCreateInput["chicken"] | FactoryValue<ChickenFactory>;
+};
+
+class ChickenFactory extends Factory<ChickenCreateInput, { id: number }, ChickenDefinition> {
+  protected readonly prismaDelegate = "chicken";
+
+  definition(): ChickenDefinition {
+    return { name: "Hen", egg: EggFactory.new() };
+  }
+}
+
+class EggFactory extends Factory<EggCreateInput, { id: number }, EggDefinition> {
+  protected readonly prismaDelegate = "egg";
+
+  definition(): EggDefinition {
+    return { code: "E-1", chicken: ChickenFactory.new() };
+  }
+}
+
+test("a definition-level cycle between two required-relation factories throws FactoryCycleError naming the cycle", () => {
+  expect(() => ChickenFactory.new().make()).toThrow(FactoryCycleError);
+  expect(() => ChickenFactory.new().make()).toThrow(/ChickenFactory.*EggFactory.*ChickenFactory/);
+});
+
+test("a self-referential definition throws FactoryCycleError instead of overflowing the stack", () => {
+  interface NodeCreateInput {
+    label: string;
+    next: { create?: NodeCreateInput };
+  }
+  type NodeDefinition = Omit<NodeCreateInput, "next"> & {
+    next: NodeCreateInput["next"] | FactoryValue<NodeFactory>;
+  };
+  class NodeFactory extends Factory<NodeCreateInput, { id: number }, NodeDefinition> {
+    protected readonly prismaDelegate = "node";
+
+    definition(): NodeDefinition {
+      return { label: "root", next: NodeFactory.new() };
+    }
+  }
+
+  expect(() => NodeFactory.new().make()).toThrow(FactoryCycleError);
 });
 
 test("a constructor with only default parameters passes the guard but its value resets on the first fork — the documented residual hole", () => {
