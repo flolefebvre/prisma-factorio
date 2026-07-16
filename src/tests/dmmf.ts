@@ -20,6 +20,28 @@ export function modelFixture(overrides: Partial<DMMF.Model> & Pick<DMMF.Model, "
 }
 
 /**
+ * Builds a DMMF field for tests, defaulting to a required scalar so a test only
+ * states what it cares about. Pass `kind: "object"` with a `type` naming the
+ * related model to build a relation field.
+ *
+ * @example
+ * const author = fieldFixture({ name: "author", kind: "object", type: "User" });
+ */
+export function fieldFixture(overrides: Partial<DMMF.Field> & Pick<DMMF.Field, "name">): DMMF.Field {
+  return {
+    kind: "scalar",
+    type: "String",
+    isRequired: true,
+    isList: false,
+    isUnique: false,
+    isId: false,
+    isReadOnly: false,
+    hasDefaultValue: false,
+    ...overrides,
+  };
+}
+
+/**
  * Builds a DMMF datamodel for tests from the given models.
  *
  * @example
