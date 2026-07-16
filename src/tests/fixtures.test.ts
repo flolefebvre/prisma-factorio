@@ -231,7 +231,10 @@ test("state() keeps the concrete factory type and the pipeline keeps the exact c
   type UserDefinition = ReturnType<UserFactoryBase["definition"]>;
   expectTypeOf(chained).toEqualTypeOf<StatefulUserFactory>();
   expectTypeOf(chained.make({ name: "Ada" })).toEqualTypeOf<UserCreateInput>();
-  expectTypeOf<Parameters<UserFactoryBase["state"]>[0]>().toEqualTypeOf<StateInput<UserDefinition>>();
+  // state() is generic over the parent type a child closure may annotate, so its
+  // parameter is a StateInput whose parent defaults to the free `unknown`; make()
+  // and create() overrides run at the top level and stay non-generic.
+  expectTypeOf<Parameters<UserFactoryBase["state"]>[0]>().toEqualTypeOf<StateInput<UserDefinition, unknown>>();
   expectTypeOf<Parameters<UserFactoryBase["make"]>[0]>().toEqualTypeOf<StateInput<UserDefinition> | undefined>();
   expectTypeOf<Parameters<UserFactoryBase["create"]>[0]>().toEqualTypeOf<StateInput<UserDefinition> | undefined>();
 });
@@ -392,4 +395,44 @@ test("forAuthor grows create()'s return type with the built relation; the bare c
   expectTypeOf(PostFactory.new().forAuthor({ name: "X" }).forReviewer({ name: "Y" }).create()).resolves.toEqualTypeOf<
     PostModel & { author: UserModel } & { reviewer: UserModel }
   >();
+});
+
+test("hasPosts(n) builds n children from the registered Post factory, dropping each child's author back-reference", () => {
+  registerGeneratedFactories({ Post: PostFactory });
+
+  const input = UserFactory.new().hasPosts(2).make();
+
+  const created = (input.posts as { create: Record<string, unknown>[] }).create;
+  expect(created).toHaveLength(2);
+  // The author factory-as-value from PostFactory's definition is dropped: the
+  // nesting under user.posts already links them, so no second user is created.
+  expect(created[0]).toEqual(postScalars);
+  expect(created[0]).not.toHaveProperty("author");
+});
+
+test("hasPosts(n, overrides) applies uniform overrides to every child", () => {
+  registerGeneratedFactories({ Post: PostFactory });
+
+  const input = UserFactory.new().hasPosts(3, { title: "Uniform" }).make();
+
+  const created = (input.posts as { create: { title: string }[] }).create;
+  expect(created.map((post) => post.title)).toEqual(["Uniform", "Uniform", "Uniform"]);
+});
+
+test("hasPosts grows create()'s return type, composing with the child chain's own relations", () => {
+  expectTypeOf(UserFactory.new().hasPosts(2).create()).resolves.toEqualTypeOf<UserModel & { posts: PostModel[] }>();
+  expectTypeOf(
+    UserFactory.new()
+      .hasPosts(PostFactory.new().forAuthor({ name: "X" }))
+      .create(),
+  ).resolves.toEqualTypeOf<UserModel & { posts: (PostModel & { author: UserModel })[] }>();
+});
+
+test("passing a count alongside a factory instance is a compile error", () => {
+  const badCall = () => {
+    // @ts-expect-error a count cannot accompany a factory instance — the factory carries its own count()
+    UserFactory.new().hasPosts(PostFactory.new(), 3);
+  };
+
+  expect(badCall).toBeDefined();
 });

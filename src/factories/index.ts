@@ -243,8 +243,8 @@ type PipelineStep<TCreateInput> = {
   step(attributes: TCreateInput, index: number, parent: ParentAttributes): Partial<TCreateInput>;
 }["step"];
 
-function toPipelineStep<TCreateInput>(input: StateInput<TCreateInput>): PipelineStep<TCreateInput> {
-  return (attributes, _index, parent) => (isStateClosure(input) ? input(attributes, parent) : input);
+function toPipelineStep<TCreateInput, TParent>(input: StateInput<TCreateInput, TParent>): PipelineStep<TCreateInput> {
+  return (attributes, _index, parent) => (isStateClosure(input) ? input(attributes, parent as TParent) : input);
 }
 
 function sequenceStepAt<TCreateInput>(steps: SequenceInput<TCreateInput>): (index: number) => Partial<TCreateInput> {
@@ -282,6 +282,18 @@ interface RelationDeclaration {
   field: string;
   include: unknown;
   build(parentAttributes: Record<string, unknown>, lineage: ReadonlySet<FactoryConstructor>): unknown;
+}
+
+// Returns a shallow copy of `source` without `key`. Used to drop a nested
+// child's back-reference to its parent before that field can resolve.
+function omitKey<T>(source: T, key: string): T {
+  const copy: Record<string, unknown> = {};
+  for (const existing of Object.keys(source as Record<string, unknown>)) {
+    if (existing !== key) {
+      copy[existing] = (source as Record<string, unknown>)[existing];
+    }
+  }
+  return copy as T;
 }
 
 // Merges the `include` contributions of several children of one to-many
@@ -412,8 +424,11 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
    * @example
    * // Inline at the call site, closure form reading earlier attributes:
    * UserFactory.new().state({ name: "Ada" }).state((attrs) => ({ email: `${attrs.name}@example.com` }));
+   * @example
+   * // In a child chain, the closure's second argument is the parent's attributes:
+   * PostFactory.new().state((attrs, parent: UserCreateInput) => ({ title: `by ${parent.name}` }));
    */
-  state(input: StateInput<TDefinition>): this {
+  state<TParent = ParentAttributes>(input: StateInput<TDefinition, TParent>): this {
     return this.fork(toPipelineStep(input));
   }
 
@@ -476,16 +491,19 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
   }
 
   // The single build path: evaluate the pipeline (threading the nesting parent
-  // into closures), fold in the declared magic relations, then resolve any
-  // remaining factory-as-values. `lineage` already contains this factory's
-  // constructor on entry, so a definition cycling straight back to it is caught.
+  // into closures), drop the back-reference to a nesting parent before it can
+  // resolve, fold in the declared magic relations, then resolve any remaining
+  // factory-as-values. `lineage` already contains this factory's constructor on
+  // entry, so a definition cycling straight back to it is caught.
   private buildInput(
     index: number,
     overrides: StateInput<TDefinition> | undefined,
     parent: ParentAttributes,
     lineage: ReadonlySet<FactoryConstructor>,
+    omitField?: string,
   ): TCreateInput {
-    const attributes = this.evaluate(index, overrides, parent);
+    const evaluated = this.evaluate(index, overrides, parent);
+    const attributes = omitField === undefined ? evaluated : omitKey(evaluated, omitField);
     const withRelations = this.applyRelations(attributes, lineage);
     return this.resolve(withRelations, lineage);
   }
@@ -541,9 +559,11 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
   }
 
   // Builds one nested child input under an extended lineage: guards the cycle,
-  // runs the child's own full build with `parent` as its closures' second
-  // argument, then drops `inverseField` so a child born through a to-many magic
-  // method does not re-create the parent it is already nested under.
+  // then runs the child's own full build with `parent` as its closures' second
+  // argument. `inverseField` — the child's back-reference to a nesting parent —
+  // is dropped inside that build, before it can resolve, so a child born through
+  // a to-many magic method never re-creates the parent it is already nested
+  // under (and cannot cycle on it).
   private buildChild(
     factory: Factory<unknown, unknown, unknown>,
     parent: ParentAttributes,
@@ -555,23 +575,8 @@ export abstract class Factory<TCreateInput, TModel, TDefinition = TCreateInput, 
     if (lineage.has(constructor)) {
       throw new FactoryCycleError([...lineage, constructor]);
     }
-    const input = factory.buildInput(index, undefined, parent, new Set(lineage).add(constructor)) as Record<
-      string,
-      unknown
-    >;
-    if (inverseField !== undefined && inverseField in input) {
-      // Drop the child's back-reference to this parent: the nesting already
-      // links them, so keeping the child's own factory-as-value there would
-      // create a second parent.
-      const withoutBackReference: Record<string, unknown> = {};
-      for (const key of Object.keys(input)) {
-        if (key !== inverseField) {
-          withoutBackReference[key] = input[key];
-        }
-      }
-      return withoutBackReference;
-    }
-    return input;
+    const omitField = inverseField === undefined || inverseField === "" ? undefined : inverseField;
+    return factory.buildInput(index, undefined, parent, new Set(lineage).add(constructor), omitField);
   }
 
   // Appends a to-one relation (`forX`) to the chain. The value is resolved at
@@ -796,7 +801,9 @@ export class ListFactory<TCreateInput, TModel, TDefinition = TCreateInput, TResu
    * @example
    * UserFactory.new().count(3).state({ role: "admin" }).make();
    */
-  state(input: StateInput<TDefinition>): ListFactory<TCreateInput, TModel, TDefinition, TResult> {
+  state<TParent = ParentAttributes>(
+    input: StateInput<TDefinition, TParent>,
+  ): ListFactory<TCreateInput, TModel, TDefinition, TResult> {
     return this.factory.state(input).count(this.instances);
   }
 

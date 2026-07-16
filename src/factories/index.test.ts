@@ -927,3 +927,110 @@ test("a constructor with only default parameters passes the guard but its value 
   // default — the hole `length` cannot close, locked here as known behavior.
   expect(new DefaultRoleFactory("admin").state({ pages: 1 }).make()).toEqual({ title: "member", pages: 1 });
 });
+
+// A hand-rolled to-many magic method mirroring the generated `hasX`: it names
+// the relation field, the target model, and the child's back-reference field.
+interface KidCreateInput {
+  label: string;
+  parent?: unknown;
+}
+class KidFactory extends Factory<KidCreateInput, { id: number }> {
+  protected readonly prismaDelegate = "kid";
+
+  definition(): KidCreateInput {
+    return { label: "kid" };
+  }
+}
+class ParentFactory extends Factory<{ topic: string; kids?: unknown }, { id: number }> {
+  protected readonly prismaDelegate = "parent";
+
+  definition(): { topic: string; kids?: unknown } {
+    return { topic: "science" };
+  }
+
+  hasKids(arg: unknown, overrides?: unknown): this {
+    return this.declareToMany("kids", "Kid", "parent", arg, overrides);
+  }
+}
+
+test("hasX(n) builds n children from the registered default factory, applying uniform overrides", () => {
+  registerFactories({ Kid: KidFactory });
+
+  const input = ParentFactory.new().hasKids(3, { label: "override" }).make() as {
+    kids: { create: { label: string }[] };
+  };
+
+  expect(input.kids.create).toHaveLength(3);
+  expect(input.kids.create.map((kid) => kid.label)).toEqual(["override", "override", "override"]);
+});
+
+test("hasX(factory) and hasX(listFactory) expand to one child per instance, per-instance state applied", () => {
+  const single = ParentFactory.new()
+    .hasKids(KidFactory.new().state({ label: "one" }))
+    .make() as {
+    kids: { create: { label: string }[] };
+  };
+  const list = ParentFactory.new()
+    .hasKids(KidFactory.new().count(3).sequence({ label: "a" }, { label: "b" }))
+    .make() as { kids: { create: { label: string }[] } };
+
+  expect(single.kids.create.map((kid) => kid.label)).toEqual(["one"]);
+  expect(list.kids.create.map((kid) => kid.label)).toEqual(["a", "b", "a"]);
+});
+
+test("hasX(factories[]) builds one child per array element, each keeping its own configuration", () => {
+  const input = ParentFactory.new()
+    .hasKids([KidFactory.new().state({ label: "x" }), KidFactory.new().state({ label: "y" })])
+    .make() as { kids: { create: { label: string }[] } };
+
+  expect(input.kids.create.map((kid) => kid.label)).toEqual(["x", "y"]);
+});
+
+test("a to-many child state closure receives the parent's evaluated attributes as its second argument", () => {
+  const input = ParentFactory.new()
+    .state({ topic: "biology" })
+    .hasKids(
+      KidFactory.new()
+        .count(2)
+        .state((_attrs, parent: { topic: string }) => ({ label: `re: ${parent.topic}` })),
+    )
+    .make() as { kids: { create: { label: string }[] } };
+
+  expect(input.kids.create.map((kid) => kid.label)).toEqual(["re: biology", "re: biology"]);
+});
+
+test("a to-many drops the child's back-reference to the parent so the nesting does not re-create it", () => {
+  class BackReffingKidFactory extends Factory<KidCreateInput, { id: number }> {
+    protected readonly prismaDelegate = "kid";
+
+    definition(): KidCreateInput {
+      return { label: "kid", parent: ParentFactory.new() };
+    }
+  }
+
+  const input = ParentFactory.new().hasKids([BackReffingKidFactory.new()]).make() as {
+    kids: { create: Record<string, unknown>[] };
+  };
+
+  expect(input.kids.create[0]).toEqual({ label: "kid" });
+  expect(input.kids.create[0]).not.toHaveProperty("parent");
+});
+
+test("hasX(n) without a registered factory throws FactoryNotRegisteredError at build time", async () => {
+  vi.resetModules();
+  const fresh = await import("./index.ts");
+  class FreshParentFactory extends fresh.Factory<{ name: string; kids?: unknown }, { id: number }> {
+    protected readonly prismaDelegate = "parent";
+
+    definition(): { name: string; kids?: unknown } {
+      return { name: "p" };
+    }
+
+    hasKids(arg: unknown): this {
+      return this.declareToMany("kids", "UnregisteredChild", "", arg, undefined);
+    }
+  }
+
+  expect(() => FreshParentFactory.new().hasKids(2).make()).toThrow(fresh.FactoryNotRegisteredError);
+  expect(() => FreshParentFactory.new().hasKids(2).make()).toThrow(/model "UnregisteredChild"/);
+});
