@@ -1,6 +1,11 @@
 // Fixture schema for the prisma-factorio test harness. Covers the scalar and
 // enum field-type matrix: required and optional variants of every scalar type,
-// @default and @updatedAt fields, and differing id strategies per model.
+// @default and @updatedAt fields, and differing id strategies per model. Also
+// covers the relation-shape matrix the magic relationship methods emit over:
+// a to-one and a to-many between the same pair (Post.author / User.posts), a
+// second same-model relation (Post.reviewer / User.reviewedPosts), an implicit
+// many-to-many (Post.tags / Tag.posts), and an explicit join model with pivot
+// columns (PostTag).
 
 datasource db {
   provider = "sqlite"
@@ -25,14 +30,15 @@ enum Role {
 }
 
 model User {
-  id         String   @id @default(uuid())
-  email      String
-  name       String?
-  role       Role
-  backupRole Role?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  posts      Post[]
+  id            String   @id @default(uuid())
+  email         String
+  name          String?
+  role          Role
+  backupRole    Role?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  posts         Post[]   @relation("Author")
+  reviewedPosts Post[]   @relation("Reviewer")
 }
 
 model Post {
@@ -48,7 +54,11 @@ model Post {
   reviewedAt  DateTime
   publishedAt DateTime?
   authorId    String
-  author      User      @relation(fields: [authorId], references: [id])
+  author      User      @relation("Author", fields: [authorId], references: [id])
+  reviewerId  String?
+  reviewer    User?     @relation("Reviewer", fields: [reviewerId], references: [id])
+  tags        Tag[]     @relation("PostTags")
+  postTags    PostTag[]
 }
 
 // Mutual-reference pair exercising factory-as-value cycle detection: a Chicken
@@ -68,12 +78,28 @@ model Egg {
 }
 
 model Tag {
-  id          Int      @id @default(autoincrement())
-  label       String   @default("untagged")
+  id          Int       @id @default(autoincrement())
+  label       String    @default("untagged")
   weight      Float?
   totalViews  BigInt?
   unitPrice   Decimal?
   isFeatured  Boolean?
   extra       Json?
   fingerprint Bytes?
+  posts       Post[]    @relation("PostTags")
+  postTags    PostTag[]
+}
+
+// Explicit join model for the Post/Tag many-to-many: its two required
+// belongsTo relations are ordinary to-one magic-method targets (forPost /
+// forTag) and `active` / `note` are pivot columns like any other field. The
+// library gives explicit joins no dedicated API — the join is just a model.
+model PostTag {
+  id     Int     @id @default(autoincrement())
+  active Boolean @default(true)
+  note   String?
+  postId Int
+  post   Post    @relation(fields: [postId], references: [id])
+  tagId  Int
+  tag    Tag     @relation(fields: [tagId], references: [id])
 }
