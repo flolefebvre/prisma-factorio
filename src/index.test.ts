@@ -1,9 +1,12 @@
 import { expect, expectTypeOf, test } from "vitest";
 import {
+  FactoryNotRegisteredError,
   initPrismaFactorio,
   ListFactory,
   PACKAGE_NAME,
   PrismaFactorioNotInitializedError,
+  registerFactories,
+  RelationDefaultFactoryError,
   type SequenceInput,
   type StateInput,
 } from "./index.js";
@@ -25,4 +28,10 @@ test("the package root re-exports the StateInput and SequenceInput types", () =>
 
 test("the package root re-exports the ListFactory class", () => {
   expect(ListFactory).toBe(factories.ListFactory);
+});
+
+test("the package root re-exports the registry API and the magic-method error classes", () => {
+  expect(registerFactories).toBe(factories.registerFactories);
+  expect(FactoryNotRegisteredError).toBe(factories.FactoryNotRegisteredError);
+  expect(RelationDefaultFactoryError).toBe(factories.RelationDefaultFactoryError);
 });

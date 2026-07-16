@@ -388,11 +388,19 @@ test("a second same-model relation gets its own forReviewer method, distinct fro
 });
 
 test("forAuthor grows create()'s return type with the built relation; the bare chain stays PostModel", () => {
-  expectTypeOf(PostFactory.new().create()).resolves.toEqualTypeOf<PostModel>();
-  expectTypeOf(PostFactory.new().forAuthor({ name: "X" }).create()).resolves.toEqualTypeOf<
-    PostModel & { author: UserModel }
-  >();
-  expectTypeOf(PostFactory.new().forAuthor({ name: "X" }).forReviewer({ name: "Y" }).create()).resolves.toEqualTypeOf<
+  // Assertions stay purely at the type level (`typeof chain.create`, never a
+  // call): invoking create() here would reject, since this unit file registers
+  // no `post` delegate.
+  const bare = PostFactory.new();
+  const authored = PostFactory.new().forAuthor({ name: "X" });
+  const authoredReviewed = PostFactory.new().forAuthor({ name: "X" }).forReviewer({ name: "Y" });
+
+  // A magic method returns a copy, never the receiver.
+  expect(authored).not.toBe(bare);
+  expect(authoredReviewed).toBeInstanceOf(PostFactory);
+  expectTypeOf<Awaited<ReturnType<typeof bare.create>>>().toEqualTypeOf<PostModel>();
+  expectTypeOf<Awaited<ReturnType<typeof authored.create>>>().toEqualTypeOf<PostModel & { author: UserModel }>();
+  expectTypeOf<Awaited<ReturnType<typeof authoredReviewed.create>>>().toEqualTypeOf<
     PostModel & { author: UserModel } & { reviewer: UserModel }
   >();
 });
@@ -420,12 +428,15 @@ test("hasPosts(n, overrides) applies uniform overrides to every child", () => {
 });
 
 test("hasPosts grows create()'s return type, composing with the child chain's own relations", () => {
-  expectTypeOf(UserFactory.new().hasPosts(2).create()).resolves.toEqualTypeOf<UserModel & { posts: PostModel[] }>();
-  expectTypeOf(
-    UserFactory.new()
-      .hasPosts(PostFactory.new().forAuthor({ name: "X" }))
-      .create(),
-  ).resolves.toEqualTypeOf<UserModel & { posts: (PostModel & { author: UserModel })[] }>();
+  const withPosts = UserFactory.new().hasPosts(2);
+  const withAuthoredPosts = UserFactory.new().hasPosts(PostFactory.new().forAuthor({ name: "X" }));
+
+  expect(withPosts).toBeInstanceOf(UserFactory);
+  expect(withAuthoredPosts).toBeInstanceOf(UserFactory);
+  expectTypeOf<Awaited<ReturnType<typeof withPosts.create>>>().toEqualTypeOf<UserModel & { posts: PostModel[] }>();
+  expectTypeOf<Awaited<ReturnType<typeof withAuthoredPosts.create>>>().toEqualTypeOf<
+    UserModel & { posts: (PostModel & { author: UserModel })[] }
+  >();
 });
 
 test("passing a count alongside a factory instance is a compile error", () => {
@@ -435,4 +446,14 @@ test("passing a count alongside a factory instance is a compile error", () => {
   };
 
   expect(badCall).toBeDefined();
+});
+
+test("a relation born only in the definition stays out of the typed return", () => {
+  // PostFactory's definition creates an author, but no forAuthor was chained, so
+  // the built author is absent from create()'s type — only explicitly-chained
+  // magic relations widen the return.
+  const bare = PostFactory.new();
+  expect(bare).toBeInstanceOf(PostFactory);
+  expectTypeOf<Awaited<ReturnType<typeof bare.create>>>().toEqualTypeOf<PostModel>();
+  expectTypeOf(PostFactory.new().make()).toEqualTypeOf<PostCreateInput>();
 });
