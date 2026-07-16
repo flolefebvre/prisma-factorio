@@ -180,13 +180,28 @@ test("the barrel emits a typed initPrismaFactorio wrapper bound to the schema's 
   const file = emitBarrelFile([modelFixture({ name: "User" })], "../../custom/client");
 
   expect(file.content).toContain('import type { PrismaClient } from "../../custom/client/client.ts";');
-  expect(file.content).toContain(
-    'import { initPrismaFactorio as initPrismaFactorioRuntime } from "prisma-factorio/factories";',
-  );
+  expect(file.content).toContain("import { initPrismaFactorio as initPrismaFactorioRuntime,");
   expect(file.content).toContain(
     "export function initPrismaFactorio(options: { prisma: PrismaClient | (() => PrismaClient) }): void {",
   );
   expect(file.content).toContain("initPrismaFactorioRuntime(options);");
+});
+
+test("the barrel emits a typed registerFactories wrapper keyed by every model", () => {
+  const file = emitBarrelFile([modelFixture({ name: "User" }), modelFixture({ name: "Post" })], "../client");
+
+  expect(file.content).toContain(
+    'import { initPrismaFactorio as initPrismaFactorioRuntime, registerFactories as registerFactoriesRuntime, type RegisterableFactory } from "prisma-factorio/factories";',
+  );
+  expect(file.content).toContain('import type { UserFactoryBase } from "./User.ts";');
+  expect(file.content).toContain('import type { PostFactoryBase } from "./Post.ts";');
+  expect(file.content).toContain(
+    "export function registerFactories(factories: {\n" +
+      "  User?: new () => UserFactoryBase;\n" +
+      "  Post?: new () => PostFactoryBase;\n" +
+      "}): void {",
+  );
+  expect(file.content).toContain("registerFactoriesRuntime(factories as Record<string, RegisterableFactory>);");
 });
 
 test("the barrel starts with a generated-file header comment", () => {

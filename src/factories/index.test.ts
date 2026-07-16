@@ -5,6 +5,8 @@ import {
   type FactoryValue,
   initPrismaFactorio,
   PrismaFactorioNotInitializedError,
+  registerFactories,
+  resolveRegisteredFactory,
 } from "./index.ts";
 
 interface BookCreateInput {
@@ -538,6 +540,45 @@ test("a directly-constructed factory with required constructor parameters and no
   await new PinnedRoleFactory("boss").create();
 
   expect(create).toHaveBeenCalledExactlyOnceWith({ data: { title: "boss" } });
+});
+
+test("registerFactories makes a registered factory resolvable by model name, fresh on each resolve", () => {
+  registerFactories({ book: BookFactory });
+
+  const first = resolveRegisteredFactory("book");
+  const second = resolveRegisteredFactory("book");
+
+  expect(first).toBeInstanceOf(BookFactory);
+  expect(second).toBeInstanceOf(BookFactory);
+  expect(first).not.toBe(second);
+});
+
+test("registerFactories merges across calls, the last registration winning per model", () => {
+  class OtherBookFactory extends BookFactory {}
+  registerFactories({ book: BookFactory });
+  registerFactories({ book: OtherBookFactory });
+
+  expect(resolveRegisteredFactory("book")).toBeInstanceOf(OtherBookFactory);
+});
+
+test("resolving an unregistered model throws FactoryNotRegisteredError naming the model and both remedies", async () => {
+  vi.resetModules();
+  const fresh = await import("./index.ts");
+
+  const resolve = () => fresh.resolveRegisteredFactory("Post");
+
+  expect(resolve).toThrow(fresh.FactoryNotRegisteredError);
+  expect(resolve).toThrow(/model "Post"/);
+  expect(resolve).toThrow(/registerFactories\(\{ Post: PostFactory \}\)/);
+  expect(resolve).toThrow(/pass a configured factory/);
+});
+
+test("registerFactories rejects a factory class with required constructor parameters at resolve time", () => {
+  registerFactories({ pinned: PinnedRoleFactory as unknown as new () => Factory<unknown, unknown, unknown> });
+
+  expect(() => resolveRegisteredFactory("pinned")).toThrow(
+    /PinnedRoleFactory declares 1 required constructor parameter/,
+  );
 });
 
 interface AuthorCreateInput {

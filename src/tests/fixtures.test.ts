@@ -11,6 +11,7 @@ import {
   ChickenFactoryBase,
   EggFactoryBase,
   initPrismaFactorio as initGeneratedPrismaFactorio,
+  registerFactories as registerGeneratedFactories,
   UserFactoryBase,
 } from "./generated/prisma-factorio/index.ts";
 
@@ -154,6 +155,22 @@ test("the generated initPrismaFactorio only accepts the client generated for thi
   };
 
   expect(wrongClient).toBeDefined();
+});
+
+test("the generated registerFactories accepts this schema's concrete factories and rejects unknown model keys", () => {
+  registerGeneratedFactories({ User: UserFactory });
+
+  const unknownModelKey = () => {
+    // @ts-expect-error `Wombat` is not a model of this schema
+    registerGeneratedFactories({ Wombat: UserFactory });
+  };
+  const wrongModelFactory = () => {
+    // @ts-expect-error a PostFactory is not a UserFactoryBase constructor
+    registerGeneratedFactories({ User: PostFactoryBase });
+  };
+
+  expect(unknownModelKey).toBeDefined();
+  expect(wrongModelFactory).toBeDefined();
 });
 
 class StatefulUserFactory extends UserFactoryBase {

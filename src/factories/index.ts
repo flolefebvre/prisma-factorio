@@ -65,6 +65,72 @@ export class PrismaFactorioNotInitializedError extends Error {
 }
 
 /**
+ * A factory subclass constructible with no arguments, as stored in the
+ * default-factory registry.
+ *
+ * @example
+ * const factories: Record<string, RegisterableFactory> = { Post: PostFactory };
+ */
+export type RegisterableFactory = new () => Factory<unknown, unknown, unknown>;
+
+const registeredFactories = new Map<string, RegisterableFactory>();
+
+/**
+ * Registers the default factory to build a model's children when a magic
+ * relationship method is called in short form (`hasPosts(3)` /
+ * `forAuthor({ … })`), keyed by model name. Merges into the registry, the last
+ * registration winning per model. The typed wrapper of the same name in the
+ * generated barrel narrows the keys and values to the schema's factories;
+ * prefer it over this untyped runtime function.
+ *
+ * @example
+ * registerFactories({ User: UserFactory, Post: PostFactory });
+ */
+export function registerFactories(factories: Record<string, RegisterableFactory>): void {
+  for (const [model, factory] of Object.entries(factories)) {
+    registeredFactories.set(model, factory);
+  }
+}
+
+/**
+ * Thrown when a short-form magic relationship method needs a model's default
+ * factory and none was registered. The message names the model and both ways
+ * out: register the factory, or pass a configured one.
+ *
+ * @example
+ * expect(() => resolveRegisteredFactory("Post")).toThrow(FactoryNotRegisteredError);
+ */
+export class FactoryNotRegisteredError extends Error {
+  constructor(modelName: string) {
+    super(
+      `No factory is registered for model "${modelName}". A short-form magic relationship ` +
+        `method needs the target model's factory to build its children. Register it once at ` +
+        `startup — registerFactories({ ${modelName}: ${modelName}Factory }) — or pass a ` +
+        `configured factory instead, e.g. hasPosts(${modelName}Factory.new().count(3)).`,
+    );
+    this.name = "FactoryNotRegisteredError";
+  }
+}
+
+/**
+ * Resolves a fresh instance of the factory registered for `modelName`, used by
+ * the generated magic methods to build children in their short forms. Throws
+ * {@link FactoryNotRegisteredError} when the model has no registered factory.
+ *
+ * @example
+ * registerFactories({ Post: PostFactory });
+ * const child = resolveRegisteredFactory("Post"); // a fresh PostFactory
+ */
+export function resolveRegisteredFactory(modelName: string): Factory<unknown, unknown, unknown> {
+  const ctor = registeredFactories.get(modelName);
+  if (ctor === undefined) {
+    throw new FactoryNotRegisteredError(modelName);
+  }
+  assertZeroArgConstructor(ctor);
+  return new ctor();
+}
+
+/**
  * A relation field's value inside a {@link Factory.definition}: the related
  * model's factory directly, or a thunk returning it. The thunk form exists
  * only to break a TypeScript import cycle between two factory files; mutual

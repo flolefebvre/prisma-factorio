@@ -174,9 +174,12 @@ function delegateName(modelName: string): string {
  */
 export function emitBarrelFile(models: readonly DMMF.Model[], clientImportDir: string): GeneratedFile {
   const exports = models.map((model) => `export { ${model.name}FactoryBase } from "./${model.name}.ts";`);
+  const typeImports = models.map((model) => `import type { ${model.name}FactoryBase } from "./${model.name}.ts";`);
+  const registryFields = models.map((model) => `  ${model.name}?: new () => ${model.name}FactoryBase;`).join("\n");
   const content = `${GENERATED_FILE_MARKER}
-import { initPrismaFactorio as initPrismaFactorioRuntime } from "prisma-factorio/factories";
+import { initPrismaFactorio as initPrismaFactorioRuntime, registerFactories as registerFactoriesRuntime, type RegisterableFactory } from "prisma-factorio/factories";
 import type { PrismaClient } from "${clientImportDir}/client.ts";
+${typeImports.join("\n")}
 
 ${exports.join("\n")}
 
@@ -189,6 +192,19 @@ ${exports.join("\n")}
  */
 export function initPrismaFactorio(options: { prisma: PrismaClient | (() => PrismaClient) }): void {
   initPrismaFactorioRuntime(options);
+}
+
+/**
+ * Registers the default factory of each model, so short-form magic methods
+ * (\`hasPosts(3)\`) can build children. Keyed and typed to this schema's models.
+ *
+ * @example
+ * registerFactories({ User: UserFactory, Post: PostFactory });
+ */
+export function registerFactories(factories: {
+${registryFields}
+}): void {
+  registerFactoriesRuntime(factories as Record<string, RegisterableFactory>);
 }
 `;
   return { path: "index.ts", content };
