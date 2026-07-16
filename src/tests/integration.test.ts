@@ -3,12 +3,29 @@ import { afterEach, expect, test } from "vitest";
 import { initPrismaFactorio } from "../factories/index.ts";
 import type { PrismaClient } from "./generated/client/client.ts";
 import { Role } from "./generated/client/enums.ts";
-import { UserFactoryBase } from "./generated/prisma-factorio/index.ts";
+import { PostFactoryBase, UserFactoryBase } from "./generated/prisma-factorio/index.ts";
 import { createIntegrationClient } from "./integration-db.ts";
 
 class UserFactory extends UserFactoryBase {
   definition() {
     return { email: `user-${randomUUID()}@example.com`, role: Role.MEMBER };
+  }
+}
+
+class PostFactory extends PostFactoryBase {
+  definition() {
+    return {
+      title: "Nested create",
+      wordCount: 500,
+      views: 1000n,
+      rating: 4.2,
+      price: "9.99",
+      isPublished: true,
+      metadata: { tags: ["intro"] },
+      thumbnail: new Uint8Array([1, 2, 3]),
+      reviewedAt: new Date("2026-01-01T00:00:00Z"),
+      author: UserFactory.new(),
+    };
   }
 }
 
@@ -52,6 +69,36 @@ test("count() with sequence() persists n rows, cycling the sequenced field and r
   const persisted = await prisma.user.findMany();
   expect(persisted).toHaveLength(3);
   expect(new Set(persisted.map((row) => row.id))).toEqual(new Set(created.map((row) => row.id)));
+});
+
+test("create() persists a factory-as-value relation as one nested create, linking parent and child in the DB", async () => {
+  const prisma = await openClient();
+  initPrismaFactorio({ prisma });
+
+  const post = await PostFactory.new().create();
+
+  // The child was born from the nested create, not connected: exactly one user
+  // exists and the post's foreign key points at it.
+  const users = await prisma.user.findMany();
+  expect(users).toHaveLength(1);
+
+  const persisted = await prisma.post.findUnique({ where: { id: post.id }, include: { author: true } });
+  expect(persisted).not.toBeNull();
+  expect(persisted?.authorId).toBe(users[0]?.id);
+  expect(persisted?.author.email).toBe(users[0]?.email);
+});
+
+test("a caller-supplied relation connects an existing row instead of evaluating the nested factory", async () => {
+  const prisma = await openClient();
+  initPrismaFactorio({ prisma });
+  const existing = await UserFactory.new().create();
+
+  const post = await PostFactory.new().create({ author: { connect: { id: existing.id } } });
+
+  // No second user was born: the supplied connect short-circuited the factory.
+  expect(await prisma.user.findMany()).toHaveLength(1);
+  const persisted = await prisma.post.findUnique({ where: { id: post.id } });
+  expect(persisted?.authorId).toBe(existing.id);
 });
 
 test("a getter registration is resolved on every create(), so swapping the client redirects persistence", async () => {
