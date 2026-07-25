@@ -13,6 +13,27 @@ Issues and PRDs for this repo live as GitHub issues on `flolefebvre/prisma-facto
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
+## Dependencies between issues
+
+Ordering between issues is encoded with GitHub's native "blocked by" relationships. `gh issue list --json` does not expose them — query them via GraphQL:
+
+```bash
+gh api graphql -f query='
+query {
+  repository(owner: "flolefebvre", name: "prisma-factorio") {
+    issues(first: 100, states: OPEN, labels: ["ready-for-agent"]) {
+      nodes {
+        number
+        title
+        blockedBy(first: 20) { nodes { number state } }
+      }
+    }
+  }
+}' --jq '.data.repository.issues.nodes | map(select(all(.blockedBy.nodes[]?; .state == "CLOSED"))) | .[] | "\(.number)\t\(.title)"'
+```
+
+The `--jq` filter keeps only actionable issues — those whose blockers are all closed. Drop it to see the full graph. An issue unblocks its dependents only when it is closed, so a PR that finishes an issue must close it: `Closes #<number>` in the PR body, or close the issue explicitly after merging.
+
 ## When a skill says "publish to the issue tracker"
 
 Create a GitHub issue.
