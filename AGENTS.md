@@ -4,15 +4,16 @@
 
 This project is a Laravel-style model factory library for Prisma (TypeScript). Tests and seeds declare the records they need through a fluent, fully typed API instead of hand-writing every column.
 
-`docs/laravel-factories.md` documents the Laravel original and is the reference for the feature set being ported. It is the only spec: the API, the code layout, and how the schema is read are all open questions. Nothing in this repo should be read as a settled design decision.
+`docs/laravel-factories.md` documents the Laravel original whose feature set is being ported. The design is settled: PRD #26 on the issue tracker defines v1 scope and its deliberate deviations from Laravel; `docs/adr/` records the binding architecture decisions; `CONTEXT.md` fixes the vocabulary. Do not re-open settled decisions inside an implementation task — flag conflicts instead (see `docs/agents/domain.md`).
 
 ## Stack
 
-TypeScript (strict, ESM) · Node ≥ 20 · Prisma ≥ 7 < 8 as peer dependency · Vitest · ESLint + Prettier + jscpd. Package manager: pnpm.
+TypeScript (strict, ESM) · Node ≥ 20 · Prisma ≥ 7 < 8 as peer dependency · @faker-js/faker as optional peer · Vitest · ESLint + Prettier + jscpd. Package manager: pnpm.
 
 ## Layout
 
 ```
+CONTEXT.md        Domain glossary
 src/
   index.ts        Package root export
   tests/          Shared test helpers (never published)
