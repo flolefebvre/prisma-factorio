@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id              Int       @id @default(autoincrement())
+  name            String
+  email           String    @unique
+  role            String    @default("member")
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+
+  posts    Post[]
+  reviewed Post[]   @relation("PostReviewer")
+  profile  Profile?
+  tickets  Ticket[]
+
+  managerId Int?
+  manager   User?  @relation("UserReports", fields: [managerId], references: [id])
+  reports   User[] @relation("UserReports")
+}
+
+model Profile {
+  id     Int    @id @default(autoincrement())
+  bio    String
+  userId Int    @unique
+  user   User   @relation(fields: [userId], references: [id])
+}
+
+model Post {
+  id        Int      @id @default(autoincrement())
+  title     String
+  content   String
+  published  Boolean @default(false)
+  authorId  Int
+  author    User     @relation(fields: [authorId], references: [id])
+
+  reviewerId Int?
+  reviewer   User? @relation("PostReviewer", fields: [reviewerId], references: [id])
+
+  tags     Tag[]
+  taggings Tagging[]
+}
+
+model Tag {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  posts Post[]
+
+  taggings Tagging[]
+}
+
+model Tagging {
+  postId Int
+  tagId  Int
+  public Boolean @default(true)
+  post   Post    @relation(fields: [postId], references: [id])
+  tag    Tag     @relation(fields: [tagId], references: [id])
+
+  @@id([postId, tagId])
+}
+
+model Airline {
+  id      Int      @id @default(autoincrement())
+  name    String
+  flights Flight[]
+  tickets Ticket[]
+}
+
+model Flight {
+  id        Int      @id @default(autoincrement())
+  number    String
+  airlineId Int
+  airline   Airline  @relation(fields: [airlineId], references: [id])
+  tickets   Ticket[]
+}
+
+model Ticket {
+  id        Int     @id @default(autoincrement())
+  seat      String
+  airlineId Int
+  flightId  Int
+  userId    Int
+  airline   Airline @relation(fields: [airlineId], references: [id])
+  flight    Flight  @relation(fields: [flightId], references: [id])
+  user      User    @relation(fields: [userId], references: [id])
+}

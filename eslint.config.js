@@ -19,4 +19,16 @@ export default defineConfig(
       },
     },
   },
+  {
+    // `*.check.ts` files are compiled, never executed: `tsc` is the assertion.
+    // Bindings exist only so their types can be inspected, and the assertion
+    // helpers take phantom type parameters.
+    files: ["**/*.check.ts"],
+    rules: {
+      "@typescript-eslint/no-unnecessary-type-parameters": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unused-vars": "off",
+      "@typescript-eslint/unbound-method": "off",
+    },
+  },
 );

@@ -37,7 +37,11 @@
     "format": "prettier --write .",
     "format:check": "prettier --check . && echo '--format:check OK--'",
     "duplicates": "jscpd && echo '--duplicates OK--'",
-    "gates": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && echo '--gates OK--'"
+    "gates": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && echo '--gates OK--'",
+    "sandbox:generate": "prisma generate && prisma migrate deploy",
+    "sandbox:typecheck": "tsc -p sandbox/tsconfig.json && echo '--sandbox:typecheck OK--'",
+    "sandbox:test": "vitest run --config sandbox/vitest.config.ts && echo '--sandbox:test OK--'",
+    "sandbox:verify": "pnpm sandbox:generate && pnpm sandbox:typecheck && pnpm sandbox:test"
   },
   "peerDependencies": {
     "prisma": ">=7 <8"

@@ -10,3 +10,4 @@ report/
 .claude
 .agents
 .vscode
+sandbox/prisma/*.db

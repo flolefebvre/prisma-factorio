@@ -2,3 +2,4 @@ pnpm-lock.yaml
 docs/laravel-factories.md
 report/
 .claude/
+sandbox/prisma/migrations/
