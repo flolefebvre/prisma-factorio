@@ -67,4 +67,8 @@ export function checkedByTheCompiler(
   void posts.create({ authorId: 1, author: { connect: { id: 1 } } });
   // @ts-expect-error a plain object carries no delegate
   void users.using({});
+
+  const widened: Record<string, unknown> = { nmae: "Ada" };
+  // @ts-expect-error a record widened to string keys can name fields the model does not have
+  void users.create(widened);
 }
