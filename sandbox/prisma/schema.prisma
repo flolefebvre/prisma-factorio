@@ -1,0 +1,62 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated"
+  runtime      = "nodejs"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id          Int          @id @default(autoincrement())
+  email       String       @unique
+  name        String
+  role        String       @default("user")
+  suspended   Boolean      @default(false)
+  posts       Post[]
+  comments    Comment[]
+  memberships Membership[]
+}
+
+model Post {
+  id        Int       @id @default(autoincrement())
+  title     String
+  published Boolean   @default(false)
+  author    User      @relation(fields: [authorId], references: [id])
+  authorId  Int
+  comments  Comment[]
+  tags      Tag[]
+}
+
+model Comment {
+  id       Int    @id @default(autoincrement())
+  body     String
+  post     Post   @relation(fields: [postId], references: [id])
+  postId   Int
+  author   User   @relation(fields: [authorId], references: [id])
+  authorId Int
+}
+
+model Tag {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  posts Post[]
+}
+
+model Team {
+  id          Int          @id @default(autoincrement())
+  name        String
+  memberships Membership[]
+}
+
+model Membership {
+  user   User   @relation(fields: [userId], references: [id])
+  userId Int
+  team   Team   @relation(fields: [teamId], references: [id])
+  teamId Int
+  role   String @default("member")
+
+  @@id([userId, teamId])
+}
