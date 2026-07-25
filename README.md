@@ -85,7 +85,7 @@ export const users = f.define("user", {
 });
 
 const banned = await users.suspended().create();
-const inner = await users.count(3).vip().create();
+const vips = await users.count(3).vip().create();
 const once = await users.state({ name: "Ada Lovelace" }).create();
 ```
 
@@ -94,7 +94,8 @@ const once = await users.state({ name: "Ada Lovelace" }).create();
 - `.state(partialOrClosure)` applies a one-off transformation at the call site, typed exactly like a declared state.
 - **Order of application:** the definition, then the states in the order they were applied, then `create(overrides)`. Last write wins per key; a key valued `undefined` is skipped at every layer, so the layer before it stands; a `null` is written.
 - States evaluate once per record, so a closure in a `count(3)` chain sees each record's own `index` and `uid`.
-- A state may not be named `create`, `count`, `using` or `state`: the factory already answers to those, so the collision is a compile error and a `TypeError` at `define`.
+- A state may not be named `create`, `count`, `using`, `state` or `then` — the first four are methods the factory already answers to, and a factory carrying a `then` would be thenable and never settle when awaited. Either way the collision is a compile error and a `TypeError` at `define`.
+- Declare states in the object you pass to `define`. Annotating that object with `FactoryConfig<Client, "model">` leaves the state names unknown to the compiler, which is why a config typed that way accepts no `states` at all.
 
 ## Good to know
 

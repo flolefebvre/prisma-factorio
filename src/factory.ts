@@ -40,12 +40,16 @@ export interface StateContext<C, M extends ModelName<C>> extends EvaluationConte
 }
 
 /**
- * A state: the attributes to merge over what is evaluated so far, given outright or computed.
+ * The two shapes a `states` entry takes: the attributes to merge over what is evaluated so far,
+ * given outright or computed.
+ *
+ * Widening a state to this type drops the check that it names only fields the model declares, so
+ * keep a reusable state at its own shape — `satisfies PartialAttributes<C, M>` pins it without
+ * widening.
  *
  * @example
  * ```ts
- * const suspended: StateInput<PrismaClient, "user"> = { name: null };
- * const vip: StateInput<PrismaClient, "user"> = ({ uid }) => ({ email: `vip-${uid}@example.com` });
+ * const states: Record<string, StateInput<PrismaClient, "user">> = { suspended: { name: null } };
  * ```
  */
 export type StateInput<C, M extends ModelName<C>> =
@@ -53,8 +57,9 @@ export type StateInput<C, M extends ModelName<C>> =
 
 // Assignability alone lets a state name a field the model does not declare: excess property
 // checking reaches a fresh object literal only, never one held in a variable or returned from a
-// block body. Routing both forms through `Overrides` closes that gap.
-export type ExactState<C, M extends ModelName<C>, V> = V extends (context: StateContext<C, M>) => infer A
+// block body. Routing both forms through `Overrides` closes that gap, and `infer A` takes the
+// closure's return type whole, so a state returning a union of shapes stays legal.
+type ExactState<C, M extends ModelName<C>, V> = V extends (context: StateContext<C, M>) => infer A
   ? (context: StateContext<C, M>) => Overrides<C, M, A>
   : Overrides<C, M, V>;
 
@@ -69,16 +74,18 @@ export type ExactState<C, M extends ModelName<C>, V> = V extends (context: State
 export type StateMap<C, M extends ModelName<C>> = Record<string, StateInput<C, M>>;
 
 // A state is reached as a method, so one named after a method the factory already answers to would
-// be unreachable. Every key here is also listed in `reservedNames`, which enforces the same rule at
-// runtime for callers who compile nothing.
+// be unreachable. `then` is reserved for a second reason: a factory carrying one is thenable, and
+// awaiting it never settles. Every key here is also listed in `reservedNames`, which enforces the
+// same rule at runtime for callers who compile nothing.
 interface Reserved {
   create?: never;
   count?: never;
   using?: never;
   state?: never;
+  then?: never;
 }
 
-const reservedNames = ["create", "count", "using", "state"];
+const reservedNames = ["create", "count", "using", "state", "then"];
 
 /**
  * What a factory's declared `states` must satisfy: every value exact, and no name the factory
@@ -96,15 +103,18 @@ export type DeclaredStates<C, M extends ModelName<C>, S> = Reserved & {
 /**
  * How a factory is declared.
  *
+ * `S` carries the declared state names, which the compiler reads off the object passed to `define`.
+ * Annotating a config leaves `S` unsupplied, and a config typed that way accepts no `states` at all
+ * — declare states inline at the `define` call, where both their names and their fields are checked.
+ *
  * @example
  * ```ts
  * const config: FactoryConfig<PrismaClient, "user"> = {
  *   definition: ({ uid }) => ({ email: `${uid}@example.com` }),
- *   states: { suspended: { name: null } },
  * };
  * ```
  */
-export interface FactoryConfig<C, M extends ModelName<C>, D = CreateInput<C, M>, S = Record<never, never>> {
+export interface FactoryConfig<C, M extends ModelName<C>, D = CreateInput<C, M>, S = never> {
   definition: (context: EvaluationContext) => Attributes<C, M, D>;
   states?: S & StateMap<C, M>;
 }
@@ -121,11 +131,13 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   create<O>(overrides?: Overrides<C, M, O>): Promise<R>;
   count(records: number): Factory<C, M, Row<C, M>[], S>;
   using(client: Pick<C, M>): Factory<C, M, R, S>;
-  // One signature per form, rather than one parameter typed as `StateInput`: each form has to infer
-  // the object it carries straight into `Overrides`, which is what makes a field the model does not
-  // declare an error. The second signature bars a function, whose empty `keyof` would otherwise
-  // satisfy `Overrides` and swallow every closure before the first signature checks it.
-  state<V>(state: (context: StateContext<C, M>) => Overrides<C, M, V>): Factory<C, M, R, S>;
+  // One signature per form, rather than one parameter typed as `StateInput`: each form has to reach
+  // `Overrides` with the state's own shape inferred into it, which is what makes a field the model
+  // does not declare an error. The closure form takes its return type through `ExactState`, the
+  // same route a declared state takes, so both accept exactly the same states. The object form
+  // bars a function, whose empty `keyof` would otherwise satisfy `Overrides` and swallow every
+  // closure before the first signature checked it.
+  state<V extends (context: StateContext<C, M>) => unknown>(state: V & ExactState<C, M, V>): Factory<C, M, R, S>;
   state<V extends Record<string, unknown>>(state: Overrides<C, M, V>): Factory<C, M, R, S>;
 }
 
@@ -182,11 +194,13 @@ function step(state: unknown): Step {
  * ```
  */
 export function declaredStates(states: Record<string, unknown> | undefined): Record<string, Step> {
-  const declared: Record<string, Step> = {};
+  // Prototype-free: a state named `__proto__` would otherwise reach the prototype setter, leaving
+  // the factory with a method that silently does not exist.
+  const declared = Object.create(null) as Record<string, Step>;
 
   for (const [name, state] of Object.entries(states ?? {})) {
     if (reservedNames.includes(name))
-      throw new TypeError(`The state "${name}" collides with the factory method of the same name. Rename the state.`);
+      throw new TypeError(`The state "${name}" takes a name a factory reserves. Rename the state.`);
 
     declared[name] = step(state);
   }

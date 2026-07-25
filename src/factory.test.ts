@@ -1,6 +1,6 @@
 import { expect, expectTypeOf, test, vi } from "vitest";
 import type { Factorio } from "./factorio.js";
-import type { EvaluationContext, Factory, StateContext } from "./factory.js";
+import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
 import type { Row } from "./prisma.js";
 import { disposableClient, factorioHarness, userDefinition } from "./tests/factorio.js";
 import type { TestClient } from "./tests/client.js";
@@ -327,7 +327,27 @@ test("a state named after a factory method is rejected where the factory is defi
   expect(() =>
     // @ts-expect-error a state may not take a name the factory already answers to
     f.define("user", { definition: userDefinition, states: { create: { name: "Grace" } } }),
-  ).toThrow('The state "create" collides with the factory method of the same name. Rename the state.');
+  ).toThrow('The state "create" takes a name a factory reserves. Rename the state.');
+});
+
+// A factory carrying a `then` is thenable, so awaiting one — or returning it from an async
+// function — would hand the awaiter a state method and never settle.
+test("a state named then is rejected where the factory is defined", async () => {
+  const { f } = await factorioHarness();
+
+  expect(() =>
+    // @ts-expect-error a state may not be named after the thenable protocol
+    f.define("user", { definition: userDefinition, states: { then: { name: "Grace" } } }),
+  ).toThrow('The state "then" takes a name a factory reserves. Rename the state.');
+});
+
+test("a state named __proto__ becomes a method rather than a write to the prototype", async () => {
+  const { f } = await factorioHarness();
+  const users = f.define("user", { definition: userDefinition, states: { ["__proto__"]: { name: "Grace" } } });
+
+  const user = await users.__proto__().create();
+
+  expect(user.name).toBe("Grace");
 });
 
 test("creating never opens a transaction of its own", async () => {
@@ -369,6 +389,18 @@ export function statesCheckedByTheCompiler(f: Factorio<TestClient>, client: Test
 
   void users.state({ name: "Grace" }).suspended().count(2).create();
   void users.state(({ attrs }) => ({ name: attrs.name ?? "Ada" })).create();
+  // A closure returning a different shape per branch: both application sites must take it.
+  void users.state(({ index }) => (index === 0 ? { name: "Ada" } : { email: "grace@example.com" })).create();
+  f.define("user", {
+    definition: userDefinition,
+    states: { alternating: ({ index }) => (index === 0 ? { name: "Ada" } : { email: "grace@example.com" }) },
+  });
+
+  // @ts-expect-error one branch of a state closure naming a field the model does not have
+  void users.state(({ index }) => (index === 0 ? { name: "Ada" } : { nmae: "Grace" }));
+  // @ts-expect-error a config annotated without its state names carries no states
+  const annotated: FactoryConfig<TestClient, "user"> = { definition: userDefinition, states: { bad: held } };
+  void annotated;
 
   // @ts-expect-error an inline state naming a field the model does not have
   void users.state({ nmae: "Ada" });
