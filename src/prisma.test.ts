@@ -12,7 +12,7 @@ interface UserRow {
 }
 
 test("a model name is a delegate the client carries", () => {
-  expectTypeOf<ModelName<TestClient>>().toEqualTypeOf<"user" | "post">();
+  expectTypeOf<ModelName<TestClient>>().toEqualTypeOf<"user" | "post" | "comment">();
 });
 
 test("a row carries the model's scalars and none of its relations", () => {

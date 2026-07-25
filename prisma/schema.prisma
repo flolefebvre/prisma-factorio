@@ -18,10 +18,20 @@ model User {
 }
 
 model Post {
-  id       Int    @id @default(autoincrement())
+  id       Int       @id @default(autoincrement())
   title    String
-  author   User   @relation("authored", fields: [authorId], references: [id])
+  author   User      @relation("authored", fields: [authorId], references: [id])
   authorId Int
-  editor   User?  @relation("edited", fields: [editorId], references: [id])
+  editor   User?     @relation("edited", fields: [editorId], references: [id])
   editorId Int?
+  comments Comment[]
+}
+
+// The one relation this pair shares, left unnamed: the only case in the schema carrying an
+// auto-generated relation label, and the only model pair a relation field need not be named for.
+model Comment {
+  id     Int    @id @default(autoincrement())
+  body   String
+  post   Post   @relation(fields: [postId], references: [id])
+  postId Int
 }
