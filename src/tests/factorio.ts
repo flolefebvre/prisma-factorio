@@ -5,7 +5,10 @@ import type { EvaluationContext, Factory } from "../factory.js";
 import { createTestClient, disposeTestClient, type TestClient } from "./client.js";
 
 /**
- * A bootstrap over a throwaway database, with a user factory already declared on it.
+ * A bootstrap over a throwaway database, with one factory per model already declared on it.
+ *
+ * `posts` and `comments` carry a relation default, so creating either walks the chain of factories
+ * behind it: a comment brings a post, which brings a user.
  *
  * @example
  * ```ts
@@ -16,6 +19,8 @@ export interface Harness {
   prisma: TestClient;
   f: Factorio<TestClient>;
   users: Factory<TestClient, "user">;
+  posts: Factory<TestClient, "post">;
+  comments: Factory<TestClient, "comment">;
 }
 
 /**
@@ -56,6 +61,9 @@ export async function disposableClient(): Promise<TestClient> {
 export async function factorioHarness(options: FakerOptions = {}): Promise<Harness> {
   const prisma = await disposableClient();
   const f = initPrismaFactorio(prisma, options);
+  const users = f.define("user", { definition: userDefinition });
+  const posts = f.define("post", { definition: ({ uid }) => ({ title: uid, author: users }) });
+  const comments = f.define("comment", { definition: ({ uid }) => ({ body: uid, post: posts }) });
 
-  return { prisma, f, users: f.define("user", { definition: userDefinition }) };
+  return { prisma, f, users, posts, comments };
 }

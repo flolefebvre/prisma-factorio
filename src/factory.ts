@@ -1,3 +1,4 @@
+import { relationFieldsOf } from "./datamodel.js";
 import type { FakerInstance, FakerProvider } from "./faker.js";
 import type { Attributes, CreateInput, ModelName, Overrides, PartialAttributes, Row } from "./prisma.js";
 import { nextUid } from "./uid.js";
@@ -213,13 +214,70 @@ function given(attributes: Written | undefined): Written {
   return Object.fromEntries(Object.entries(attributes ?? {}).filter(([, value]) => value !== undefined));
 }
 
+// Registered globally: a duplicated package instance recognises the other instance's factories.
+const brand = Symbol.for("prisma-factorio.factory");
+
+// Every operation Prisma's create input accepts inside a relation field, to-one and to-many alike.
+// A value naming only these is Prisma's own input, and reaches the client untouched.
+const relationOperations = ["connect", "create", "connectOrCreate", "createMany"];
+
+interface Embedded {
+  create: () => Promise<unknown>;
+}
+
+// A row carries whatever columns the model declares, `create` among them where the schema says so,
+// so the brand is what tells a factory from a row.
+function isFactory(value: object): value is Embedded {
+  return brand in value;
+}
+
+// A row and Prisma's own relation input are both plain objects; a value carrying a prototype of its
+// own — a date, a byte array, a scalar list — is neither, and stands for itself.
+function plainObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+
+  const prototype: unknown = Object.getPrototypeOf(value);
+
+  return prototype === Object.prototype || prototype === null ? (value as Record<string, unknown>) : undefined;
+}
+
+async function connected(value: Record<string, unknown>): Promise<unknown> {
+  if (isFactory(value)) return { connect: await value.create() };
+
+  const keys = Object.keys(value);
+
+  // The whole row goes into the `where`: the runtime datamodel marks no field unique, so no subset
+  // of a row is knowably the one Prisma would match on. Every extra field narrows the match, which
+  // is what makes a stale row fail rather than reach the record it has become.
+  return keys.length > 0 && keys.every((key) => relationOperations.includes(key)) ? value : { connect: { ...value } };
+}
+
+async function resolved(client: unknown, model: string, data: Written): Promise<Written> {
+  const embedded = Object.entries(data).flatMap(([key, value]) => {
+    const object = plainObject(value);
+    return object === undefined ? [] : [[key, object] as const];
+  });
+
+  if (embedded.length === 0) return data;
+
+  const relations = relationFieldsOf(client, model);
+  const written: Written = { ...data };
+
+  for (const [key, value] of embedded) {
+    if (relations.includes(key)) written[key] = await connected(value);
+  }
+
+  return written;
+}
+
 async function write<C, M extends ModelName<C>>(
   chain: FactoryChain<C, M>,
   overrides: Written | undefined,
 ): Promise<unknown[]> {
   // One faker serves the whole batch, so a seeded run replays the same values in the same order.
   const faker = await chain.faker();
-  const delegate = chain.client()[chain.model] as CreateDelegate;
+  const client = chain.client();
+  const delegate = client[chain.model] as CreateDelegate;
   const applied = given(overrides);
   const rows: unknown[] = [];
 
@@ -229,7 +287,9 @@ async function write<C, M extends ModelName<C>>(
 
     for (const state of chain.applied) attrs = { ...attrs, ...given(state({ ...context, attrs })) };
 
-    rows.push(await delegate.create({ data: { ...attrs, ...applied } }));
+    const data = await resolved(client, String(chain.model), { ...attrs, ...applied });
+
+    rows.push(await delegate.create({ data }));
   }
 
   return rows;
@@ -238,6 +298,9 @@ async function write<C, M extends ModelName<C>>(
 /**
  * Builds a factory over the chain of definition, states, client and batch size a fluent call has
  * accumulated.
+ *
+ * Every factory this returns carries `Symbol.for("prisma-factorio.factory")`, non-enumerable, which
+ * is how a value standing in a relation field is told from a row of that model.
  *
  * @example
  * ```ts
@@ -267,6 +330,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
   };
 
   const named = Object.entries(chain.declared).map(([name, state]) => [name, (): Factory<C, M, R, S> => derive(state)]);
+  const factory = { ...methods, ...Object.fromEntries(named) } as Factory<C, M, R, S>;
 
-  return { ...methods, ...Object.fromEntries(named) } as Factory<C, M, R, S>;
+  return Object.defineProperty(factory, brand, { value: true });
 }

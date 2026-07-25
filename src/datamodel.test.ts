@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { relationFieldsTo, resolveRelationField } from "./datamodel.js";
+import { relationFieldsOf, relationFieldsTo, resolveRelationField } from "./datamodel.js";
 import { disposableClient } from "./tests/factorio.js";
 
 interface Field {
@@ -24,6 +24,15 @@ test("the relation fields of a model that point at a target are read off the gen
   expect(relationFieldsTo(prisma, "comment", "post")).toEqual(["post"]);
   expect(relationFieldsTo(prisma, "post", "comment")).toEqual(["comments"]);
   expect(relationFieldsTo(prisma, "comment", "user")).toEqual([]);
+});
+
+test("every relation field a model declares is read off the client, and none of its scalars", async () => {
+  const prisma = await disposableClient();
+
+  expect(relationFieldsOf(prisma, "post")).toEqual(["author", "editor", "comments"]);
+  expect(relationFieldsOf(prisma, "user")).toEqual(["posts", "edited"]);
+  expect(relationFieldsOf(prisma, "comment")).toEqual(["post"]);
+  expect(relationFieldsOf(prisma, "psot")).toEqual([]);
 });
 
 test("a transaction client answers the same relation fields as the client it comes from", async () => {

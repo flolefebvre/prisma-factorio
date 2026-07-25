@@ -62,6 +62,14 @@ test("a relation field is optional where one relation answers and required where
   expectTypeOf<RelationArgs<TestClient, "post", "user">>().toEqualTypeOf<[relationField: "author" | "editor"]>();
 });
 
+test("a relation field argument reads the arity it is asked for, naming the side in its error", () => {
+  expectTypeOf<RelationArgs<TestClient, "post", "comment", true>>().toEqualTypeOf<[relationField?: "comments"]>();
+  expectTypeOf<RelationArgs<TestClient, "user", "post", true>>().toEqualTypeOf<[relationField: "posts" | "edited"]>();
+  expectTypeOf<RelationArgs<TestClient, "comment", "user", true>>().toEqualTypeOf<
+    [relationField: 'ERROR: no has-many relation from "comment" to "user"']
+  >();
+});
+
 // Left to itself the no-relation case degrades to `[relationField?: never]`, which every call
 // satisfies by passing nothing: `IsUnion<never>` is false, so the union branch does not catch it.
 test("a pair with no belongs-to relation takes an argument no relation field satisfies", () => {

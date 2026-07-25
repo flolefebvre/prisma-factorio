@@ -1,5 +1,5 @@
 import { expect, expectTypeOf, test, vi } from "vitest";
-import type { Factorio } from "./factorio.js";
+import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
 import type { Row } from "./prisma.js";
 import { disposableClient, factorioHarness, userDefinition } from "./tests/factorio.js";
@@ -445,5 +445,152 @@ test("state returns a new factory rather than changing the one it was called on"
   const user = await users.create();
 
   expect(renamed).not.toBe(users);
+  expect(user.name).toBe("Ada");
+});
+
+interface Recording {
+  client: TestClient;
+  written: Record<string, unknown>[];
+}
+
+// The recorded delegate hangs off a real client, which is where relation metadata is read from: a
+// bare object of delegates carries none.
+function recording(prisma: TestClient): Recording {
+  const written: Record<string, unknown>[] = [];
+  const post = Object.create(prisma.post) as TestClient["post"];
+  const client = Object.create(prisma) as TestClient;
+
+  Object.defineProperty(post, "create", {
+    value: (args: { data: Record<string, unknown> }): unknown => {
+      written.push(args.data);
+      return prisma.post.create(args as never);
+    },
+  });
+  Object.defineProperty(client, "post", { value: post });
+
+  return { client, written };
+}
+
+test("a factory carries the brand relation resolution recognises it by, and spreading one drops it", async () => {
+  const { users } = await factorioHarness();
+
+  expect(Symbol.for("prisma-factorio.factory") in users).toBe(true);
+  expect(Symbol.for("prisma-factorio.factory") in { ...users }).toBe(false);
+});
+
+test("a factory embedded in a definition creates the parent and connects the record to it", async () => {
+  const { prisma, posts } = await factorioHarness();
+
+  const post = await posts.create();
+
+  await expect(prisma.user.findUniqueOrThrow({ where: { id: post.authorId } })).resolves.toMatchObject({ name: "Ada" });
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("a relation default reaching through several models creates one record of each", async () => {
+  const { prisma, comments } = await factorioHarness();
+
+  const comment = await comments.create();
+
+  await expect(prisma.post.findUniqueOrThrow({ where: { id: comment.postId } })).resolves.toBeTruthy();
+  await expect(prisma.post.count()).resolves.toBe(1);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("a factory embedded in a state creates the parent, and the layer it replaced is never evaluated", async () => {
+  const { prisma, f, users } = await factorioHarness();
+  const posts = f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: { create: { email: `${uid}@example.com`, name: "Grace" } } }),
+    states: { byAda: { author: users } },
+  });
+
+  await posts.byAda().create();
+
+  await expect(prisma.user.findMany()).resolves.toMatchObject([{ name: "Ada" }]);
+});
+
+test("a factory embedded in create() overrides creates the parent and connects the record to it", async () => {
+  const { prisma, f } = await factorioHarness();
+  const authors = f.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com`, name: "Hedy" }) });
+  const posts = f.define("post", { definition: ({ uid }) => ({ title: uid, author: { connect: { id: 404 } } }) });
+
+  const post = await posts.create({ author: authors });
+
+  await expect(prisma.user.findMany()).resolves.toMatchObject([{ id: post.authorId, name: "Hedy" }]);
+});
+
+test("a row embedded in a relation field connects to it without creating a record", async () => {
+  const { prisma, f, users } = await factorioHarness();
+  const ada = await users.create();
+  const posts = f.define("post", { definition: ({ uid }) => ({ title: uid, author: ada }) });
+
+  const written = await posts.count(2).create();
+
+  expect(written.map((post) => post.authorId)).toStrictEqual([ada.id, ada.id]);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("an override on a relation key replaces the definition's factory, which is never evaluated", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const grace = await users.create({ name: "Grace" });
+
+  const post = await posts.create({ author: grace });
+
+  expect(post.authorId).toBe(grace.id);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("native relation input naming connect reaches Prisma untouched", async () => {
+  const { f, users } = await factorioHarness();
+  const ada = await users.create();
+  const posts = f.define("post", { definition: ({ uid }) => ({ title: uid, author: { connect: { id: ada.id } } }) });
+
+  await expect(posts.create()).resolves.toMatchObject({ authorId: ada.id });
+});
+
+test("native relation input naming create reaches Prisma untouched", async () => {
+  const { prisma, posts } = await factorioHarness();
+
+  const post = await posts.create({ author: { create: { email: "grace@example.com", name: "Grace" } } });
+
+  await expect(prisma.user.findMany()).resolves.toMatchObject([{ id: post.authorId, name: "Grace" }]);
+});
+
+test("a relation default in a definition evaluates once per record, so a batch draws a parent each", async () => {
+  const { prisma, posts } = await factorioHarness();
+
+  const rows = await posts.count(3).create();
+
+  expect(new Set(rows.map((post) => post.authorId)).size).toBe(3);
+  await expect(prisma.user.count()).resolves.toBe(3);
+});
+
+test("the data handed to create carries the relation field as connect and never a foreign key column", async () => {
+  const { prisma, posts } = await factorioHarness();
+  const { client, written } = recording(prisma);
+
+  const post = await posts.using(client).create();
+  const author = await prisma.user.findUniqueOrThrow({ where: { id: post.authorId } });
+
+  expect(Object.keys(written[0] ?? {})).toStrictEqual(["title", "author"]);
+  expect(written[0]?.author).toStrictEqual({ connect: author });
+});
+
+// The whole row goes into the `where`, so every field beyond the unique one narrows it: a row read
+// before the record changed no longer matches anything.
+test("connecting a row that has since changed fails rather than reaching the record it became", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const ada = await users.create();
+  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+
+  await expect(posts.create({ author: ada })).rejects.toMatchObject({ code: "P2025" });
+});
+
+test("a factory with no relation value to resolve never reads the client's relation metadata", async () => {
+  const { prisma } = await factorioHarness();
+  const delegates = initPrismaFactorio({ user: prisma.user });
+
+  const user = await delegates.define("user", { definition: userDefinition }).create();
+
   expect(user.name).toBe("Ada");
 });

@@ -41,6 +41,30 @@ function quoted(names: string[]): string {
   return names.map((name) => `"${name}"`).join(", ");
 }
 
+// A field pointing at another model is the only one the datamodel gives kind `object`; a raw foreign
+// key column backing one is a scalar like any other.
+function relationFields(client: unknown, model: string): DataModelField[] {
+  const fields = entryOf(modelsOf(client), model)?.[1].fields ?? [];
+
+  return fields.filter((field) => field.kind === "object");
+}
+
+/**
+ * Every relation field a model declares, in schema order, and none of its scalars.
+ *
+ * The model is named by its delegate key, the same name `define` takes. A name no model answers to
+ * yields no fields rather than throwing, so a client carrying a model the caller does not know about
+ * is not an error.
+ *
+ * @example
+ * ```ts
+ * relationFieldsOf(prisma, "post"); // ["author", "editor", "comments"]
+ * ```
+ */
+export function relationFieldsOf(client: unknown, model: string): string[] {
+  return relationFields(client, model).map((field) => field.name);
+}
+
 /**
  * The relation fields of a model that point at a target model, in schema order.
  *
@@ -52,11 +76,11 @@ function quoted(names: string[]): string {
  * ```
  */
 export function relationFieldsTo(client: unknown, model: string, target: string): string[] {
-  const models = modelsOf(client);
-  const targetTag = entryOf(models, target)?.[0];
-  const fields = entryOf(models, model)?.[1].fields ?? [];
+  const targetTag = entryOf(modelsOf(client), target)?.[0];
 
-  return fields.filter((field) => field.kind === "object" && field.type === targetTag).map((field) => field.name);
+  return relationFields(client, model)
+    .filter((field) => field.type === targetTag)
+    .map((field) => field.name);
 }
 
 /**

@@ -26,8 +26,7 @@ export type ModelName<C> = {
  */
 export type Row<C, M extends ModelName<C>> = Types.Public.Result<C[M], object, "create">;
 
-// `Payload` takes a deferred generic and answers `any` for anything that is not a delegate, so both
-// halves are read by matching the shape rather than by indexing it.
+// `Payload` takes a deferred generic and answers `any` for anything that is not a delegate.
 type Objects<C, M extends ModelName<C>> = Types.Public.Payload<C[M]> extends { objects: infer O } ? O : never;
 
 type ModelTag<C, M extends ModelName<C>> = Types.Public.Payload<C[M]> extends { name: infer N } ? N : never;
@@ -78,33 +77,37 @@ type UnionToIntersection<U> = (U extends unknown ? (union: U) => void : never) e
 
 type IsUnion<U> = [U] extends [UnionToIntersection<U>] ? false : true;
 
+type Side<List extends boolean> = List extends true ? "has-many" : "belongs-to";
+
 /**
- * How a belongs-to relation is selected between a child model and a parent model: the relation field
- * may be left out where the pair shares exactly one, must be named where it shares several, and no
- * value satisfies the parameter where it shares none.
+ * How a relation is selected between a child model and a parent model, at one arity: the relation
+ * field may be left out where the pair shares exactly one, must be named where it shares several,
+ * and no value satisfies the parameter where it shares none.
+ *
+ * `List` reads the same side {@link RelationsTo} reads: the belongs-to side by default, the fields
+ * holding many records when `true`.
  *
  * @example
  * ```ts
  * type Args = RelationArgs<PrismaClient, "post", "user">; // [relationField: "author" | "editor"]
  * ```
  */
-export type RelationArgs<C, MC extends ModelName<C>, MP extends ModelName<C>> =
-  // Ordered: `IsUnion<never>` is `false`, so a pair sharing no belongs-to relation reaches the
+export type RelationArgs<C, MC extends ModelName<C>, MP extends ModelName<C>, List extends boolean = false> =
+  // Ordered: `IsUnion<never>` is `false`, so a pair sharing no relation at this arity reaches the
   // optional branch and satisfies every call unless this branch catches it first.
-  [RelationsTo<C, MC, MP>] extends [never]
-    ? [relationField: `ERROR: no belongs-to relation from "${MC & string}" to "${MP & string}"`]
-    : IsUnion<RelationsTo<C, MC, MP>> extends true
-      ? [relationField: RelationsTo<C, MC, MP>]
-      : [relationField?: RelationsTo<C, MC, MP>];
+  [RelationsTo<C, MC, MP, List>] extends [never]
+    ? [relationField: `ERROR: no ${Side<List>} relation from "${MC & string}" to "${MP & string}"`]
+    : IsUnion<RelationsTo<C, MC, MP, List>> extends true
+      ? [relationField: RelationsTo<C, MC, MP, List>]
+      : [relationField?: RelationsTo<C, MC, MP, List>];
 
 // `unknown` for the row a factory returns and the default empty state map: both sit in output
 // positions only, so a factory carrying any of either reaches this.
 type Parent<C, P> = P extends ModelName<C> ? Factory<C, P, unknown> | Row<C, P> : never;
 
-// The belongs-to side only: a relation field holding many records keeps Prisma's own input, since
-// how many records a factory standing in that field stands for is what `has` answers.
-type RelationValue<C, M extends ModelName<C>, K> =
-  K extends RelationKey<C, M> ? (IsList<C, M, K> extends true ? never : Parent<C, TargetModel<C, M, K>>) : never;
+// A relation field whose arity is not the one asked for keeps Prisma's own input.
+type RelationValue<C, M extends ModelName<C>, K, List extends boolean = false> =
+  K extends RelationKey<C, M> ? (IsList<C, M, K> extends List ? Parent<C, TargetModel<C, M, K>> : never) : never;
 
 // Distributed over the mutually exclusive branches Prisma's create input holds, each of which pads
 // the keys the other owns with `?: never`: a padded key is left alone, so naming a raw foreign key
