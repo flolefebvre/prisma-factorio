@@ -1,4 +1,5 @@
 pnpm-lock.yaml
+src/tests/generated/
 docs/laravel-factories.md
 report/
 .claude/
