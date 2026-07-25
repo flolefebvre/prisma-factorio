@@ -69,3 +69,7 @@ Canonical triage labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready
 ### Domain docs
 
 Domain glossary in `CONTEXT.md` at the repo root; architectural decisions in `docs/adr/`. See `docs/agents/domain.md`.
+
+### External docs
+
+Use the `find-docs` skill eagerly when working against an external API — especially Prisma's, whose type surface and generator output changed sharply between majors; trained-in knowledge of them is often stale.
