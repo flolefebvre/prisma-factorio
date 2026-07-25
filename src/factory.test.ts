@@ -594,7 +594,7 @@ test("the data handed to create carries the relation field as connect and never 
   expect(written[0]?.author).toStrictEqual({ connect: author });
 });
 
-// The whole row goes into the `where`, so every field beyond the unique one narrows it: a row read
+// The row's scalars go into the `where`, so every field beyond the unique one narrows it: a row read
 // before the record changed no longer matches anything.
 test("connecting a row that has since changed fails rather than reaching the record it became", async () => {
   const { prisma, posts, users } = await factorioHarness();
@@ -653,6 +653,54 @@ test("for(row) reads the model a row belongs to off the fields it carries when t
   const comment = await comments.for(post).create();
 
   expect(comment.postId).toBe(post.id);
+});
+
+// The return annotations are checked against the client's own inference, which is what keeps these
+// honest stand-ins for what `include` hands back: the model's scalars, loaded relation alongside.
+async function userWithPosts({ prisma, users }: Harness): Promise<Row<TestClient, "user"> & { posts: unknown[] }> {
+  const ada = await users.create();
+
+  return prisma.user.findUniqueOrThrow({ where: { id: ada.id }, include: { posts: true } });
+}
+
+async function postWithComments({
+  prisma,
+  posts,
+}: Harness): Promise<Row<TestClient, "post"> & { comments: unknown[] }> {
+  const post = await posts.create();
+
+  return prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { comments: true } });
+}
+
+test("for(row) loaded with include connects on the row's scalars, the loaded relation left out", async () => {
+  const harness = await factorioHarness();
+  const loaded = await userWithPosts(harness);
+  const { client, written } = recording(harness.prisma, "post");
+
+  const post = await harness.posts.using(client).for(loaded, "author").create();
+
+  expect(post.authorId).toBe(loaded.id);
+  expect(written[0]?.author).toStrictEqual({ connect: { id: loaded.id, email: loaded.email, name: loaded.name } });
+});
+
+test("for(row) loaded with include resolves the relation field when the name is left out", async () => {
+  const harness = await factorioHarness();
+  const loaded = await postWithComments(harness);
+
+  const comment = await harness.comments.for(loaded).create();
+
+  expect(comment.postId).toBe(loaded.id);
+});
+
+test("a row loaded with include stands in a relation default, in a definition and in overrides", async () => {
+  const harness = await factorioHarness();
+  const loaded = await userWithPosts(harness);
+  const authored = harness.f.define("post", { definition: ({ uid }) => ({ title: uid, author: loaded }) });
+
+  const fromDefinition = await authored.create();
+  const fromOverrides = await harness.posts.create({ author: loaded });
+
+  expect([fromDefinition.authorId, fromOverrides.authorId]).toStrictEqual([loaded.id, loaded.id]);
 });
 
 test("for() beats the relation default in the definition, which is never evaluated", async () => {
@@ -769,8 +817,8 @@ test("for() rejects an omitted relation field where the model pair shares severa
   const bypassed = posts as unknown as { for: (parent: unknown) => Factory<TestClient, "post"> };
 
   await expect(bypassed.for(users).create()).rejects.toThrow(
-    'The model "post" has more than one relation field pointing at "user": "author", "editor". ' +
-      "Pass the relation field explicitly.",
+    'The model "post" has more than one relation field pointing at "user". Pass the relation field explicitly. ' +
+      'Relation fields on "post" pointing at "user": "author", "editor".',
   );
 });
 
@@ -856,6 +904,7 @@ export function relationsCheckedByTheCompiler(
   void posts.for(users, "author").create();
   void posts.for(userRow, "editor").create();
   void posts.for(stateful, "author").create();
+  void posts.for(stateful.suspended(), "author").create();
   void comments.for(posts).create();
   void comments.for(postRow).create();
 
@@ -876,4 +925,6 @@ export function relationsCheckedByTheCompiler(
   void posts.for(users, "illustrator");
   // @ts-expect-error a value that is neither a factory nor a row
   void posts.for(42, "author");
+  // @ts-expect-error a batched factory creates a row each, so it stands for no one parent
+  void posts.for(users.count(3), "author");
 }

@@ -88,7 +88,8 @@ export function relationFieldsTo(client: unknown, model: string, target: string)
  *
  * Both models are named by their delegate key. An explicit `relationField` must be one of the
  * model's relation fields pointing at the target; omitted, it resolves only where exactly one such
- * field exists. Anything else throws, naming the model pair and every field that would have served.
+ * field exists. Anything else throws, naming the model pair and listing the relation fields it holds
+ * between them, which the runtime cannot narrow down to the ones a given call accepts.
  *
  * @example
  * ```ts
@@ -116,8 +117,9 @@ export function resolveRelationField(client: unknown, model: string, target: str
 
   if (rest.length > 0)
     throw new TypeError(
-      `The model "${model}" has more than one relation field pointing at "${target}": ${quoted(candidates)}. ` +
-        "Pass the relation field explicitly.",
+      `The model "${model}" has more than one relation field pointing at "${target}". ` +
+        "Pass the relation field explicitly. " +
+        `Relation fields on "${model}" pointing at "${target}": ${quoted(candidates)}.`,
     );
 
   return only;
@@ -127,27 +129,64 @@ function scalarNames(models: Record<string, DataModelModel>, tag: string): strin
   return (models[tag]?.fields ?? []).filter((field) => field.kind !== "object").map((field) => field.name);
 }
 
+function declaredNames(models: Record<string, DataModelModel>, tag: string): string[] {
+  return (models[tag]?.fields ?? []).map((field) => field.name);
+}
+
 // A row announces no model of its own, so the model it belongs to is read off the fields it carries:
-// the one model a relation field points at whose scalars account for every one of them.
+// the one model a relation field points at that declares every one of them. A row loaded with
+// `include` carries the relations it loaded, which is why the match is not against scalars alone.
 function fittingTarget(client: unknown, model: string, row: Record<string, unknown>): string {
   const models = modelsOf(client);
   const keys = Object.keys(row);
   const tags = [...new Set(relationFields(client, model).map((field) => field.type))];
-  const [only, ...rest] = tags.filter((tag) => keys.every((key) => scalarNames(models, tag).includes(key)));
+  const [only, ...rest] = tags.filter((tag) => keys.every((key) => declaredNames(models, tag).includes(key)));
 
   if (only === undefined || rest.length > 0)
     throw new TypeError(
-      `The row passed to for() fits no single model the relation fields of "${model}" point at: ` +
-        `${quoted(relationFieldsOf(client, model))}. Pass the relation field explicitly.`,
+      `The row passed to for() fits no single model the relation fields of "${model}" point at. ` +
+        "Pass the relation field explicitly. " +
+        `Relation fields on "${model}": ${quoted(relationFieldsOf(client, model))}.`,
     );
 
   return delegateKey(only);
 }
 
-function targetOf(client: unknown, model: string, relationField: string | undefined): string | undefined {
-  const field = relationFields(client, model).find((candidate) => candidate.name === relationField);
+function tagOf(client: unknown, model: string, relationField: string | undefined): string | undefined {
+  return relationFields(client, model).find((candidate) => candidate.name === relationField)?.type;
+}
 
-  return field === undefined ? undefined : delegateKey(field.type);
+function targetOf(client: unknown, model: string, relationField: string | undefined): string | undefined {
+  const tag = tagOf(client, model, relationField);
+
+  return tag === undefined ? undefined : delegateKey(tag);
+}
+
+/**
+ * The fields of a row that the model at the far end of a relation field declares as scalars.
+ *
+ * The model is named by its delegate key, the relation field by the name it carries on that model. A
+ * relation field the model does not declare hands the row back whole, having no target model to read
+ * scalars off.
+ *
+ * @example
+ * ```ts
+ * targetScalars(prisma, "post", "author", user); // { id: 1, email: "ada@example.com", name: null }
+ * ```
+ */
+export function targetScalars(
+  client: unknown,
+  model: string,
+  relationField: string,
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  const tag = tagOf(client, model, relationField);
+
+  if (tag === undefined) return row;
+
+  const scalars = scalarNames(modelsOf(client), tag);
+
+  return Object.fromEntries(Object.entries(row).filter(([key]) => scalars.includes(key)));
 }
 
 /**
@@ -156,8 +195,8 @@ function targetOf(client: unknown, model: string, relationField: string | undefi
  *
  * The model is named by its delegate key. An explicit `relationField` carries the model it points at,
  * so the row's own fields are read only where it is left out — or where it names no relation field at
- * all, which the throw then reports. A row fitting no single target model throws, naming every
- * relation field the model declares and asking for one of them.
+ * all, which the throw then reports. A row fitting no single target model throws, listing every
+ * relation field the model declares.
  *
  * @example
  * ```ts

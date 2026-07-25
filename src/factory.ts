@@ -1,4 +1,4 @@
-import { relationFieldsOf, resolveRelationField, resolveRowRelationField } from "./datamodel.js";
+import { relationFieldsOf, resolveRelationField, resolveRowRelationField, targetScalars } from "./datamodel.js";
 import type { FakerInstance, FakerProvider } from "./faker.js";
 import type {
   Attributes,
@@ -305,15 +305,24 @@ function inheriting(parent: Embedded, client: unknown): Embedded {
   return parent[rebind]?.(client) ?? parent;
 }
 
-async function connected(client: unknown, value: Record<string, unknown>): Promise<unknown> {
+async function connected(
+  client: unknown,
+  model: string,
+  field: string,
+  value: Record<string, unknown>,
+): Promise<unknown> {
   if (isFactory(value)) return { connect: await inheriting(value, client).create() };
 
   const keys = Object.keys(value);
 
-  // The whole row goes into the `where`: the runtime datamodel marks no field unique, so no subset
-  // of a row is knowably the one Prisma would match on. Every extra field narrows the match, which
-  // is what makes a stale row fail rather than reach the record it has become.
-  return keys.length > 0 && keys.every((key) => relationOperations.includes(key)) ? value : { connect: { ...value } };
+  // Every scalar of the row goes into the `where`: the runtime datamodel marks no field unique, so no
+  // subset of them is knowably the one Prisma would match on. Every extra field narrows the match,
+  // which is what makes a stale row fail rather than reach the record it has become. A relation the
+  // row carries is no field to match on at all — a row loaded with `include` carries one — so the
+  // where-clause is what the target model declares as scalars and nothing else.
+  return keys.length > 0 && keys.every((key) => relationOperations.includes(key))
+    ? value
+    : { connect: targetScalars(client, model, field, value) };
 }
 
 async function resolved(client: unknown, model: string, data: Written): Promise<Written> {
@@ -328,7 +337,7 @@ async function resolved(client: unknown, model: string, data: Written): Promise<
   const written: Written = { ...data };
 
   for (const [key, value] of embedded) {
-    if (relations.includes(key)) written[key] = await connected(client, value);
+    if (relations.includes(key)) written[key] = await connected(client, model, key, value);
   }
 
   return written;

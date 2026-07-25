@@ -178,4 +178,8 @@ export function checkedByTheCompiler(
   f.define("post", { definition: ({ uid }) => ({ title: uid, authorId: 1, author: users }) });
   // @ts-expect-error a state naming a relation field of a model the relation does not point at
   void posts.state({ author: posts });
+  // @ts-expect-error a batched factory creates a row each, so it stands for no one record
+  f.define("post", { definition: ({ uid }) => ({ title: uid, author: users.count(3) }) });
+  // @ts-expect-error a batched factory in overrides stands for no one record either
+  void posts.create({ author: users.count(3) });
 }

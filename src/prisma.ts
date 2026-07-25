@@ -104,15 +104,16 @@ export type RelationArgs<C, MC extends ModelName<C>, MP extends ModelName<C>, Li
 /**
  * What stands for one record of a model: a factory of it, or a row of it.
  *
- * `unknown` for the row a factory returns and for its state map: both sit in output positions only,
- * so a factory carrying any of either satisfies this.
+ * The row the factory returns is pinned to one record, which is what keeps a batched factory — whose
+ * `create` returns a row each — from standing here. Its state map stays `unknown`: that one sits in
+ * output positions only, so a factory carrying any states satisfies this.
  *
  * @example
  * ```ts
  * const author: Parent<PrismaClient, "user"> = userFactory;
  * ```
  */
-export type Parent<C, P> = P extends ModelName<C> ? Factory<C, P, unknown> | Row<C, P> : never;
+export type Parent<C, P> = P extends ModelName<C> ? Factory<C, P, Row<C, P>, unknown> | Row<C, P> : never;
 
 /**
  * What stands for one record of any model the client carries.

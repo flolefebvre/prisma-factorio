@@ -1,9 +1,19 @@
 import { expect, test } from "vitest";
-import { relationFieldsOf, relationFieldsTo, resolveRelationField, resolveRowRelationField } from "./datamodel.js";
+import {
+  relationFieldsOf,
+  relationFieldsTo,
+  resolveRelationField,
+  resolveRowRelationField,
+  targetScalars,
+} from "./datamodel.js";
 import { disposableClient } from "./tests/factorio.js";
 
 const postShape = { id: 1, title: "Hello", authorId: 1, editorId: null };
 const userShape = { id: 1, email: "ada@example.com", name: null };
+
+const severalFields =
+  'The model "post" has more than one relation field pointing at "user". Pass the relation field explicitly. ' +
+  'Relation fields on "post" pointing at "user": "author", "editor".';
 
 interface Field {
   name: string;
@@ -73,13 +83,12 @@ test("a model pair with no relation at all is rejected, naming both models", asy
   );
 });
 
+// The listed fields are reported as what they are rather than as what to pass: the runtime datamodel
+// carries no arity, so the list can hold a field holding many records, which for() rejects.
 test("a relation field omitted with more than one candidate is rejected, naming the candidates", async () => {
   const prisma = await disposableClient();
 
-  expect(() => resolveRelationField(prisma, "post", "user")).toThrow(
-    'The model "post" has more than one relation field pointing at "user": "author", "editor". ' +
-      "Pass the relation field explicitly.",
-  );
+  expect(() => resolveRelationField(prisma, "post", "user")).toThrow(severalFields);
 });
 
 test("an explicit relation field that is a candidate resolves to itself", async () => {
@@ -112,12 +121,33 @@ test("a row resolves the relation field through the one target model its own fie
   expect(resolveRowRelationField(prisma, "comment", postShape)).toBe("post");
 });
 
+test("a row is narrowed to the scalars of the model a relation field points at", async () => {
+  const prisma = await disposableClient();
+
+  expect(targetScalars(prisma, "post", "author", { ...userShape, posts: [], edited: [] })).toStrictEqual(userShape);
+  expect(targetScalars(prisma, "comment", "post", postShape)).toStrictEqual(postShape);
+});
+
+test("a relation field the model does not declare hands the row back whole", async () => {
+  const prisma = await disposableClient();
+
+  expect(targetScalars(prisma, "post", "illustrator", userShape)).toStrictEqual(userShape);
+});
+
+// `include` hands back the loaded relation alongside the scalars, and the relation it names belongs
+// to the very model the row is being matched against.
+test("a row carrying loaded relations fits the model its scalars belong to", async () => {
+  const prisma = await disposableClient();
+
+  expect(resolveRowRelationField(prisma, "comment", { ...postShape, comments: [] })).toBe("post");
+});
+
 test("a row fitting no target model of the child is rejected, naming the candidates", async () => {
   const prisma = await disposableClient();
 
   expect(() => resolveRowRelationField(prisma, "comment", userShape)).toThrow(
-    'The row passed to for() fits no single model the relation fields of "comment" point at: "post". ' +
-      "Pass the relation field explicitly.",
+    'The row passed to for() fits no single model the relation fields of "comment" point at. ' +
+      'Pass the relation field explicitly. Relation fields on "comment": "post".',
   );
 });
 
@@ -126,18 +156,15 @@ test("a row fitting several target models of the child is rejected, naming the c
   const prisma = await disposableClient();
 
   expect(() => resolveRowRelationField(prisma, "post", { id: 1 })).toThrow(
-    'The row passed to for() fits no single model the relation fields of "post" point at: ' +
-      '"author", "editor", "comments". Pass the relation field explicitly.',
+    'The row passed to for() fits no single model the relation fields of "post" point at. ' +
+      'Pass the relation field explicitly. Relation fields on "post": "author", "editor", "comments".',
   );
 });
 
 test("a row fitting one target model reached by several relation fields reports them", async () => {
   const prisma = await disposableClient();
 
-  expect(() => resolveRowRelationField(prisma, "post", userShape)).toThrow(
-    'The model "post" has more than one relation field pointing at "user": "author", "editor". ' +
-      "Pass the relation field explicitly.",
-  );
+  expect(() => resolveRowRelationField(prisma, "post", userShape)).toThrow(severalFields);
 });
 
 // The named field carries its own target, so a row too narrow to single one out still resolves.
