@@ -2,20 +2,19 @@
 
 ## Context
 
-This project is a Laravel-style model factory library for Prisma (TypeScript), built as a custom Prisma generator. Tests and seeds declare the records they need through a fluent, fully typed API instead of hand-writing every column. Full type safety is the core promise: definitions must cover every required field of a model, or the code does not compile.
+This project is a Laravel-style model factory library for Prisma (TypeScript). Tests and seeds declare the records they need through a fluent, fully typed API instead of hand-writing every column.
 
-`docs/laravel-factories.md` is the reference for the feature set being ported. The public API is not settled — nothing outside that document should be treated as decided.
+`docs/laravel-factories.md` documents the Laravel original and is the reference for the feature set being ported. It is the only spec: the API, the code layout, and how the schema is read are all open questions. Nothing in this repo should be read as a settled design decision.
 
 ## Stack
 
-TypeScript (strict, ESM) · Node ≥ 20 · built on `@prisma/generator-helper` (Prisma ≥ 7 < 8 as peer dependency) · Vitest · ESLint + Prettier + jscpd. Package manager: pnpm.
+TypeScript (strict, ESM) · Node ≥ 20 · Prisma ≥ 7 < 8 as peer dependency · Vitest · ESLint + Prettier + jscpd. Package manager: pnpm.
 
 ## Layout
 
 ```
 src/
-  generator.ts    Prisma generator entry point (the `prisma-factorio` bin)
-  index.ts        Public runtime API (package root export)
+  index.ts        Package root export
   tests/          Shared test helpers (never published)
 docs/
   adr/            Architectural decision records

@@ -20,9 +20,6 @@
     "fixtures",
     "laravel"
   ],
-  "bin": {
-    "prisma-factorio": "./dist/generator.js"
-  },
   "exports": {
     ".": "./dist/index.js"
   },
@@ -42,9 +39,6 @@
     "duplicates": "jscpd && echo '--duplicates OK--'",
     "gates": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && echo '--gates OK--'"
   },
-  "dependencies": {
-    "@prisma/generator-helper": "7.8.0"
-  },
   "peerDependencies": {
     "prisma": ">=7 <8"
   },
@@ -53,6 +47,7 @@
     "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/client": "7.8.0",
     "@types/node": "^26.1.1",
+    "prisma": "7.8.0",
     "eslint": "^10.7.0",
     "jscpd": "^5.0.12",
     "prettier": "^3.9.5",
