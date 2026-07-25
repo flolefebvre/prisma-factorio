@@ -37,6 +37,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check . && echo '--format:check OK--'",
     "duplicates": "jscpd && echo '--duplicates OK--'",
+    "sandbox:prepare": "prisma generate --config sandbox/prisma.config.ts && prisma db push --config sandbox/prisma.config.ts && echo '--sandbox:prepare OK--'",
+    "sandbox:verify": "tsc -p sandbox --noEmit && vitest run -c sandbox/vitest.config.ts && echo '--sandbox:verify OK--'",
     "gates": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && echo '--gates OK--'"
   },
   "peerDependencies": {
