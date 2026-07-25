@@ -10,15 +10,18 @@ generator client {
 }
 
 model User {
-  id    Int     @id @default(autoincrement())
-  email String  @unique
-  name  String?
-  posts Post[]
+  id     Int     @id @default(autoincrement())
+  email  String  @unique
+  name   String?
+  posts  Post[]  @relation("authored")
+  edited Post[]  @relation("edited")
 }
 
 model Post {
   id       Int    @id @default(autoincrement())
   title    String
-  author   User   @relation(fields: [authorId], references: [id])
+  author   User   @relation("authored", fields: [authorId], references: [id])
   authorId Int
+  editor   User?  @relation("edited", fields: [editorId], references: [id])
+  editorId Int?
 }
