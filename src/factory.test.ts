@@ -44,6 +44,22 @@ test("create(overrides) replaces only the attributes it names", async () => {
   expect(user.email).toMatch(/@example\.com$/);
 });
 
+test("create(overrides) skips a key whose value is undefined, leaving the definition's value", async () => {
+  const { users } = await factorioHarness();
+
+  const user = await users.create({ name: undefined });
+
+  expect(user.name).toBe("Ada");
+});
+
+test("create(overrides) writes the null a key carries rather than skipping it", async () => {
+  const { users } = await factorioHarness();
+
+  const user = await users.create({ name: null });
+
+  expect(user.name).toBeNull();
+});
+
 test("count(3).create() returns three rows", async () => {
   const { prisma, users } = await factorioHarness();
 

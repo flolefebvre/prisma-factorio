@@ -37,12 +37,15 @@ export function checkedByTheCompiler(
   f: Factorio<TestClient>,
   users: Factory<TestClient, "user">,
   posts: Factory<TestClient, "post">,
+  named: boolean,
 ): void {
   f.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com`, posts: { create: { title: "t" } } }) });
   f.define("post", { definition: ({ uid }) => ({ title: uid, author: { connect: { id: 1 } } }) });
   f.define("post", { definition: ({ uid }) => ({ title: uid, authorId: 1 }) });
   void users.create({ posts: { create: { title: "t" } } });
   void posts.create({ author: { create: { email: "ada@example.com" } } });
+  void users.create({ name: undefined });
+  void users.create({ name: named ? "Ada" : undefined });
 
   // @ts-expect-error a model name the client does not carry
   f.define("usre", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });

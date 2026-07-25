@@ -54,14 +54,17 @@ type Exact<T, U> = { [K in keyof T]: K extends keyof U ? T[K] : never } & U;
  */
 export type Attributes<C, M extends ModelName<C>, D> = Exact<D, CreateInput<C, M>>;
 
+type Skippable<T> = { [K in keyof T]?: T[K] | undefined };
+
 /**
  * What `create` accepts: any subset of the model's create input, and nothing beyond it.
  *
- * `O` is the type of the object actually passed, which the compiler infers.
+ * `O` is the type of the object actually passed, which the compiler infers. A key may carry an
+ * explicit `undefined`, which `create` skips.
  *
  * @example
  * ```ts
  * const overrides: Overrides<PrismaClient, "user", { name: string }> = { name: "Ada" };
  * ```
  */
-export type Overrides<C, M extends ModelName<C>, O> = Exact<O, Partial<CreateInput<C, M>>>;
+export type Overrides<C, M extends ModelName<C>, O> = Exact<O, Skippable<CreateInput<C, M>>>;

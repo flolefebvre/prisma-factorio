@@ -36,6 +36,9 @@ export interface FactoryConfig<C, M extends ModelName<C>, D = CreateInput<C, M>>
 /**
  * A factory bound to one model. Every call returns a new factory, leaving the receiver untouched.
  *
+ * `create` replaces the attributes its overrides name; an override whose value is `undefined` is
+ * skipped, so the definition's value stands.
+ *
  * `count` takes a non-negative whole number and throws a `RangeError` on anything else; `count(0)`
  * is legal and creates no records.
  *
@@ -65,6 +68,11 @@ interface FactoryState<C, M extends ModelName<C>> {
   batch: number | undefined;
 }
 
+// Only the top level: a nested relation input carries Prisma's own meaning for `undefined`.
+function given(overrides: Written | undefined): Written {
+  return Object.fromEntries(Object.entries(overrides ?? {}).filter(([, value]) => value !== undefined));
+}
+
 async function write<C, M extends ModelName<C>>(
   state: FactoryState<C, M>,
   overrides: Written | undefined,
@@ -72,11 +80,12 @@ async function write<C, M extends ModelName<C>>(
   // One faker serves the whole batch, so a seeded run replays the same values in the same order.
   const faker = await state.faker();
   const delegate = state.client()[state.model] as CreateDelegate;
+  const applied = given(overrides);
   const rows: unknown[] = [];
 
   for (let index = 0; index < (state.batch ?? 1); index += 1) {
     const attributes = state.definition({ faker, index, uid: nextUid() });
-    rows.push(await delegate.create({ data: { ...attributes, ...overrides } }));
+    rows.push(await delegate.create({ data: { ...attributes, ...applied } }));
   }
 
   return rows;
