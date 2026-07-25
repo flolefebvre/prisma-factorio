@@ -57,6 +57,17 @@ export type Attributes<C, M extends ModelName<C>, D> = Exact<D, CreateInput<C, M
 type Skippable<T> = { [K in keyof T]?: T[K] | undefined };
 
 /**
+ * Any subset of the model's create input: every key optional, and free to carry an explicit
+ * `undefined`, which every layer of a merge skips.
+ *
+ * @example
+ * ```ts
+ * const attributes: PartialAttributes<PrismaClient, "user"> = { name: "Ada" };
+ * ```
+ */
+export type PartialAttributes<C, M extends ModelName<C>> = Skippable<CreateInput<C, M>>;
+
+/**
  * What `create` accepts: any subset of the model's create input, and nothing beyond it.
  *
  * `O` is the type of the object actually passed, which the compiler infers. A key may carry an
@@ -67,4 +78,4 @@ type Skippable<T> = { [K in keyof T]?: T[K] | undefined };
  * const overrides: Overrides<PrismaClient, "user", { name: string }> = { name: "Ada" };
  * ```
  */
-export type Overrides<C, M extends ModelName<C>, O> = Exact<O, Skippable<CreateInput<C, M>>>;
+export type Overrides<C, M extends ModelName<C>, O> = Exact<O, PartialAttributes<C, M>>;
