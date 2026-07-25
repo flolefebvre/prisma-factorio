@@ -2,7 +2,11 @@ import { expect, expectTypeOf, test } from "vitest";
 import type { Factorio } from "./factorio.js";
 import type { Factory } from "./factory.js";
 import type {
+  Child,
+  ChildModel,
+  ChildValue,
   CreateInput,
+  HasManyArgs,
   ModelName,
   PartialAttributes,
   RelationArgs,
@@ -19,6 +23,13 @@ interface UserRow {
   email: string;
   name: string | null;
 }
+
+// Stands in for the options object `has` takes, which the factory owns.
+interface InverseOption {
+  inverse?: string;
+}
+
+type Batched<M extends ModelName<TestClient>> = Factory<TestClient, M, Row<TestClient, M>[]>;
 
 test("a model name is a delegate the client carries", () => {
   expectTypeOf<ModelName<TestClient>>().toEqualTypeOf<"user" | "post" | "comment">();
@@ -82,6 +93,50 @@ test("a pair with no belongs-to relation takes an argument no relation field sat
   expectTypeOf<RelationArgs<TestClient, "post", "comment">>().not.toEqualTypeOf<[relationField?: never]>();
 });
 
+test("a child value is a factory of the model, batched or not, a row of it, or an array of rows", () => {
+  expectTypeOf<Factory<TestClient, "comment">>().toExtend<Child<TestClient, "comment">>();
+  expectTypeOf<Batched<"comment">>().toExtend<Child<TestClient, "comment">>();
+  expectTypeOf<Row<TestClient, "comment">>().toExtend<Child<TestClient, "comment">>();
+  expectTypeOf<readonly Row<TestClient, "comment">[]>().toExtend<Child<TestClient, "comment">>();
+});
+
+test("a value of another model stands for no child of the model", () => {
+  expectTypeOf<Factory<TestClient, "user">>().not.toExtend<Child<TestClient, "comment">>();
+  expectTypeOf<Row<TestClient, "user">>().not.toExtend<Child<TestClient, "comment">>();
+  expectTypeOf<readonly Row<TestClient, "user">[]>().not.toExtend<Child<TestClient, "comment">>();
+});
+
+test("the model a child value stands for is recovered from the value's own type", () => {
+  expectTypeOf<ChildModel<TestClient, Factory<TestClient, "comment">>>().toEqualTypeOf<"comment">();
+  expectTypeOf<ChildModel<TestClient, Batched<"comment">>>().toEqualTypeOf<"comment">();
+  expectTypeOf<ChildModel<TestClient, Row<TestClient, "comment">>>().toEqualTypeOf<"comment">();
+  expectTypeOf<ChildModel<TestClient, readonly Row<TestClient, "comment">[]>>().toEqualTypeOf<"comment">();
+  expectTypeOf<
+    ChildModel<TestClient, Factory<TestClient, "comment", Row<TestClient, "comment">[], { pending: unknown }>>
+  >().toEqualTypeOf<"comment">();
+  expectTypeOf<ChildModel<TestClient, string>>().toBeNever();
+});
+
+// The relation field is the parent-side one, so a pair sharing exactly one has-many relation also
+// takes the options object on its own — which is what keeps the tuple a union rather than a spread.
+test("the has-many arguments carry a trailing options object, reachable with the relation field or without", () => {
+  expectTypeOf<HasManyArgs<TestClient, "post", "comment", InverseOption>>().toEqualTypeOf<
+    [relationField?: "comments", options?: InverseOption] | [options: InverseOption]
+  >();
+  expectTypeOf<HasManyArgs<TestClient, "user", "post", InverseOption>>().toEqualTypeOf<
+    [relationField: "posts" | "edited", options?: InverseOption]
+  >();
+});
+
+test("the has-many arguments reject a relation read at the wrong arity, and a pair sharing none", () => {
+  expectTypeOf<HasManyArgs<TestClient, "comment", "post", InverseOption>>().toEqualTypeOf<
+    [relationField: 'ERROR: no has-many relation from "comment" to "post"', options?: InverseOption]
+  >();
+  expectTypeOf<HasManyArgs<TestClient, "comment", "user", InverseOption>>().toEqualTypeOf<
+    [relationField: 'ERROR: no has-many relation from "comment" to "user"', options?: InverseOption]
+  >();
+});
+
 test("a relation field takes a factory of the model it points at, a row of it, or native relation input", () => {
   type Author = PartialAttributes<TestClient, "post">["author"];
 
@@ -111,6 +166,19 @@ test("create() is typed as the model's row and count(n).create() as an array of 
   expect(many).toHaveLength(2);
 });
 
+// The argument tuple `has` takes, standing on its own: the tuple resolves the same wherever the
+// method it belongs to sits, and the factory it belongs to is declared elsewhere.
+declare function hasChildren<M extends ModelName<TestClient>, T extends ChildValue<TestClient>>(
+  model: M,
+  children: T,
+  ...args: HasManyArgs<TestClient, M, ChildModel<TestClient, T>, InverseOption>
+): void;
+
+// Held rather than written at the call site: excess property checking reaches a fresh object literal
+// only, so a literal would be rejected whether the options object is typed or not.
+declare const inverseOption: InverseOption;
+declare const misspeltOption: { invrese: string };
+
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
 // the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
 export function checkedByTheCompiler(
@@ -121,6 +189,8 @@ export function checkedByTheCompiler(
   userRow: Row<TestClient, "user">,
   postRow: Row<TestClient, "post">,
   stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
+  comments: Factory<TestClient, "comment">,
+  commentRows: Row<TestClient, "comment">[],
 ): void {
   f.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com`, posts: { create: { title: "t" } } }) });
   f.define("post", { definition: ({ uid }) => ({ title: uid, author: { connect: { id: 1 } } }) });
@@ -182,4 +252,26 @@ export function checkedByTheCompiler(
   f.define("post", { definition: ({ uid }) => ({ title: uid, author: users.count(3) }) });
   // @ts-expect-error a batched factory in overrides stands for no one record either
   void posts.create({ author: users.count(3) });
+
+  hasChildren("post", comments);
+  hasChildren("post", comments.count(3));
+  hasChildren("post", commentRows);
+  hasChildren("post", comments, "comments");
+  hasChildren("post", comments, inverseOption);
+  hasChildren("post", comments, "comments", inverseOption);
+  hasChildren("user", posts.count(3), "posts");
+  hasChildren("user", posts.count(3), "edited", inverseOption);
+
+  // @ts-expect-error the pair shares two has-many relations, so the relation field has to be named
+  hasChildren("user", posts.count(3));
+  // @ts-expect-error the options object stands in for no relation field where one has to be named
+  hasChildren("user", posts.count(3), inverseOption);
+  // @ts-expect-error a relation field the parent model does not declare
+  hasChildren("post", comments, "commnets");
+  // @ts-expect-error an option key the options object does not declare
+  hasChildren("post", comments, "comments", misspeltOption);
+  // @ts-expect-error the relation the pair shares holds one record, not many
+  hasChildren("comment", posts, "post");
+  // @ts-expect-error the pair shares no relation at either arity
+  hasChildren("comment", users);
 }
