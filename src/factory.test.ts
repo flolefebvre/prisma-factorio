@@ -1,7 +1,8 @@
-import { expect, test, vi } from "vitest";
+import { expect, expectTypeOf, test, vi } from "vitest";
 import type { Factorio } from "./factorio.js";
-import type { EvaluationContext, Factory } from "./factory.js";
-import { disposableClient, factorioHarness } from "./tests/factorio.js";
+import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
+import type { Row } from "./prisma.js";
+import { disposableClient, factorioHarness, userDefinition } from "./tests/factorio.js";
 import type { TestClient } from "./tests/client.js";
 
 interface Recorder {
@@ -158,6 +159,197 @@ test("using(tx) writes through the transaction, so a rollback drops the records"
   await expect(bootstrap.user.count()).resolves.toBe(0);
 });
 
+function statefulUsers(f: Factorio<TestClient>) {
+  return f.define("user", {
+    definition: userDefinition,
+    states: {
+      suspended: { name: null },
+      renamed: { name: "Grace" },
+      untouched: { name: undefined },
+      vip: ({ attrs, uid }) => ({ email: `vip-${uid}@example.com`, name: `${String(attrs.name)} the VIP` }),
+    },
+  });
+}
+
+test("a declared state applies its attributes through the fluent method it is named after", async () => {
+  const { f } = await factorioHarness();
+  const users = f.define("user", { definition: userDefinition, states: { renamed: { name: "Grace" } } });
+
+  const user = await users.renamed().create();
+
+  expect(user.name).toBe("Grace");
+});
+
+test("a declared closure state computes its attributes from the evaluation context", async () => {
+  const { f } = await factorioHarness();
+
+  const user = await statefulUsers(f).vip().create();
+
+  expect(user.email).toMatch(/^vip-\w+@example\.com$/);
+});
+
+test("a state closure reads the definition's attributes through attrs", async () => {
+  const { f } = await factorioHarness();
+
+  const user = await statefulUsers(f).vip().create();
+
+  expect(user.name).toBe("Ada the VIP");
+});
+
+test("a state closure reads an earlier state's attributes through attrs", async () => {
+  const { f } = await factorioHarness();
+
+  const user = await statefulUsers(f).renamed().vip().create();
+
+  expect(user.name).toBe("Grace the VIP");
+});
+
+test("chaining two states applies both, the later one winning the keys they share", async () => {
+  const { f } = await factorioHarness();
+
+  const user = await statefulUsers(f).vip().renamed().create();
+
+  expect(user.name).toBe("Grace");
+  expect(user.email).toMatch(/^vip-/);
+});
+
+test("create(overrides) wins over every state applied before it", async () => {
+  const { f } = await factorioHarness();
+
+  const user = await statefulUsers(f).renamed().vip().create({ name: "Ada" });
+
+  expect(user.name).toBe("Ada");
+});
+
+test("a state key valued undefined is skipped, leaving the layer before it standing", async () => {
+  const { f } = await factorioHarness();
+
+  const user = await statefulUsers(f).renamed().untouched().create();
+
+  expect(user.name).toBe("Grace");
+});
+
+test("a state key valued null is written rather than skipped", async () => {
+  const { f } = await factorioHarness();
+
+  const user = await statefulUsers(f).renamed().suspended().create();
+
+  expect(user.name).toBeNull();
+});
+
+test("a key a state leaves undefined reaches the next state's attrs as absent, not as a hole", async () => {
+  const { f } = await factorioHarness();
+  const users = f.define("user", {
+    definition: ({ uid }) => ({ email: `${uid}@example.com` }),
+    states: {
+      unnamed: { name: undefined },
+      reporting: ({ attrs }) => ({ name: "name" in attrs ? "held" : "absent" }),
+    },
+  });
+
+  const user = await users.unnamed().reporting().create();
+
+  expect(user.name).toBe("absent");
+});
+
+test("a state method returns a new factory rather than changing the one it was called on", async () => {
+  const { f } = await factorioHarness();
+  const users = statefulUsers(f);
+
+  const suspended = users.suspended();
+  const user = await users.create();
+
+  expect(suspended).not.toBe(users);
+  expect(user.name).toBe("Ada");
+});
+
+test("a state evaluates once per record, seeing that record's index and uid", async () => {
+  const { f } = await factorioHarness();
+  const users = f.define("user", {
+    definition: userDefinition,
+    states: { numbered: ({ index, uid }) => ({ email: `${uid}-${String(index)}@example.com` }) },
+  });
+
+  const rows = await users.numbered().count(3).create();
+
+  expect(rows.map((row) => row.email.replace(/^\w+-|@.*$/g, ""))).toStrictEqual(["0", "1", "2"]);
+  expect(new Set(rows.map((row) => row.email)).size).toBe(3);
+});
+
+test("a state applies through the client using() redirected the chain to", async () => {
+  const { prisma, f } = await factorioHarness();
+  const elsewhere = await disposableClient();
+
+  await statefulUsers(f).suspended().using(elsewhere).create();
+  await statefulUsers(f).using(elsewhere).suspended().create();
+
+  await expect(elsewhere.user.findMany()).resolves.toMatchObject([{ name: null }, { name: null }]);
+  await expect(prisma.user.count()).resolves.toBe(0);
+});
+
+test("a state closure is handed the definition's context, plus attrs and parent", async () => {
+  const { f } = await factorioHarness();
+  const seen: unknown[] = [];
+  const users = f.define("user", {
+    definition: userDefinition,
+    states: {
+      recorded: (context) => {
+        expectTypeOf(context).toEqualTypeOf<StateContext<TestClient, "user">>();
+        seen.push(context);
+        return {};
+      },
+    },
+  });
+
+  await users.recorded().create();
+
+  expect(seen[0]).toMatchObject({ index: 0, parent: undefined, attrs: { name: "Ada" } });
+});
+
+test("a state leaves the row typing of the chain it is applied to untouched", async () => {
+  const { f } = await factorioHarness();
+  const users = statefulUsers(f);
+
+  const one = await users.suspended().create();
+  const many = await users.count(2).suspended().create();
+
+  const inline = await users.state({ name: "Grace" }).create();
+
+  expectTypeOf(one).toEqualTypeOf<Row<TestClient, "user">>();
+  expectTypeOf(inline).toEqualTypeOf<Row<TestClient, "user">>();
+  expectTypeOf(many).toEqualTypeOf<Row<TestClient, "user">[]>();
+  expect(many.map((row) => row.name)).toStrictEqual([null, null]);
+});
+
+test("a state named after a factory method is rejected where the factory is defined", async () => {
+  const { f } = await factorioHarness();
+
+  expect(() =>
+    // @ts-expect-error a state may not take a name the factory already answers to
+    f.define("user", { definition: userDefinition, states: { create: { name: "Grace" } } }),
+  ).toThrow('The state "create" takes a name a factory reserves. Rename the state.');
+});
+
+// A factory carrying a `then` is thenable, so awaiting one — or returning it from an async
+// function — would hand the awaiter a state method and never settle.
+test("a state named then is rejected where the factory is defined", async () => {
+  const { f } = await factorioHarness();
+
+  expect(() =>
+    // @ts-expect-error a state may not be named after the thenable protocol
+    f.define("user", { definition: userDefinition, states: { then: { name: "Grace" } } }),
+  ).toThrow('The state "then" takes a name a factory reserves. Rename the state.');
+});
+
+test("a state named __proto__ becomes a method rather than a write to the prototype", async () => {
+  const { f } = await factorioHarness();
+  const users = f.define("user", { definition: userDefinition, states: { ["__proto__"]: { name: "Grace" } } });
+
+  const user = await users.__proto__().create();
+
+  expect(user.name).toBe("Grace");
+});
+
 test("creating never opens a transaction of its own", async () => {
   const { prisma, users } = await factorioHarness();
   const transaction = vi.spyOn(prisma, "$transaction");
@@ -165,4 +357,93 @@ test("creating never opens a transaction of its own", async () => {
   await users.count(2).create();
 
   expect(transaction).not.toHaveBeenCalled();
+});
+
+// Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
+// the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
+export function statesCheckedByTheCompiler(f: Factorio<TestClient>, client: TestClient): void {
+  // Held rather than written inline: excess property checking reaches a fresh object literal only,
+  // so a variable is what tells `Exact` apart from the compiler's own freshness rule.
+  const held = { name: "Ada", nmae: "x" };
+  const users = statefulUsers(f);
+
+  void users.suspended().vip().create();
+  void users.count(3).suspended().create();
+  void users.using(client).vip().create();
+  f.define("user", { definition: userDefinition, states: { withPost: { posts: { create: { title: "t" } } } } });
+
+  // @ts-expect-error a state the config does not declare
+  void users.suspndd;
+  // @ts-expect-error a state naming a field the model does not have
+  f.define("user", { definition: userDefinition, states: { bad: { nmae: "Ada" } } });
+  // @ts-expect-error a state giving a field the wrong value type
+  f.define("user", { definition: userDefinition, states: { bad: { name: 42 } } });
+  // @ts-expect-error a state held in a variable, which excess property checking does not reach
+  f.define("user", { definition: userDefinition, states: { bad: held } });
+  // @ts-expect-error a state closure returning a field the model does not have
+  f.define("user", { definition: userDefinition, states: { bad: () => ({ nmae: "Ada" }) } });
+  // @ts-expect-error a state closure returning an object excess property checking does not reach
+  f.define("user", { definition: userDefinition, states: { bad: () => held } });
+  // @ts-expect-error a state naming a field the nested relation input does not have
+  f.define("user", { definition: userDefinition, states: { bad: { posts: { create: { titel: "t" } } } } });
+
+  void users.state({ name: "Grace" }).suspended().count(2).create();
+  void users.state(({ attrs }) => ({ name: attrs.name ?? "Ada" })).create();
+  // A closure returning a different shape per branch: both application sites must take it.
+  void users.state(({ index }) => (index === 0 ? { name: "Ada" } : { email: "grace@example.com" })).create();
+  f.define("user", {
+    definition: userDefinition,
+    states: { alternating: ({ index }) => (index === 0 ? { name: "Ada" } : { email: "grace@example.com" }) },
+  });
+
+  // @ts-expect-error one branch of a state closure naming a field the model does not have
+  void users.state(({ index }) => (index === 0 ? { name: "Ada" } : { nmae: "Grace" }));
+  // @ts-expect-error a config annotated without its state names carries no states
+  const annotated: FactoryConfig<TestClient, "user"> = { definition: userDefinition, states: { bad: held } };
+  void annotated;
+
+  // @ts-expect-error an inline state naming a field the model does not have
+  void users.state({ nmae: "Ada" });
+  // @ts-expect-error an inline state held in a variable, which excess property checking does not reach
+  void users.state(held);
+  // @ts-expect-error an inline state closure returning a field the model does not have
+  void users.state(() => ({ nmae: "Ada" }));
+  // @ts-expect-error an inline state closure returning an object excess property checking does not reach
+  void users.state(() => held);
+}
+
+test("state(partial) applies attributes the config never declared", async () => {
+  const { users } = await factorioHarness();
+
+  const user = await users.state({ name: "Grace" }).create();
+
+  expect(user.name).toBe("Grace");
+});
+
+test("state(closure) is handed the context a declared state closure gets", async () => {
+  const { users } = await factorioHarness();
+
+  const user = await users.state(({ attrs, index }) => ({ name: `${String(attrs.name)} ${String(index)}` })).create();
+
+  expect(user.name).toBe("Ada 0");
+});
+
+test("an inline state and a declared state apply in the order they were called", async () => {
+  const { f } = await factorioHarness();
+
+  const declaredLast = await statefulUsers(f).state({ name: "Grace" }).suspended().create();
+  const inlineLast = await statefulUsers(f).suspended().state({ name: "Grace" }).create();
+
+  expect(declaredLast.name).toBeNull();
+  expect(inlineLast.name).toBe("Grace");
+});
+
+test("state returns a new factory rather than changing the one it was called on", async () => {
+  const { users } = await factorioHarness();
+
+  const renamed = users.state({ name: "Grace" });
+  const user = await users.create();
+
+  expect(renamed).not.toBe(users);
+  expect(user.name).toBe("Ada");
 });

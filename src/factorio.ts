@@ -1,6 +1,13 @@
 import { createFakerProvider, type FakerOptions } from "./faker.js";
-import { createFactory, type Factory, type FactoryConfig } from "./factory.js";
-import type { ModelName } from "./prisma.js";
+import {
+  createFactory,
+  declaredStates,
+  type DeclaredStates,
+  type Factory,
+  type FactoryConfig,
+  type StateMap,
+} from "./factory.js";
+import type { ModelName, Row } from "./prisma.js";
 
 /**
  * The entry point a bootstrap hands back, bound to one client and one faker.
@@ -12,7 +19,10 @@ import type { ModelName } from "./prisma.js";
  * ```
  */
 export interface Factorio<C> {
-  define<M extends ModelName<C>, D>(model: M, config: FactoryConfig<C, M, D>): Factory<C, M>;
+  define<M extends ModelName<C>, D, S extends StateMap<C, M> & DeclaredStates<C, M, S> = Record<never, never>>(
+    model: M,
+    config: FactoryConfig<C, M, D, S>,
+  ): Factory<C, M, Row<C, M>, S>;
 }
 
 function resolver<C extends object>(source: C | (() => C)): () => C {
@@ -43,15 +53,16 @@ export function initPrismaFactorio<C extends object>(
   const faker = createFakerProvider(options);
   const client = resolver(clientOrThunk);
 
-  return {
-    define<M extends ModelName<C>, D>(model: M, config: FactoryConfig<C, M, D>): Factory<C, M> {
-      return createFactory({
-        model,
-        definition: config.definition,
-        client,
-        faker,
-        batch: undefined,
-      });
-    },
-  };
+  const define: Factorio<C>["define"] = (model, config) =>
+    createFactory({
+      model,
+      definition: config.definition,
+      declared: declaredStates(config.states),
+      applied: [],
+      client,
+      faker,
+      batch: undefined,
+    });
+
+  return { define };
 }
