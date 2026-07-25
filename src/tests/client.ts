@@ -81,13 +81,30 @@ export function statementsOf(script: string): string[] {
   return statements;
 }
 
-async function readSchemaStatements(): Promise<string[]> {
-  const [schema, ddl] = await Promise.all([stat(schemaPath), stat(ddlPath)]);
+const REBUILD = "Run `pnpm generate` to rebuild the test harness.";
 
-  if (schema.mtimeMs > ddl.mtimeMs) {
-    throw new Error(
-      "src/tests/generated/schema.sql is older than prisma/schema.prisma. Run `pnpm generate` to rebuild the test harness.",
-    );
+function isMissingFile(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+// `src/tests/generated/` is gitignored, so on a fresh clone the DDL is absent rather than stale.
+async function mtimeOf(path: URL, name: string): Promise<number> {
+  try {
+    return (await stat(path)).mtimeMs;
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+    throw new Error(`${name} is missing. ${REBUILD}`, { cause: error });
+  }
+}
+
+async function readSchemaStatements(): Promise<string[]> {
+  const [schema, ddl] = await Promise.all([
+    mtimeOf(schemaPath, "prisma/schema.prisma"),
+    mtimeOf(ddlPath, "src/tests/generated/schema.sql"),
+  ]);
+
+  if (schema > ddl) {
+    throw new Error(`src/tests/generated/schema.sql is older than prisma/schema.prisma. ${REBUILD}`);
   }
 
   return statementsOf(await readFile(ddlPath, "utf8"));
@@ -100,8 +117,9 @@ let schemaStatements: Promise<string[]> | undefined;
  *
  * Each call yields an isolated database: SQLite scopes `:memory:` to a single connection, so clients
  * never observe each other's rows and no state survives {@link disposeTestClient}. The DDL is read
- * from disk once per process; the call rejects when that DDL predates `prisma/schema.prisma`, which
- * means `pnpm generate` has not run since the scratch schema last changed.
+ * from disk once per process; the call rejects when that DDL is missing or predates
+ * `prisma/schema.prisma`, which means `pnpm generate` has not run since the scratch schema last
+ * changed.
  *
  * @example
  * ```ts

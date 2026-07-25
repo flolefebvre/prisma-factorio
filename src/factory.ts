@@ -36,6 +36,9 @@ export interface FactoryConfig<C, M extends ModelName<C>, D = CreateInput<C, M>>
 /**
  * A factory bound to one model. Every call returns a new factory, leaving the receiver untouched.
  *
+ * `count` takes a non-negative whole number and throws a `RangeError` on anything else; `count(0)`
+ * is legal and creates no records.
+ *
  * @example
  * ```ts
  * const admins = users.count(3);
@@ -54,7 +57,7 @@ interface CreateDelegate {
   create(args: { data: Written }): Promise<unknown>;
 }
 
-export interface FactoryState<C, M extends ModelName<C>> {
+interface FactoryState<C, M extends ModelName<C>> {
   model: M;
   definition: (context: EvaluationContext) => Written;
   client: () => Pick<C, M>;
@@ -94,6 +97,9 @@ export function createFactory<C, M extends ModelName<C>, R>(state: FactoryState<
       return (state.batch === undefined ? rows[0] : rows) as R;
     },
     count(records: number): Factory<C, M, Row<C, M>[]> {
+      if (!Number.isInteger(records) || records < 0)
+        throw new RangeError(`count(${String(records)}) is not a batch size. Pass a non-negative whole number.`);
+
       return createFactory({ ...state, batch: records });
     },
     using(client: Pick<C, M>): Factory<C, M, R> {

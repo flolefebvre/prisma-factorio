@@ -57,7 +57,8 @@ const written = await prisma.$transaction((tx) => posts.using(tx).count(2).creat
 - `create()` returns the real row, or an array of rows when the factory carries a `count`.
 - `initPrismaFactorio` takes a client instance or a thunk. **Prefer the thunk**: it is called on the first `create()` and never again, so importing a module full of factories constructs nothing.
 - prisma-factorio never builds a client; you pass your own (a Prisma 7 client is constructed with a driver adapter).
-- `seed` pins faker's values so the same seed replays the same records; `locale` is any locale name `@faker-js/faker` exports.
+- `seed` pins the values faker generates, so the same seed replays the same faker output; `locale` is any locale name `@faker-js/faker` exports.
+- **A seed does not make a run reproducible.** Only faker's output replays. `uid` draws a fresh random prefix in every process — that is what keeps parallel test workers off each other's unique columns — so every `uid`-derived column differs from run to run. Do not snapshot them.
 
 ### Evaluation context
 

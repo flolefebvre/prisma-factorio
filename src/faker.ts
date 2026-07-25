@@ -13,8 +13,9 @@ export type FakerInstance = Faker;
 /**
  * How the bootstrap configures faker.
  *
- * `seed` pins the generated values, so the same seed replays the same records; `locale` is one of the
- * locale names `@faker-js/faker` exports, such as `"en"`, `"fr"` or `"de_AT"`.
+ * `seed` pins the values faker generates, so the same seed replays the same faker output — it does
+ * not make a run reproducible, since a uid draws a fresh prefix in every process. `locale` is one of
+ * the locale names `@faker-js/faker` exports, such as `"en"`, `"fr"` or `"de_AT"`.
  *
  * @example
  * ```ts

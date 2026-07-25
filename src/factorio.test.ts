@@ -113,12 +113,14 @@ test("a definition that never reads faker runs with @faker-js/faker absent", asy
   expect(user.name).toBe("Ada");
 });
 
-test("reading faker with @faker-js/faker absent names the missing package", async () => {
+// Asserted on the guidance rather than on the package name: the absent package names itself in its
+// own import failure, so only the guidance tells the library's error apart from a propagated one.
+test("reading faker with @faker-js/faker absent names what to install", async () => {
   const prisma = await disposableClient();
   const f = await factorioWithoutFaker(prisma);
   const people = f.define("user", {
     definition: ({ faker, uid }) => ({ email: `${uid}@e.com`, name: faker.person.fullName() }),
   });
 
-  await expect(people.create()).rejects.toThrow(/@faker-js\/faker/);
+  await expect(people.create()).rejects.toThrow(/Install it \(for example `pnpm add -D @faker-js\/faker`\)/);
 });

@@ -36,9 +36,8 @@ export type CreateInput<C, M extends ModelName<C>> = Types.Public.Args<C[M], "cr
 export type Row<C, M extends ModelName<C>> = Types.Public.Result<C[M], object, "create">;
 
 // TypeScript drops excess property checking when an object literal reaches its target through a
-// function's contextual return type, which is where every definition sits. Mapping the keys the
-// literal actually carries to `never` unless the target declares them restores the rejection
-// without relying on that check; intersecting with the target keeps value types honest.
+// function's contextual return type, which is where every definition sits, so plain assignability
+// accepts a field the model never declares.
 type Exact<T, U> = { [K in keyof T]: K extends keyof U ? T[K] : never } & U;
 
 /**

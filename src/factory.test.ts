@@ -53,6 +53,23 @@ test("count(3).create() returns three rows", async () => {
   await expect(prisma.user.count()).resolves.toBe(3);
 });
 
+test("count() rejects a batch size that is not a whole number, naming the value", async () => {
+  const { users } = await factorioHarness();
+
+  for (const records of [2.5, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    expect(() => users.count(records)).toThrow(
+      `count(${String(records)}) is not a batch size. Pass a non-negative whole number.`,
+    );
+  }
+});
+
+test("count(0) creates no records", async () => {
+  const { prisma, users } = await factorioHarness();
+
+  await expect(users.count(0).create()).resolves.toStrictEqual([]);
+  await expect(prisma.user.count()).resolves.toBe(0);
+});
+
 test("index counts up from 0 within a batch and restarts on the next one", async () => {
   const { f } = await factorioHarness();
   const { contexts, factory } = recorder(f);

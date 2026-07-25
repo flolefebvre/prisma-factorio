@@ -28,6 +28,20 @@ function rejectionOf(pending: Promise<unknown>): Promise<unknown> {
   );
 }
 
+function missingFile(): Promise<never> {
+  return Promise.reject(Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }));
+}
+
+// A stub answers for the one path it is named after; every other path reaches the real `stat`.
+function statting(name: string, outcome: () => Promise<unknown>): (path: URL) => Promise<unknown> {
+  return (path) => (path.href.endsWith(name) ? outcome() : stat(path));
+}
+
+async function harnessFailure(stub: (path: URL) => Promise<unknown>): Promise<string> {
+  const harness = await harnessWith({ fileSystem: { stat: stub } });
+  return String(await rejectionOf(harness.createTestClient()));
+}
+
 // The harness caches the DDL per module instance, so every test that observes the load has to run
 // against a module registry reset before its mocks are registered.
 async function harnessWith({ fileSystem, disconnects }: HarnessMocks): Promise<HarnessModule> {
@@ -171,16 +185,17 @@ test("a client whose schema fails to apply is disposed before the failure surfac
 });
 
 test("a DDL older than the schema it was emitted from names the command that refreshes it", async () => {
-  const harness = await harnessWith({
-    fileSystem: {
-      stat: (path: URL) =>
-        path.href.endsWith("schema.prisma") ? Promise.resolve({ mtimeMs: Number.MAX_SAFE_INTEGER }) : stat(path),
-    },
-  });
+  const ahead = statting("schema.prisma", () => Promise.resolve({ mtimeMs: Number.MAX_SAFE_INTEGER }));
 
-  const error = await rejectionOf(harness.createTestClient());
+  expect(await harnessFailure(ahead)).toContain("Run `pnpm generate`");
+});
 
-  expect(String(error)).toContain("Run `pnpm generate`");
+test("a DDL that was never generated names the command that emits it", async () => {
+  expect(await harnessFailure(statting("schema.sql", missingFile))).toContain("Run `pnpm generate`");
+});
+
+test("a scratch schema that cannot be found names the command that rebuilds the harness", async () => {
+  expect(await harnessFailure(statting("schema.prisma", missingFile))).toContain("Run `pnpm generate`");
 });
 
 test("the DDL is read once per process rather than once per client", async () => {
