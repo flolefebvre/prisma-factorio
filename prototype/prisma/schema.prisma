@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  name      String
+  role      String   @default("member")
+  verifiedAt DateTime?
+  createdAt DateTime @default(now())
+  posts     Post[]
+  profile   Profile?
+  teams     TeamMember[]
+}
+
+model Profile {
+  id     Int    @id @default(autoincrement())
+  bio    String
+  userId Int    @unique
+  user   User   @relation(fields: [userId], references: [id])
+}
+
+model Post {
+  id        Int      @id @default(autoincrement())
+  title     String
+  body      String
+  published Boolean  @default(false)
+  authorId  Int
+  author    User     @relation(fields: [authorId], references: [id])
+  tags      Tag[]
+  comments  Comment[]
+}
+
+model Tag {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  posts Post[]
+}
+
+model Comment {
+  id     Int    @id @default(autoincrement())
+  text   String
+  postId Int
+  post   Post   @relation(fields: [postId], references: [id])
+}
+
+model Team {
+  id      Int          @id @default(autoincrement())
+  name    String
+  members TeamMember[]
+}
+
+model TeamMember {
+  teamId Int
+  userId Int
+  role   String @default("member")
+  team   Team   @relation(fields: [teamId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@id([teamId, userId])
+}

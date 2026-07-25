@@ -2,3 +2,5 @@ pnpm-lock.yaml
 docs/laravel-factories.md
 report/
 .claude/
+prototype/generated/
+prototype/prisma/

@@ -7,7 +7,7 @@ export default defineConfig(
   // `.claude/worktrees/` holds git worktrees — full checkouts of this repo
   // nested inside it. ESLint descends into dot-directories, so without this
   // every source file gets linted once per live worktree.
-  globalIgnores(["dist/", "coverage/", "**/generated/", "**/.claude/"]),
+  globalIgnores(["dist/", "coverage/", "**/generated/", "**/.claude/", "prototype/"]),
   eslint.configs.recommended,
   tseslint.configs.strictTypeChecked,
   tseslint.configs.stylisticTypeChecked,

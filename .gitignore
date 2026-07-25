@@ -4,6 +4,7 @@ coverage/
 generated/
 report/
 *.log
+*.db
 .env
 .env.*
 
