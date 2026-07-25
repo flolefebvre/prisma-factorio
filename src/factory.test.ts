@@ -1,6 +1,7 @@
-import { expect, test, vi } from "vitest";
+import { expect, expectTypeOf, test, vi } from "vitest";
 import type { Factorio } from "./factorio.js";
-import type { EvaluationContext, Factory } from "./factory.js";
+import type { EvaluationContext, Factory, StateContext } from "./factory.js";
+import type { Row } from "./prisma.js";
 import { disposableClient, factorioHarness, userDefinition } from "./tests/factorio.js";
 import type { TestClient } from "./tests/client.js";
 
@@ -285,6 +286,37 @@ test("a state applies through the client using() redirected the chain to", async
   await expect(prisma.user.count()).resolves.toBe(0);
 });
 
+test("a state closure is handed the definition's context, plus attrs and parent", async () => {
+  const { f } = await factorioHarness();
+  const seen: unknown[] = [];
+  const users = f.define("user", {
+    definition: userDefinition,
+    states: {
+      recorded: (context) => {
+        expectTypeOf(context).toEqualTypeOf<StateContext<TestClient, "user">>();
+        seen.push(context);
+        return {};
+      },
+    },
+  });
+
+  await users.recorded().create();
+
+  expect(seen[0]).toMatchObject({ index: 0, parent: undefined, attrs: { name: "Ada" } });
+});
+
+test("a state leaves the row typing of the chain it is applied to untouched", async () => {
+  const { f } = await factorioHarness();
+  const users = statefulUsers(f);
+
+  const one = await users.suspended().create();
+  const many = await users.count(2).suspended().create();
+
+  expectTypeOf(one).toEqualTypeOf<Row<TestClient, "user">>();
+  expectTypeOf(many).toEqualTypeOf<Row<TestClient, "user">[]>();
+  expect(many).toHaveLength(2);
+});
+
 test("a state named after a factory method is rejected where the factory is defined", async () => {
   const { f } = await factorioHarness();
 
@@ -302,3 +334,32 @@ test("creating never opens a transaction of its own", async () => {
 
   expect(transaction).not.toHaveBeenCalled();
 });
+
+// Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
+// the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
+export function statesCheckedByTheCompiler(f: Factorio<TestClient>, client: TestClient): void {
+  // Held rather than written inline: excess property checking reaches a fresh object literal only,
+  // so a variable is what tells `Exact` apart from the compiler's own freshness rule.
+  const held = { name: "Ada", nmae: "x" };
+  const users = statefulUsers(f);
+
+  void users.suspended().vip().create();
+  void users.count(3).suspended().create();
+  void users.using(client).vip().create();
+  f.define("user", { definition: userDefinition, states: { withPost: { posts: { create: { title: "t" } } } } });
+
+  // @ts-expect-error a state the config does not declare
+  void users.suspndd;
+  // @ts-expect-error a state naming a field the model does not have
+  f.define("user", { definition: userDefinition, states: { bad: { nmae: "Ada" } } });
+  // @ts-expect-error a state giving a field the wrong value type
+  f.define("user", { definition: userDefinition, states: { bad: { name: 42 } } });
+  // @ts-expect-error a state held in a variable, which excess property checking does not reach
+  f.define("user", { definition: userDefinition, states: { bad: held } });
+  // @ts-expect-error a state closure returning a field the model does not have
+  f.define("user", { definition: userDefinition, states: { bad: () => ({ nmae: "Ada" }) } });
+  // @ts-expect-error a state closure returning an object excess property checking does not reach
+  f.define("user", { definition: userDefinition, states: { bad: () => held } });
+  // @ts-expect-error a state naming a field the nested relation input does not have
+  f.define("user", { definition: userDefinition, states: { bad: { posts: { create: { titel: "t" } } } } });
+}
