@@ -30,6 +30,8 @@
     "node": ">=20"
   },
   "scripts": {
+    "generate": "prisma generate && prisma migrate diff --from-empty --to-schema=prisma/schema.prisma --script --output=src/tests/generated/schema.sql && echo '--generate OK--'",
+    "prepare": "pnpm generate",
     "typecheck": "tsc --noEmit && echo '--typecheck OK--'",
     "lint": "eslint . && echo '--lint OK--'",
     "test": "vitest run && echo '--test OK--'",
@@ -37,20 +39,28 @@
     "format": "prettier --write .",
     "format:check": "prettier --check . && echo '--format:check OK--'",
     "duplicates": "jscpd && echo '--duplicates OK--'",
-    "gates": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && echo '--gates OK--'"
+    "gates": "pnpm generate && pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && echo '--gates OK--'"
   },
   "peerDependencies": {
+    "@faker-js/faker": ">=10 <11",
+    "@prisma/client": ">=7 <8",
     "prisma": ">=7 <8"
+  },
+  "peerDependenciesMeta": {
+    "@faker-js/faker": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@faker-js/faker": "^10.5.0",
     "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/client": "7.8.0",
     "@types/node": "^26.1.1",
-    "prisma": "7.8.0",
     "eslint": "^10.7.0",
     "jscpd": "^5.0.12",
     "prettier": "^3.9.5",
+    "prisma": "7.8.0",
     "tsx": "^4.23.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.63.0",

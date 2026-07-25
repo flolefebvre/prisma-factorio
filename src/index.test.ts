@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
-import { PACKAGE_NAME } from "./index.js";
+import * as api from "./index.js";
 
-test("package entry point loads", () => {
-  expect(PACKAGE_NAME).toBe("prisma-factorio");
+test("the package root exports the bootstrap and nothing else at runtime", () => {
+  expect(api.initPrismaFactorio).toBeTypeOf("function");
+  expect(Object.keys(api)).toStrictEqual(["initPrismaFactorio"]);
 });

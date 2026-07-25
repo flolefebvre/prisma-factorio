@@ -14,9 +14,13 @@ TypeScript (strict, ESM) · Node ≥ 20 · Prisma ≥ 7 < 8 as peer dependency �
 
 ```
 CONTEXT.md        Domain glossary
+prisma.config.ts  Prisma CLI configuration (required by Prisma 7)
+prisma/
+  schema.prisma   Scratch schema for this library's own tests
 src/
   index.ts        Package root export
   tests/          Shared test helpers (never published)
+    generated/    Generated scratch client and its DDL (gitignored, never published)
 docs/
   adr/            Architectural decision records
   agents/         Agent workflow docs (issue tracker, labels, domain)
@@ -28,7 +32,8 @@ docs/
 All via pnpm.
 
 ```
-pnpm gates          Full validation: typecheck, lint, format check, duplicates, test, build
+pnpm gates          Full validation: generate, typecheck, lint, format check, duplicates, test, build
+pnpm generate       Regenerate the scratch Prisma client and its DDL; gates runs it first
 pnpm test           Run the test suite once (vitest run)
 pnpm typecheck      Type-check without emitting (tsc --noEmit)
 pnpm lint           ESLint
@@ -40,11 +45,15 @@ pnpm duplicates     jscpd copy-paste detection
 Each script echoes a `--<name> OK--` marker on success.
 Run `pnpm format` after making changes so the diff stays limited to what you actually touched.
 
-**Before considering a change done, it must pass the gate:** `pnpm gates` — typecheck, lint, format check, duplicates, test, build.
+**Before considering a change done, it must pass the gate:** `pnpm gates` — generate, typecheck, lint, format check, duplicates, test, build.
 
 ## Testing
 
 The project uses [Vitest](https://vitest.dev), Node-only. Tests are colocated with the code they cover as `*.test.ts` next to the source file; shared test helpers live in `src/tests/`. Test files are excluded from the published build. The project is developed with TDD.
+
+Tests run against the scratch client generated from `prisma/schema.prisma` into `src/tests/generated/`, on a throwaway in-memory SQLite database opened through `@prisma/adapter-better-sqlite3`; `src/tests/client.ts` provides that client. Run `pnpm generate` after changing the scratch schema.
+
+Type-level assertions (`expectTypeOf`, `@ts-expect-error`) sit in the same test files and are enforced by the `typecheck` gate, so they need no extra Vitest configuration.
 
 ## Comments
 
