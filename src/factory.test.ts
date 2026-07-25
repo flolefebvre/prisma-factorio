@@ -2,7 +2,7 @@ import { expect, expectTypeOf, test, vi } from "vitest";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
 import type { Row } from "./prisma.js";
-import { disposableClient, factorioHarness, userDefinition } from "./tests/factorio.js";
+import { disposableClient, factorioHarness, userDefinition, type Harness } from "./tests/factorio.js";
 import type { TestClient } from "./tests/client.js";
 
 interface Recorder {
@@ -457,34 +457,43 @@ test("state returns a new factory rather than changing the one it was called on"
   expect(user.name).toBe("Ada");
 });
 
+// Everything a transaction client answers to that a factory of this harness reaches.
+type Transaction = Pick<TestClient, "user" | "post" | "comment">;
+
+type Delegates = Record<"user" | "post", { create: (args: { data: Record<string, unknown> }) => Promise<unknown> }>;
+
 interface Recording {
-  client: TestClient;
+  client: Transaction;
   written: Record<string, unknown>[];
 }
 
 // The recorded delegate hangs off a real client, which is where relation metadata is read from: a
 // bare object of delegates carries none.
-function recording(prisma: TestClient): Recording {
+function recording(base: Transaction, model: "user" | "post"): Recording {
   const written: Record<string, unknown>[] = [];
-  const post = Object.create(prisma.post) as TestClient["post"];
-  const client = Object.create(prisma) as TestClient;
+  const source = (base as unknown as Delegates)[model];
+  const delegate = Object.create(source) as Delegates["user"];
+  const client = Object.create(base) as Transaction;
 
-  Object.defineProperty(post, "create", {
-    value: (args: { data: Record<string, unknown> }): unknown => {
+  Object.defineProperty(delegate, "create", {
+    value: (args: { data: Record<string, unknown> }): Promise<unknown> => {
       written.push(args.data);
-      return prisma.post.create(args as never);
+      return source.create(args);
     },
   });
-  Object.defineProperty(client, "post", { value: post });
+  Object.defineProperty(client, model, { value: delegate });
 
   return { client, written };
 }
 
-test("a factory carries the brand relation resolution recognises it by, and spreading one drops it", async () => {
+test("a factory carries the symbols relation resolution reads it by, and spreading one drops them", async () => {
   const { users } = await factorioHarness();
+  const spread = { ...users };
 
-  expect(Symbol.for("prisma-factorio.factory") in users).toBe(true);
-  expect(Symbol.for("prisma-factorio.factory") in { ...users }).toBe(false);
+  for (const name of ["prisma-factorio.factory", "prisma-factorio.rebind"]) {
+    expect(Symbol.for(name) in users).toBe(true);
+    expect(Symbol.for(name) in spread).toBe(false);
+  }
 });
 
 test("a factory embedded in a definition creates the parent and connects the record to it", async () => {
@@ -576,7 +585,7 @@ test("a relation default in a definition evaluates once per record, so a batch d
 
 test("the data handed to create carries the relation field as connect and never a foreign key column", async () => {
   const { prisma, posts } = await factorioHarness();
-  const { client, written } = recording(prisma);
+  const { client, written } = recording(prisma, "post");
 
   const post = await posts.using(client).create();
   const author = await prisma.user.findUniqueOrThrow({ where: { id: post.authorId } });
@@ -767,13 +776,71 @@ test("for() rejects an omitted relation field where the model pair shares severa
 
 test("for() hands create the relation field as connect and never a foreign key column", async () => {
   const { prisma, posts, users } = await factorioHarness();
-  const { client, written } = recording(prisma);
+  const { client, written } = recording(prisma, "post");
   const ada = await users.create();
 
   await posts.using(client).for(ada, "editor").create();
 
   expect(Object.keys(written[0] ?? {})).toStrictEqual(["title", "author", "editor"]);
   expect(written[0]?.editor).toStrictEqual({ connect: ada });
+});
+
+// The graph is expected inside the transaction and gone once it rolls back, which the counts on
+// `tx` and the counts the caller makes afterwards pin from both sides.
+async function rolledBack(target: TestClient, run: (tx: Transaction) => Promise<unknown>): Promise<void> {
+  const rollback = new Error("rollback");
+
+  const outcome: unknown = await target
+    .$transaction(async (tx) => {
+      await run(tx);
+      await expect(tx.user.count()).resolves.toBe(1);
+      await expect(tx.post.count()).resolves.toBe(1);
+      throw rollback;
+    })
+    .catch((error: unknown) => error);
+
+  expect(outcome).toBe(rollback);
+}
+
+// The harness bootstraps on a database of its own, so a parent created through the bootstrap client
+// rather than through `tx` survives the rollback and is counted there.
+async function withoutOrphans(create: (harness: Harness, tx: Transaction) => Promise<unknown>): Promise<void> {
+  const harness = await factorioHarness();
+  const target = await disposableClient();
+
+  await rolledBack(target, (tx) => create(harness, tx));
+
+  await expect(target.user.count()).resolves.toBe(0);
+  await expect(target.post.count()).resolves.toBe(0);
+  await expect(harness.prisma.user.count()).resolves.toBe(0);
+  await expect(harness.prisma.post.count()).resolves.toBe(0);
+}
+
+test("for() creates the parent through the client using() named, so a rollback drops it too", async () => {
+  await withoutOrphans(({ posts, users }, tx) => posts.for(users, "author").using(tx).create());
+});
+
+test("a relation default in a definition is created through the client using() named", async () => {
+  await withoutOrphans(({ posts }, tx) => posts.using(tx).create());
+});
+
+test("a relation default reaching through several models runs every level on that client", async () => {
+  await withoutOrphans(({ comments }, tx) => comments.using(tx).create());
+});
+
+test("a parent factory naming a client of its own is created through it, not the resolving one", async () => {
+  const { posts, users } = await factorioHarness();
+  const target = await disposableClient();
+  let authors: Record<string, unknown>[] = [];
+
+  await rolledBack(target, (tx) => {
+    const { client, written } = recording(tx, "user");
+    authors = written;
+
+    return posts.for(users.using(client), "author").using(tx).create();
+  });
+
+  expect(authors).toHaveLength(1);
 });
 
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails

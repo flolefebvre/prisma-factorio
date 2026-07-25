@@ -60,6 +60,7 @@ export function initPrismaFactorio<C extends object>(
       declared: declaredStates(config.states),
       applied: [],
       client,
+      explicit: false,
       faker,
       batch: undefined,
     });

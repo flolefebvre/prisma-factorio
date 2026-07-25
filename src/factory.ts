@@ -142,6 +142,19 @@ export interface FactoryConfig<C, M extends ModelName<C>, D = CreateInput<C, M>,
 export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   create<O>(overrides?: Overrides<C, M, O>): Promise<R>;
   count(records: number): Factory<C, M, Row<C, M>[], S>;
+  /**
+   * Redirects the records this factory creates to a client of its own, an interactive transaction's
+   * among them.
+   *
+   * Every parent factory a create resolves runs on that client too, however many models the chain of
+   * relation defaults reaches through, so one call covers the whole graph. A parent factory that
+   * named a client of its own keeps it, and its own parents then run on that one.
+   *
+   * @example
+   * ```ts
+   * await prisma.$transaction(async (tx) => posts.for(users, "author").using(tx).create());
+   * ```
+   */
   using(client: Pick<C, M>): Factory<C, M, R, S>;
   // One signature per form, rather than one parameter typed as `StateInput`: each form has to reach
   // `Overrides` with the state's own shape inferred into it, which is what makes a field the model
@@ -213,6 +226,9 @@ interface FactoryChain<C, M extends ModelName<C>> {
   declared: Record<string, Step>;
   applied: readonly Layer[];
   client: () => Pick<C, M>;
+  // Set by `using` alone: a client the chain inherited gives way to the client of the chain resolving
+  // it, a client `using` named does not.
+  explicit: boolean;
   faker: FakerProvider;
   batch: number | undefined;
 }
@@ -252,16 +268,19 @@ function given(attributes: Written | undefined): Written {
 
 // Registered globally: a duplicated package instance recognises the other instance's factories.
 const brand = Symbol.for("prisma-factorio.factory");
+const rebind = Symbol.for("prisma-factorio.rebind");
 
 // Every operation Prisma's create input accepts inside a relation field, to-one and to-many alike.
 // A value naming only these is Prisma's own input, and reaches the client untouched.
 const relationOperations = ["connect", "create", "connectOrCreate", "createMany"];
 
 // The brand holds the factory's model, which is the parent model a `for` call needs and the one
-// thing a value standing in a relation field cannot be asked for.
+// thing a value standing in a relation field cannot be asked for. The rebind is absent from the
+// stand-in `shared` builds, which has taken its client already.
 interface Embedded {
   create: () => Promise<unknown>;
   [brand]: string;
+  [rebind]?: (client: unknown) => Embedded;
 }
 
 // A row carries whatever columns the model declares, `create` among them where the schema says so,
@@ -280,8 +299,14 @@ function plainObject(value: unknown): Record<string, unknown> | undefined {
   return prototype === Object.prototype || prototype === null ? (value as Record<string, unknown>) : undefined;
 }
 
-async function connected(value: Record<string, unknown>): Promise<unknown> {
-  if (isFactory(value)) return { connect: await value.create() };
+// A parent is created through the client the chain resolving it runs on, so one `using` covers the
+// whole graph a create reaches; a parent whose own chain named a client keeps that one.
+function inheriting(parent: Embedded, client: unknown): Embedded {
+  return parent[rebind]?.(client) ?? parent;
+}
+
+async function connected(client: unknown, value: Record<string, unknown>): Promise<unknown> {
+  if (isFactory(value)) return { connect: await inheriting(value, client).create() };
 
   const keys = Object.keys(value);
 
@@ -303,7 +328,7 @@ async function resolved(client: unknown, model: string, data: Written): Promise<
   const written: Written = { ...data };
 
   for (const [key, value] of embedded) {
-    if (relations.includes(key)) written[key] = await connected(value);
+    if (relations.includes(key)) written[key] = await connected(client, value);
   }
 
   return written;
@@ -311,12 +336,13 @@ async function resolved(client: unknown, model: string, data: Written): Promise<
 
 // A `for` call names one specific parent, so the parent factory runs at most once however many
 // records the batch holds, and the record it created is what every one of them connects to.
-function shared(parent: Record<string, unknown>): Record<string, unknown> {
+function shared(parent: Record<string, unknown>, client: unknown): Record<string, unknown> {
   if (!isFactory(parent)) return parent;
 
+  const factory = inheriting(parent, client);
   let row: Promise<unknown> | undefined;
 
-  return { create: (): Promise<unknown> => (row ??= parent.create()), [brand]: parent[brand] };
+  return { create: (): Promise<unknown> => (row ??= factory.create()), [brand]: factory[brand] };
 }
 
 // The parent stays inert here rather than being created: a layer whose relation field a later layer
@@ -325,7 +351,7 @@ function relationStep(client: unknown, model: string, { parent, relationField }:
   const field = isFactory(parent)
     ? resolveRelationField(client, model, parent[brand], relationField)
     : resolveRowRelationField(client, model, parent, relationField);
-  const value = shared(parent);
+  const value = shared(parent, client);
 
   return (): Written => ({ [field]: value });
 }
@@ -367,6 +393,10 @@ async function write<C, M extends ModelName<C>>(
  * with the factory's own model: its presence is how a value standing in a relation field is told from
  * a row of that model, and its value is the parent model `for` resolves a relation field against.
  *
+ * It carries `Symbol.for("prisma-factorio.rebind")` the same way, valued with a call that takes a
+ * client and hands back this factory bound to it — or this factory untouched, where `using` named a
+ * client of its own. Resolving a relation calls it, which is what spreads one `using` over a graph.
+ *
  * @example
  * ```ts
  * const users = createFactory<PrismaClient, "user", Row<PrismaClient, "user">, object>(chain);
@@ -387,7 +417,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
       return createFactory({ ...chain, batch: records });
     },
     using(client: Pick<C, M>): Factory<C, M, R, S> {
-      return createFactory({ ...chain, client: () => client });
+      return createFactory({ ...chain, client: () => client, explicit: true });
     },
     state(state: unknown): Factory<C, M, R, S> {
       return derive(step(state));
@@ -400,5 +430,12 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
   const named = Object.entries(chain.declared).map(([name, state]) => [name, (): Factory<C, M, R, S> => derive(state)]);
   const factory = { ...methods, ...Object.fromEntries(named) } as Factory<C, M, R, S>;
 
-  return Object.defineProperty(factory, brand, { value: String(chain.model) });
+  // The chain resolving a relation holds the whole client rather than one delegate, so the client it
+  // hands over serves this factory's model as well as its own.
+  const inherit = (client: unknown): Factory<C, M, R, S> =>
+    chain.explicit ? factory : createFactory({ ...chain, client: () => client as Pick<C, M> });
+
+  Object.defineProperty(factory, brand, { value: String(chain.model) });
+
+  return Object.defineProperty(factory, rebind, { value: inherit });
 }
