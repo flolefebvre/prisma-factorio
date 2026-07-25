@@ -24,8 +24,7 @@
     "prisma-factorio": "./dist/generator.js"
   },
   "exports": {
-    ".": "./dist/index.js",
-    "./factories": "./dist/factories/index.js"
+    ".": "./dist/index.js"
   },
   "files": [
     "dist"

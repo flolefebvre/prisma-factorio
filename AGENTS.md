@@ -2,7 +2,9 @@
 
 ## Context
 
-This project is a Laravel-style model factory library for Prisma (TypeScript), built as a custom Prisma generator. Tests and seeds declare the records they need through a fluent, fully typed API instead of hand-writing every column. Full type safety is the core promise: definitions must cover every required field (compile error otherwise), and per-relation magic methods (`hasPosts`, `forUser`, `withPosts`) are generated from the schema.
+This project is a Laravel-style model factory library for Prisma (TypeScript), built as a custom Prisma generator. Tests and seeds declare the records they need through a fluent, fully typed API instead of hand-writing every column. Full type safety is the core promise: definitions must cover every required field of a model, or the code does not compile.
+
+`docs/laravel-factories.md` is the reference for the feature set being ported. The public API is not settled — nothing outside that document should be treated as decided.
 
 ## Stack
 
@@ -14,7 +16,6 @@ TypeScript (strict, ESM) · Node ≥ 20 · built on `@prisma/generator-helper` (
 src/
   generator.ts    Prisma generator entry point (the `prisma-factorio` bin)
   index.ts        Public runtime API (package root export)
-  factories/      Runtime factory machinery (`./factories` export)
   tests/          Shared test helpers (never published)
 docs/
   adr/            Architectural decision records
