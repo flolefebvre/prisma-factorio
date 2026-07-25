@@ -36,6 +36,14 @@ _Avoid_: relation name, relationship
 Prisma's `@relation("…")` pairing key (`relationName` in the runtime datamodel), shared by the two relation fields of one relation. Internal to the library; never appears in the API.
 _Avoid_: relationName (in API surfaces)
 
+**Parent**:
+The record a factory attaches the records it creates to, named by `for()` or by a relation default. Not `StateContext.parent`, which stays unpopulated until `has` lands.
+_Avoid_: owner, target, related record
+
+**Relation default**:
+A relation-valued attribute in a definition, a state or `create()` overrides, holding a factory, an existing row, or native Prisma relation input.
+_Avoid_: nested factory, embedded relation
+
 **Recycle pool**:
 Per-model lists of existing rows carried by a factory chain; anywhere the graph would create a record of a pooled model, it connects a pool row instead. Merged across `.recycle()` calls, propagated to the whole graph, never self-populating.
 _Avoid_: cache, registry

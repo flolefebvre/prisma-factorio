@@ -1,4 +1,5 @@
 import type { Types } from "@prisma/client/runtime/client";
+import type { Factory } from "./factory.js";
 
 /**
  * The model names a client carries, as accepted by `define`.
@@ -16,16 +17,6 @@ export type ModelName<C> = {
 }[keyof C];
 
 /**
- * The `data` a model's `create` accepts, nested relation input included.
- *
- * @example
- * ```ts
- * const data: CreateInput<PrismaClient, "user"> = { email: "ada@example.com" };
- * ```
- */
-export type CreateInput<C, M extends ModelName<C>> = Types.Public.Args<C[M], "create">["data"];
-
-/**
  * The row a model's `create` returns: every scalar the model holds, none of its relations.
  *
  * @example
@@ -34,6 +25,142 @@ export type CreateInput<C, M extends ModelName<C>> = Types.Public.Args<C[M], "cr
  * ```
  */
 export type Row<C, M extends ModelName<C>> = Types.Public.Result<C[M], object, "create">;
+
+// `Payload` takes a deferred generic and answers `any` for anything that is not a delegate.
+type Objects<C, M extends ModelName<C>> = Types.Public.Payload<C[M]> extends { objects: infer O } ? O : never;
+
+type ModelTag<C, M extends ModelName<C>> = Types.Public.Payload<C[M]> extends { name: infer N } ? N : never;
+
+type Unwrap<T> = T extends readonly (infer E)[] ? E : T;
+
+/**
+ * The relation fields a model declares: every field pointing at another model, and none of its
+ * scalars, not even the raw foreign key column backing one.
+ *
+ * @example
+ * ```ts
+ * type Relations = RelationKey<PrismaClient, "post">; // "author" | "editor" | "comments"
+ * ```
+ */
+export type RelationKey<C, M extends ModelName<C>> = keyof Objects<C, M> & string;
+
+/**
+ * The model a relation field points at, whether that field holds one record or many.
+ *
+ * @example
+ * ```ts
+ * type Author = TargetModel<PrismaClient, "post", "author">; // "user"
+ * ```
+ */
+export type TargetModel<C, M extends ModelName<C>, K extends RelationKey<C, M>> = {
+  [P in ModelName<C>]: NonNullable<Unwrap<Objects<C, M>[K]>> extends { name: ModelTag<C, P> } ? P : never;
+}[ModelName<C>];
+
+type IsList<C, M extends ModelName<C>, K extends RelationKey<C, M>> = Objects<C, M>[K] extends readonly unknown[]
+  ? true
+  : false;
+
+/**
+ * The relation fields of `MC` that point at `MP`, read at one arity: the belongs-to side by default,
+ * the fields holding many records when `List` is `true`.
+ *
+ * @example
+ * ```ts
+ * type ToUser = RelationsTo<PrismaClient, "post", "user">; // "author" | "editor"
+ * ```
+ */
+export type RelationsTo<C, MC extends ModelName<C>, MP extends ModelName<C>, List extends boolean = false> = {
+  [K in RelationKey<C, MC>]: TargetModel<C, MC, K> extends MP ? (IsList<C, MC, K> extends List ? K : never) : never;
+}[RelationKey<C, MC>];
+
+type UnionToIntersection<U> = (U extends unknown ? (union: U) => void : never) extends (i: infer I) => void ? I : never;
+
+type IsUnion<U> = [U] extends [UnionToIntersection<U>] ? false : true;
+
+type Side<List extends boolean> = List extends true ? "has-many" : "belongs-to";
+
+/**
+ * How a relation is selected between a child model and a parent model, at one arity: the relation
+ * field may be left out where the pair shares exactly one, must be named where it shares several,
+ * and no value satisfies the parameter where it shares none.
+ *
+ * `List` reads the same side {@link RelationsTo} reads: the belongs-to side by default, the fields
+ * holding many records when `true`.
+ *
+ * @example
+ * ```ts
+ * type Args = RelationArgs<PrismaClient, "post", "user">; // [relationField: "author" | "editor"]
+ * ```
+ */
+export type RelationArgs<C, MC extends ModelName<C>, MP extends ModelName<C>, List extends boolean = false> =
+  // Ordered: `IsUnion<never>` is `false`, so a pair sharing no relation at this arity reaches the
+  // optional branch and satisfies every call unless this branch catches it first.
+  [RelationsTo<C, MC, MP, List>] extends [never]
+    ? [relationField: `ERROR: no ${Side<List>} relation from "${MC & string}" to "${MP & string}"`]
+    : IsUnion<RelationsTo<C, MC, MP, List>> extends true
+      ? [relationField: RelationsTo<C, MC, MP, List>]
+      : [relationField?: RelationsTo<C, MC, MP, List>];
+
+/**
+ * What stands for one record of a model: a factory of it, or a row of it.
+ *
+ * The row the factory returns is pinned to one record, which is what keeps a batched factory — whose
+ * `create` returns a row each — from standing here. Its state map stays `unknown`: that one sits in
+ * output positions only, so a factory carrying any states satisfies this.
+ *
+ * @example
+ * ```ts
+ * const author: Parent<PrismaClient, "user"> = userFactory;
+ * ```
+ */
+export type Parent<C, P> = P extends ModelName<C> ? Factory<C, P, Row<C, P>, unknown> | Row<C, P> : never;
+
+/**
+ * What stands for one record of any model the client carries.
+ *
+ * @example
+ * ```ts
+ * declare function connect<T extends ParentValue<PrismaClient>>(parent: T): void;
+ * ```
+ */
+export type ParentValue<C> = Parent<C, ModelName<C>>;
+
+/**
+ * The model a parent value belongs to, recovered from the value's own type.
+ *
+ * A row is `Types.Public.Result<C[P], …>`, an indexed access no inference can invert, so the model is
+ * found by asking which one the value is a parent of rather than by inferring it from the value's
+ * shape. A model whose scalars are a subset of another's answers both, so the pair is ambiguous and
+ * the relation field has to be named.
+ *
+ * @example
+ * ```ts
+ * type Model = ParentModel<PrismaClient, Row<PrismaClient, "user">>; // "user"
+ * ```
+ */
+export type ParentModel<C, T> = { [P in ModelName<C>]: [T] extends [Parent<C, P>] ? P : never }[ModelName<C>];
+
+// A relation field whose arity is not the one asked for keeps Prisma's own input.
+type RelationValue<C, M extends ModelName<C>, K, List extends boolean = false> =
+  K extends RelationKey<C, M> ? (IsList<C, M, K> extends List ? Parent<C, TargetModel<C, M, K>> : never) : never;
+
+// Distributed over the mutually exclusive branches Prisma's create input holds, each of which pads
+// the keys the other owns with `?: never`: a padded key is left alone, so naming a raw foreign key
+// and its relation field at once stays an error.
+type WidenRelations<T, C, M extends ModelName<C>> = T extends object
+  ? { [K in keyof T]: [Exclude<T[K], undefined>] extends [never] ? T[K] : T[K] | RelationValue<C, M, K> }
+  : T;
+
+/**
+ * The `data` a model's `create` accepts, nested relation input included, with every relation field
+ * holding one record also taking a factory of the model it points at, or a row of that model.
+ *
+ * @example
+ * ```ts
+ * const data: CreateInput<PrismaClient, "post"> = { title: "Hello", author: userFactory };
+ * ```
+ */
+export type CreateInput<C, M extends ModelName<C>> = WidenRelations<Types.Public.Args<C[M], "create">["data"], C, M>;
 
 // TypeScript drops excess property checking when an object literal reaches its target through a
 // function's contextual return type, which is where every definition sits, so plain assignability
