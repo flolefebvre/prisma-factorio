@@ -46,7 +46,7 @@ export interface EvaluationContext {
  */
 export interface StateContext<C, M extends ModelName<C>> extends EvaluationContext {
   attrs: PartialAttributes<C, M>;
-  /** The row this record is created for; stays `undefined` until relation support lands. */
+  /** The row this record is created for; stays `undefined` until `has` populates it (#30). */
   parent: unknown;
 }
 
