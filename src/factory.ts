@@ -121,7 +121,12 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   create<O>(overrides?: Overrides<C, M, O>): Promise<R>;
   count(records: number): Factory<C, M, Row<C, M>[], S>;
   using(client: Pick<C, M>): Factory<C, M, R, S>;
-  state<V extends StateInput<C, M>>(state: V & ExactState<C, M, V>): Factory<C, M, R, S>;
+  // One signature per form, rather than one parameter typed as `StateInput`: each form has to infer
+  // the object it carries straight into `Overrides`, which is what makes a field the model does not
+  // declare an error. The second signature bars a function, whose empty `keyof` would otherwise
+  // satisfy `Overrides` and swallow every closure before the first signature checks it.
+  state<V>(state: (context: StateContext<C, M>) => Overrides<C, M, V>): Factory<C, M, R, S>;
+  state<V extends Record<string, unknown>>(state: Overrides<C, M, V>): Factory<C, M, R, S>;
 }
 
 /**
@@ -242,7 +247,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
     using(client: Pick<C, M>): Factory<C, M, R, S> {
       return createFactory({ ...chain, client: () => client });
     },
-    state<V extends StateInput<C, M>>(state: V & ExactState<C, M, V>): Factory<C, M, R, S> {
+    state(state: unknown): Factory<C, M, R, S> {
       return derive(step(state));
     },
   };

@@ -312,7 +312,10 @@ test("a state leaves the row typing of the chain it is applied to untouched", as
   const one = await users.suspended().create();
   const many = await users.count(2).suspended().create();
 
+  const inline = await users.state({ name: "Grace" }).create();
+
   expectTypeOf(one).toEqualTypeOf<Row<TestClient, "user">>();
+  expectTypeOf(inline).toEqualTypeOf<Row<TestClient, "user">>();
   expectTypeOf(many).toEqualTypeOf<Row<TestClient, "user">[]>();
   expect(many).toHaveLength(2);
 });
@@ -362,4 +365,52 @@ export function statesCheckedByTheCompiler(f: Factorio<TestClient>, client: Test
   f.define("user", { definition: userDefinition, states: { bad: () => held } });
   // @ts-expect-error a state naming a field the nested relation input does not have
   f.define("user", { definition: userDefinition, states: { bad: { posts: { create: { titel: "t" } } } } });
+
+  void users.state({ name: "Grace" }).suspended().count(2).create();
+  void users.state(({ attrs }) => ({ name: attrs.name ?? "Ada" })).create();
+
+  // @ts-expect-error an inline state naming a field the model does not have
+  void users.state({ nmae: "Ada" });
+  // @ts-expect-error an inline state held in a variable, which excess property checking does not reach
+  void users.state(held);
+  // @ts-expect-error an inline state closure returning a field the model does not have
+  void users.state(() => ({ nmae: "Ada" }));
+  // @ts-expect-error an inline state closure returning an object excess property checking does not reach
+  void users.state(() => held);
 }
+
+test("state(partial) applies attributes the config never declared", async () => {
+  const { users } = await factorioHarness();
+
+  const user = await users.state({ name: "Grace" }).create();
+
+  expect(user.name).toBe("Grace");
+});
+
+test("state(closure) is handed the context a declared state closure gets", async () => {
+  const { users } = await factorioHarness();
+
+  const user = await users.state(({ attrs, index }) => ({ name: `${String(attrs.name)} ${String(index)}` })).create();
+
+  expect(user.name).toBe("Ada 0");
+});
+
+test("an inline state and a declared state apply in the order they were called", async () => {
+  const { f } = await factorioHarness();
+
+  const declaredLast = await statefulUsers(f).state({ name: "Grace" }).suspended().create();
+  const inlineLast = await statefulUsers(f).suspended().state({ name: "Grace" }).create();
+
+  expect(declaredLast.name).toBeNull();
+  expect(inlineLast.name).toBe("Grace");
+});
+
+test("state returns a new factory rather than changing the one it was called on", async () => {
+  const { users } = await factorioHarness();
+
+  const renamed = users.state({ name: "Grace" });
+  const user = await users.create();
+
+  expect(renamed).not.toBe(users);
+  expect(user.name).toBe("Ada");
+});
