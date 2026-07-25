@@ -9,8 +9,15 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
+    "rewriteRelativeImportExtensions": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "types": ["node"],
+    "noEmit": true,
+    // Resolves the package's own "prisma-factorio/factories" specifier, used
+    // by generated fixture code, to the source instead of the dist build.
+    "paths": {
+      "prisma-factorio/factories": ["./src/factories/index.ts"]
+    }
   },
   "include": ["src", "vitest.config.ts", "eslint.config.js"]
 }
