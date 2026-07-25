@@ -281,8 +281,9 @@ test("a state applies through the client using() redirected the chain to", async
   const elsewhere = await disposableClient();
 
   await statefulUsers(f).suspended().using(elsewhere).create();
+  await statefulUsers(f).using(elsewhere).suspended().create();
 
-  await expect(elsewhere.user.findFirstOrThrow()).resolves.toMatchObject({ name: null });
+  await expect(elsewhere.user.findMany()).resolves.toMatchObject([{ name: null }, { name: null }]);
   await expect(prisma.user.count()).resolves.toBe(0);
 });
 
@@ -317,7 +318,7 @@ test("a state leaves the row typing of the chain it is applied to untouched", as
   expectTypeOf(one).toEqualTypeOf<Row<TestClient, "user">>();
   expectTypeOf(inline).toEqualTypeOf<Row<TestClient, "user">>();
   expectTypeOf(many).toEqualTypeOf<Row<TestClient, "user">[]>();
-  expect(many).toHaveLength(2);
+  expect(many.map((row) => row.name)).toStrictEqual([null, null]);
 });
 
 test("a state named after a factory method is rejected where the factory is defined", async () => {
