@@ -9,5 +9,6 @@ report/
 
 .claude
 .agents
-.vscode*.db
+.vscode
+*.db
 *.db-journal
