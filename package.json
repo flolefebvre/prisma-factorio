@@ -54,7 +54,6 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@faker-js/faker": "^10.5.0",
-    "@faker-js/faker": "^10.5.0",
     "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/client": "7.8.0",
     "@types/node": "^26.1.1",
