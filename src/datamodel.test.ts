@@ -15,6 +15,10 @@ const severalFields =
   'The model "post" has more than one relation field pointing at "user". Pass the relation field explicitly. ' +
   'Relation fields on "post" pointing at "user": "author", "editor".';
 
+const unsharedField =
+  'The model "post" has no relation field "illustrator" pointing at "user". ' +
+  'Relation fields on "post" pointing at "user": "author", "editor".';
+
 interface Field {
   name: string;
   kind: string;
@@ -100,9 +104,7 @@ test("an explicit relation field that is a candidate resolves to itself", async 
 test("an explicit relation field that is not a candidate is rejected, naming it and the candidates", async () => {
   const prisma = await disposableClient();
 
-  expect(() => resolveRelationField(prisma, "post", "user", "illustrator")).toThrow(
-    'The model "post" has no relation field "illustrator" pointing at "user". Pass one of "author", "editor".',
-  );
+  expect(() => resolveRelationField(prisma, "post", "user", "illustrator")).toThrow(unsharedField);
 });
 
 // `post` is a relation field of `comment`, but it points at another model, so the pair has no
@@ -177,7 +179,5 @@ test("an explicit relation field names its target rather than reading the row's 
 test("an explicit relation field the model does not declare is rejected, naming it and the candidates", async () => {
   const prisma = await disposableClient();
 
-  expect(() => resolveRowRelationField(prisma, "post", userShape, "illustrator")).toThrow(
-    'The model "post" has no relation field "illustrator" pointing at "user". Pass one of "author", "editor".',
-  );
+  expect(() => resolveRowRelationField(prisma, "post", userShape, "illustrator")).toThrow(unsharedField);
 });

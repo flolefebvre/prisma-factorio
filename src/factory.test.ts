@@ -806,7 +806,8 @@ test("for() rejects a relation field the model pair does not share, naming it an
   const { posts, users } = await factorioHarness();
 
   await expect(posts.for(users, "illustrator" as unknown as "author").create()).rejects.toThrow(
-    'The model "post" has no relation field "illustrator" pointing at "user". Pass one of "author", "editor".',
+    'The model "post" has no relation field "illustrator" pointing at "user". ' +
+      'Relation fields on "post" pointing at "user": "author", "editor".',
   );
 });
 

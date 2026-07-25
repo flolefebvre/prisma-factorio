@@ -109,7 +109,7 @@ export function resolveRelationField(client: unknown, model: string, target: str
     if (!candidates.includes(relationField))
       throw new TypeError(
         `The model "${model}" has no relation field "${relationField}" pointing at "${target}". ` +
-          `Pass one of ${quoted(candidates)}.`,
+          `Relation fields on "${model}" pointing at "${target}": ${quoted(candidates)}.`,
       );
 
     return relationField;
