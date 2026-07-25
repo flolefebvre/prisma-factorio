@@ -1,6 +1,16 @@
-import { relationFieldsOf } from "./datamodel.js";
+import { relationFieldsOf, resolveRelationField, resolveRowRelationField } from "./datamodel.js";
 import type { FakerInstance, FakerProvider } from "./faker.js";
-import type { Attributes, CreateInput, ModelName, Overrides, PartialAttributes, Row } from "./prisma.js";
+import type {
+  Attributes,
+  CreateInput,
+  ModelName,
+  Overrides,
+  ParentModel,
+  ParentValue,
+  PartialAttributes,
+  RelationArgs,
+  Row,
+} from "./prisma.js";
 import { nextUid } from "./uid.js";
 
 /**
@@ -83,10 +93,11 @@ interface Reserved {
   count?: never;
   using?: never;
   state?: never;
+  for?: never;
   then?: never;
 }
 
-const reservedNames = ["create", "count", "using", "state", "then"];
+const reservedNames = ["create", "count", "using", "state", "for", "then"];
 
 /**
  * What a factory's declared `states` must satisfy: every value exact, and no name the factory
@@ -140,6 +151,22 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   // closure before the first signature checked it.
   state<V extends (context: StateContext<C, M>) => unknown>(state: V & ExactState<C, M, V>): Factory<C, M, R, S>;
   state<V extends Record<string, unknown>>(state: Overrides<C, M, V>): Factory<C, M, R, S>;
+  /**
+   * Connects every record this factory creates to one parent, named by a factory of the parent model
+   * or by a row of it.
+   *
+   * The relation field may be left out where the model pair shares exactly one belongs-to relation,
+   * and must be named where it shares several. A parent factory is evaluated once per `create` call,
+   * so a batch connects to one record rather than to one each. The relation field merges at the
+   * position `for` was called: a state applied after it wins that field, a state applied before it
+   * loses, and `create`'s overrides win over both.
+   *
+   * @example
+   * ```ts
+   * const drafts = await posts.count(3).for(users, "author").create();
+   * ```
+   */
+  for<T extends ParentValue<C>>(parent: T, ...args: RelationArgs<C, M, ParentModel<C, T>>): Factory<C, M, R, S>;
 }
 
 /**
@@ -171,11 +198,20 @@ interface CreateDelegate {
 
 type Step = (context: EvaluationContext & { attrs: Written; parent: unknown }) => Written;
 
+// The relation field a `for` call selects is resolved against the client's metadata, which a thunk
+// client has none of before the first create, so the call keeps its arguments and nothing more.
+interface Relation {
+  parent: Record<string, unknown>;
+  relationField: string | undefined;
+}
+
+type Layer = Step | Relation;
+
 interface FactoryChain<C, M extends ModelName<C>> {
   model: M;
   definition: (context: EvaluationContext) => Written;
   declared: Record<string, Step>;
-  applied: readonly Step[];
+  applied: readonly Layer[];
   client: () => Pick<C, M>;
   faker: FakerProvider;
   batch: number | undefined;
@@ -221,8 +257,11 @@ const brand = Symbol.for("prisma-factorio.factory");
 // A value naming only these is Prisma's own input, and reaches the client untouched.
 const relationOperations = ["connect", "create", "connectOrCreate", "createMany"];
 
+// The brand holds the factory's model, which is the parent model a `for` call needs and the one
+// thing a value standing in a relation field cannot be asked for.
 interface Embedded {
   create: () => Promise<unknown>;
+  [brand]: string;
 }
 
 // A row carries whatever columns the model declares, `create` among them where the schema says so,
@@ -270,6 +309,27 @@ async function resolved(client: unknown, model: string, data: Written): Promise<
   return written;
 }
 
+// A `for` call names one specific parent, so the parent factory runs at most once however many
+// records the batch holds, and the record it created is what every one of them connects to.
+function shared(parent: Record<string, unknown>): Record<string, unknown> {
+  if (!isFactory(parent)) return parent;
+
+  let row: Promise<unknown> | undefined;
+
+  return { create: (): Promise<unknown> => (row ??= parent.create()), [brand]: parent[brand] };
+}
+
+// The parent stays inert here rather than being created: a layer whose relation field a later layer
+// overwrites is dropped by the merge, and only what the merge leaves standing is ever evaluated.
+function relationStep(client: unknown, model: string, { parent, relationField }: Relation): Step {
+  const field = isFactory(parent)
+    ? resolveRelationField(client, model, parent[brand], relationField)
+    : resolveRowRelationField(client, model, parent, relationField);
+  const value = shared(parent);
+
+  return (): Written => ({ [field]: value });
+}
+
 async function write<C, M extends ModelName<C>>(
   chain: FactoryChain<C, M>,
   overrides: Written | undefined,
@@ -277,17 +337,21 @@ async function write<C, M extends ModelName<C>>(
   // One faker serves the whole batch, so a seeded run replays the same values in the same order.
   const faker = await chain.faker();
   const client = chain.client();
+  const model = String(chain.model);
   const delegate = client[chain.model] as CreateDelegate;
   const applied = given(overrides);
+  const steps = chain.applied.map((layer) =>
+    typeof layer === "function" ? layer : relationStep(client, model, layer),
+  );
   const rows: unknown[] = [];
 
   for (let index = 0; index < (chain.batch ?? 1); index += 1) {
     const context = { faker, index, uid: nextUid(), parent: undefined };
     let attrs = given(chain.definition(context));
 
-    for (const state of chain.applied) attrs = { ...attrs, ...given(state({ ...context, attrs })) };
+    for (const state of steps) attrs = { ...attrs, ...given(state({ ...context, attrs })) };
 
-    const data = await resolved(client, String(chain.model), { ...attrs, ...applied });
+    const data = await resolved(client, model, { ...attrs, ...applied });
 
     rows.push(await delegate.create({ data }));
   }
@@ -299,8 +363,9 @@ async function write<C, M extends ModelName<C>>(
  * Builds a factory over the chain of definition, states, client and batch size a fluent call has
  * accumulated.
  *
- * Every factory this returns carries `Symbol.for("prisma-factorio.factory")`, non-enumerable, which
- * is how a value standing in a relation field is told from a row of that model.
+ * Every factory this returns carries `Symbol.for("prisma-factorio.factory")`, non-enumerable, valued
+ * with the factory's own model: its presence is how a value standing in a relation field is told from
+ * a row of that model, and its value is the parent model `for` resolves a relation field against.
  *
  * @example
  * ```ts
@@ -308,7 +373,7 @@ async function write<C, M extends ModelName<C>>(
  * ```
  */
 export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryChain<C, M>): Factory<C, M, R, S> {
-  const derive = (state: Step): Factory<C, M, R, S> => createFactory({ ...chain, applied: [...chain.applied, state] });
+  const derive = (layer: Layer): Factory<C, M, R, S> => createFactory({ ...chain, applied: [...chain.applied, layer] });
 
   const methods: FactoryMethods<C, M, R, S> = {
     async create<O>(overrides?: Overrides<C, M, O>): Promise<R> {
@@ -327,10 +392,13 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
     state(state: unknown): Factory<C, M, R, S> {
       return derive(step(state));
     },
+    for(parent: object, relationField?: string): Factory<C, M, R, S> {
+      return derive({ parent: parent as Record<string, unknown>, relationField });
+    },
   };
 
   const named = Object.entries(chain.declared).map(([name, state]) => [name, (): Factory<C, M, R, S> => derive(state)]);
   const factory = { ...methods, ...Object.fromEntries(named) } as Factory<C, M, R, S>;
 
-  return Object.defineProperty(factory, brand, { value: true });
+  return Object.defineProperty(factory, brand, { value: String(chain.model) });
 }

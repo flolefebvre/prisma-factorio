@@ -341,6 +341,15 @@ test("a state named then is rejected where the factory is defined", async () => 
   ).toThrow('The state "then" takes a name a factory reserves. Rename the state.');
 });
 
+test("a state named for is rejected where the factory is defined", async () => {
+  const { f } = await factorioHarness();
+
+  expect(() =>
+    // @ts-expect-error a state may not take the name the belongs-to method answers to
+    f.define("user", { definition: userDefinition, states: { for: { name: "Grace" } } }),
+  ).toThrow('The state "for" takes a name a factory reserves. Rename the state.');
+});
+
 test("a state named __proto__ becomes a method rather than a write to the prototype", async () => {
   const { f } = await factorioHarness();
   const users = f.define("user", { definition: userDefinition, states: { ["__proto__"]: { name: "Grace" } } });
@@ -594,3 +603,210 @@ test("a factory with no relation value to resolve never reads the client's relat
 
   expect(user.name).toBe("Ada");
 });
+
+// Distinct from the harness's own user factory, which names every record "Ada": whichever name the
+// created parent carries says which layer of the merge was the one evaluated.
+function otherUsers(f: Factorio<TestClient>): Factory<TestClient, "user"> {
+  return f.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com`, name: "Hedy" }) });
+}
+
+test("for(factory) creates the parent and connects the record to it", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+
+  const post = await posts.for(users, "author").create();
+
+  await expect(prisma.user.findUniqueOrThrow({ where: { id: post.authorId } })).resolves.toMatchObject({ name: "Ada" });
+});
+
+test("for(row) connects to a record that already exists rather than creating one", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const ada = await users.create();
+
+  const post = await posts.for(ada, "author").create();
+
+  expect(post.authorId).toBe(ada.id);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("for(factory) resolves the one relation the model pair shares when the name is left out", async () => {
+  const { prisma, comments, posts } = await factorioHarness();
+
+  const comment = await comments.for(posts).create();
+
+  expect(comment.postId).toBeGreaterThan(0);
+  await expect(prisma.post.count()).resolves.toBe(1);
+});
+
+test("for(row) reads the model a row belongs to off the fields it carries when the name is left out", async () => {
+  const { comments, posts } = await factorioHarness();
+  const post = await posts.create();
+
+  const comment = await comments.for(post).create();
+
+  expect(comment.postId).toBe(post.id);
+});
+
+test("for() beats the relation default in the definition, which is never evaluated", async () => {
+  const { prisma, f, posts } = await factorioHarness();
+
+  await posts.for(otherUsers(f), "author").create();
+
+  await expect(prisma.user.findMany()).resolves.toMatchObject([{ name: "Hedy" }]);
+});
+
+test("for() and a state resolve the relation field they share by call order", async () => {
+  const { prisma, f, users } = await factorioHarness();
+  const posts = f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: users }),
+    states: { byHedy: { author: otherUsers(f) } },
+  });
+
+  const forLast = await posts.byHedy().for(users, "author").create();
+  const stateLast = await posts.for(users, "author").byHedy().create();
+
+  await expect(prisma.user.findUniqueOrThrow({ where: { id: forLast.authorId } })).resolves.toMatchObject({
+    name: "Ada",
+  });
+  await expect(prisma.user.findUniqueOrThrow({ where: { id: stateLast.authorId } })).resolves.toMatchObject({
+    name: "Hedy",
+  });
+});
+
+test("create(overrides) beats for() on the relation field they share, whose parent is never evaluated", async () => {
+  const { prisma, f, posts, users } = await factorioHarness();
+  const grace = await users.create({ name: "Grace" });
+
+  const post = await posts.for(otherUsers(f), "author").create({ author: grace });
+
+  expect(post.authorId).toBe(grace.id);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("two for() calls naming different relation fields both apply", async () => {
+  const { posts, users } = await factorioHarness();
+  const ada = await users.create();
+  const grace = await users.create({ name: "Grace" });
+
+  const post = await posts.for(ada, "author").for(grace, "editor").create();
+
+  expect([post.authorId, post.editorId]).toStrictEqual([ada.id, grace.id]);
+});
+
+test("two for() calls naming one relation field resolve last-write-wins, the loser never evaluated", async () => {
+  const { prisma, f, posts, users } = await factorioHarness();
+
+  const post = await posts.for(otherUsers(f), "author").for(users, "author").create();
+
+  await expect(prisma.user.findMany()).resolves.toMatchObject([{ id: post.authorId, name: "Ada" }]);
+});
+
+test("count(3).for(factory) creates one parent the whole batch connects to", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+
+  const rows = await posts.count(3).for(users, "author").create();
+
+  expect(new Set(rows.map((post) => post.authorId)).size).toBe(1);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("each create() call draws a parent of its own, so two calls connect to two records", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const authored = posts.for(users, "author");
+
+  await authored.create();
+  await authored.create();
+
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+test("a state survives for() in either chaining order and applies", async () => {
+  const { f, users } = await factorioHarness();
+  const posts = f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: users }),
+    states: { drafted: { title: "draft" } },
+  });
+
+  const stateLast = await posts.for(users, "author").drafted().create();
+  const forLast = await posts.drafted().for(users, "author").create();
+
+  expect([stateLast.title, forLast.title]).toStrictEqual(["draft", "draft"]);
+});
+
+test("for returns a new factory rather than changing the one it was called on", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const ada = await users.create();
+
+  const authored = posts.for(ada, "author");
+  await posts.create();
+
+  expect(authored).not.toBe(posts);
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+// Prisma reports a typo'd relation key on a required relation as the untyped key being missing, so
+// the library names the key it was given itself.
+test("for() rejects a relation field the model pair does not share, naming it and the candidates", async () => {
+  const { posts, users } = await factorioHarness();
+
+  await expect(posts.for(users, "illustrator" as unknown as "author").create()).rejects.toThrow(
+    'The model "post" has no relation field "illustrator" pointing at "user". Pass one of "author", "editor".',
+  );
+});
+
+// The type layer rejects the omitted name here; the runtime says the same thing to a caller who
+// compiles nothing, and names the escape hatch, which the runtime alone cannot narrow down to one.
+test("for() rejects an omitted relation field where the model pair shares several, naming them", async () => {
+  const { posts, users } = await factorioHarness();
+  const bypassed = posts as unknown as { for: (parent: unknown) => Factory<TestClient, "post"> };
+
+  await expect(bypassed.for(users).create()).rejects.toThrow(
+    'The model "post" has more than one relation field pointing at "user": "author", "editor". ' +
+      "Pass the relation field explicitly.",
+  );
+});
+
+test("for() hands create the relation field as connect and never a foreign key column", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const { client, written } = recording(prisma);
+  const ada = await users.create();
+
+  await posts.using(client).for(ada, "editor").create();
+
+  expect(Object.keys(written[0] ?? {})).toStrictEqual(["title", "author", "editor"]);
+  expect(written[0]?.editor).toStrictEqual({ connect: ada });
+});
+
+// Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
+// the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
+export function relationsCheckedByTheCompiler(
+  posts: Factory<TestClient, "post">,
+  comments: Factory<TestClient, "comment">,
+  users: Factory<TestClient, "user">,
+  userRow: Row<TestClient, "user">,
+  postRow: Row<TestClient, "post">,
+  stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
+): void {
+  void posts.for(users, "author").create();
+  void posts.for(userRow, "editor").create();
+  void posts.for(stateful, "author").create();
+  void comments.for(posts).create();
+  void comments.for(postRow).create();
+
+  expectTypeOf(posts.for(users, "author")).toEqualTypeOf<Factory<TestClient, "post">>();
+  expectTypeOf(posts.count(2).for(users, "author").create()).resolves.toEqualTypeOf<Row<TestClient, "post">[]>();
+
+  // @ts-expect-error the relation field is required where the model pair shares several
+  void posts.for(users);
+  // @ts-expect-error a row infers the model it belongs to, so this pair shares several too
+  void posts.for(userRow);
+  // @ts-expect-error no belongs-to relation reaches a user from a comment
+  void comments.for(users, "post");
+  // @ts-expect-error no belongs-to relation reaches a user from a comment, name left out
+  void comments.for(users);
+  // @ts-expect-error the one relation reaching a comment from a post holds many records
+  void posts.for(comments, "comments");
+  // @ts-expect-error a relation field the model pair does not share
+  void posts.for(users, "illustrator");
+  // @ts-expect-error a value that is neither a factory nor a row
+  void posts.for(42, "author");
+}

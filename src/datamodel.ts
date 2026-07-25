@@ -122,3 +122,55 @@ export function resolveRelationField(client: unknown, model: string, target: str
 
   return only;
 }
+
+function scalarNames(models: Record<string, DataModelModel>, tag: string): string[] {
+  return (models[tag]?.fields ?? []).filter((field) => field.kind !== "object").map((field) => field.name);
+}
+
+// A row announces no model of its own, so the model it belongs to is read off the fields it carries:
+// the one model a relation field points at whose scalars account for every one of them.
+function fittingTarget(client: unknown, model: string, row: Record<string, unknown>): string {
+  const models = modelsOf(client);
+  const keys = Object.keys(row);
+  const tags = [...new Set(relationFields(client, model).map((field) => field.type))];
+  const [only, ...rest] = tags.filter((tag) => keys.every((key) => scalarNames(models, tag).includes(key)));
+
+  if (only === undefined || rest.length > 0)
+    throw new TypeError(
+      `The row passed to for() fits no single model the relation fields of "${model}" point at: ` +
+        `${quoted(relationFieldsOf(client, model))}. Pass the relation field explicitly.`,
+    );
+
+  return delegateKey(only);
+}
+
+function targetOf(client: unknown, model: string, relationField: string | undefined): string | undefined {
+  const field = relationFields(client, model).find((candidate) => candidate.name === relationField);
+
+  return field === undefined ? undefined : delegateKey(field.type);
+}
+
+/**
+ * The one relation field of a model pointing at the model a row belongs to, given outright or
+ * resolved.
+ *
+ * The model is named by its delegate key. An explicit `relationField` carries the model it points at,
+ * so the row's own fields are read only where it is left out — or where it names no relation field at
+ * all, which the throw then reports. A row fitting no single target model throws, naming every
+ * relation field the model declares and asking for one of them.
+ *
+ * @example
+ * ```ts
+ * resolveRowRelationField(prisma, "comment", { id: 1, title: "Hello", authorId: 1 }); // "post"
+ * ```
+ */
+export function resolveRowRelationField(
+  client: unknown,
+  model: string,
+  row: Record<string, unknown>,
+  relationField?: string,
+): string {
+  const target = targetOf(client, model, relationField) ?? fittingTarget(client, model, row);
+
+  return resolveRelationField(client, model, target, relationField);
+}

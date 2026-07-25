@@ -1,6 +1,9 @@
 import { expect, test } from "vitest";
-import { relationFieldsOf, relationFieldsTo, resolveRelationField } from "./datamodel.js";
+import { relationFieldsOf, relationFieldsTo, resolveRelationField, resolveRowRelationField } from "./datamodel.js";
 import { disposableClient } from "./tests/factorio.js";
+
+const postShape = { id: 1, title: "Hello", authorId: 1, editorId: null };
+const userShape = { id: 1, email: "ada@example.com", name: null };
 
 interface Field {
   name: string;
@@ -100,5 +103,54 @@ test("an explicit relation field pointing at another model reports the missing r
 
   expect(() => resolveRelationField(prisma, "comment", "user", "post")).toThrow(
     'The model "comment" has no relation field pointing at "user". Declare the relation in the Prisma schema.',
+  );
+});
+
+test("a row resolves the relation field through the one target model its own fields fit", async () => {
+  const prisma = await disposableClient();
+
+  expect(resolveRowRelationField(prisma, "comment", postShape)).toBe("post");
+});
+
+test("a row fitting no target model of the child is rejected, naming the candidates", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => resolveRowRelationField(prisma, "comment", userShape)).toThrow(
+    'The row passed to for() fits no single model the relation fields of "comment" point at: "post". ' +
+      "Pass the relation field explicitly.",
+  );
+});
+
+// Every model declares an `id`, so a row narrowed to it fits all of them.
+test("a row fitting several target models of the child is rejected, naming the candidates", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => resolveRowRelationField(prisma, "post", { id: 1 })).toThrow(
+    'The row passed to for() fits no single model the relation fields of "post" point at: ' +
+      '"author", "editor", "comments". Pass the relation field explicitly.',
+  );
+});
+
+test("a row fitting one target model reached by several relation fields reports them", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => resolveRowRelationField(prisma, "post", userShape)).toThrow(
+    'The model "post" has more than one relation field pointing at "user": "author", "editor". ' +
+      "Pass the relation field explicitly.",
+  );
+});
+
+// The named field carries its own target, so a row too narrow to single one out still resolves.
+test("an explicit relation field names its target rather than reading the row's fields", async () => {
+  const prisma = await disposableClient();
+
+  expect(resolveRowRelationField(prisma, "post", { id: 1 }, "editor")).toBe("editor");
+});
+
+test("an explicit relation field the model does not declare is rejected, naming it and the candidates", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => resolveRowRelationField(prisma, "post", userShape, "illustrator")).toThrow(
+    'The model "post" has no relation field "illustrator" pointing at "user". Pass one of "author", "editor".',
   );
 });

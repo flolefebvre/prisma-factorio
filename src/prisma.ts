@@ -101,9 +101,43 @@ export type RelationArgs<C, MC extends ModelName<C>, MP extends ModelName<C>, Li
       ? [relationField: RelationsTo<C, MC, MP, List>]
       : [relationField?: RelationsTo<C, MC, MP, List>];
 
-// `unknown` for the row a factory returns and the default empty state map: both sit in output
-// positions only, so a factory carrying any of either reaches this.
-type Parent<C, P> = P extends ModelName<C> ? Factory<C, P, unknown> | Row<C, P> : never;
+/**
+ * What stands for one record of a model: a factory of it, or a row of it.
+ *
+ * `unknown` for the row a factory returns and for its state map: both sit in output positions only,
+ * so a factory carrying any of either satisfies this.
+ *
+ * @example
+ * ```ts
+ * const author: Parent<PrismaClient, "user"> = userFactory;
+ * ```
+ */
+export type Parent<C, P> = P extends ModelName<C> ? Factory<C, P, unknown> | Row<C, P> : never;
+
+/**
+ * What stands for one record of any model the client carries.
+ *
+ * @example
+ * ```ts
+ * declare function connect<T extends ParentValue<PrismaClient>>(parent: T): void;
+ * ```
+ */
+export type ParentValue<C> = Parent<C, ModelName<C>>;
+
+/**
+ * The model a parent value belongs to, recovered from the value's own type.
+ *
+ * A row is `Types.Public.Result<C[P], …>`, an indexed access no inference can invert, so the model is
+ * found by asking which one the value is a parent of rather than by inferring it from the value's
+ * shape. A model whose scalars are a subset of another's answers both, so the pair is ambiguous and
+ * the relation field has to be named.
+ *
+ * @example
+ * ```ts
+ * type Model = ParentModel<PrismaClient, Row<PrismaClient, "user">>; // "user"
+ * ```
+ */
+export type ParentModel<C, T> = { [P in ModelName<C>]: [T] extends [Parent<C, P>] ? P : never }[ModelName<C>];
 
 // A relation field whose arity is not the one asked for keeps Prisma's own input.
 type RelationValue<C, M extends ModelName<C>, K, List extends boolean = false> =
