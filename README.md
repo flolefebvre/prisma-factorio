@@ -68,11 +68,39 @@ A definition receives `{ faker, index, uid }`:
 - `index` — 0-based position of the record within the current batch; it restarts at 0 for every batch.
 - `uid` — a short string unique across records and parallel test workers, one per record. Use it for unique columns.
 
+### States
+
+A state is a named attribute transformation. Declare states in the config and each key becomes a method on the factory:
+
+```ts
+export const users = f.define("user", {
+  definition: ({ faker, uid }) => ({
+    email: `user-${uid}@example.com`,
+    name: faker.person.fullName(),
+  }),
+  states: {
+    suspended: { name: null },
+    vip: ({ attrs, uid }) => ({ email: `vip-${uid}@example.com`, name: `${attrs.name ?? "anonymous"} (VIP)` }),
+  },
+});
+
+const banned = await users.suspended().create();
+const inner = await users.count(3).vip().create();
+const once = await users.state({ name: "Ada Lovelace" }).create();
+```
+
+- A state is either a plain partial of the model's attributes or a closure returning one. A closure receives everything a definition gets, plus `attrs` — the attributes evaluated so far, the definition first and then the states already applied — and `parent`, which stays `undefined` until relation support lands.
+- **Every `states` key becomes a typed method.** `users.suspended()` autocompletes and `users.suspnded()` is a compile error, as is a state naming a field the model does not have or giving one the wrong type. This is the compile-checked replacement for Laravel's magic state methods.
+- `.state(partialOrClosure)` applies a one-off transformation at the call site, typed exactly like a declared state.
+- **Order of application:** the definition, then the states in the order they were applied, then `create(overrides)`. Last write wins per key; a key valued `undefined` is skipped at every layer, so the layer before it stands; a `null` is written.
+- States evaluate once per record, so a closure in a `count(3)` chain sees each record's own `index` and `uid`.
+- A state may not be named `create`, `count`, `using` or `state`: the factory already answers to those, so the collision is a compile error and a `TypeError` at `define`.
+
 ## Good to know
 
 - **Every fluent call returns a new factory.** `users.count(3)` does not change `users`.
 - **No implicit transaction.** Records are written one `create` call at a time, sequentially — never `createMany`. Atomicity is the caller's job: pass a transaction client with `.using(tx)`. This is a deliberate decision ([ADR 0002](docs/adr/0002-relation-wiring.md)), not an oversight.
-- **Overrides are typed, but the merge is not.** Overrides replace definition values key by key, last write wins. An override whose value is `undefined` is skipped, so the definition's value stands — `create({ name: cond ? "Ada" : undefined })` falls back to the definition rather than blanking the column. Prisma's mutually exclusive create-input branches are only checked within a single object, so a definition using `author: { create: … }` combined with overrides passing `authorId` type-checks and then fails at runtime with `Unknown argument 'authorId'`.
+- **Attributes are typed, but the merge is not.** States and overrides replace values key by key, last write wins. An override whose value is `undefined` is skipped, so the definition's value stands — `create({ name: cond ? "Ada" : undefined })` falls back to the definition rather than blanking the column. Prisma's mutually exclusive create-input branches are only checked within a single object, so a definition using `author: { create: … }` combined with overrides passing `authorId` type-checks and then fails at runtime with `Unknown argument 'authorId'`.
 - **Error shape.** A misspelled field reports `Type 'string' is not assignable to type 'never'` on the offending property — the same shape Prisma's own errors take.
 - **Faker's typing has one edge.** `faker` in the evaluation context is typed by a direct `import type` from `@faker-js/faker`. Without the package installed and with `skipLibCheck: false`, you get one `TS2307` from this package's type declarations; with `skipLibCheck: true` (which `tsc --init` leaves active) it compiles cleanly and the `faker` type degrades. Definitions that never mention `faker` run fine without the package; reading anything off `faker` without it throws an error naming what to install.
 - **No `make()` or `raw()`.** `create()` is the single verb — a factory always writes to the database. This is a deliberate deviation from Laravel.
@@ -81,6 +109,6 @@ A definition receives `{ faker, index, uid }`:
 
 v1 is in progress; this README tracks what actually works today.
 
-Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, and the `{ faker, index, uid }` evaluation context.
+Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, and the `{ faker, index, uid }` evaluation context.
 
-Tracked next, in no promised order: states, `has` / `for` relations, many-to-many, `recycle`, and `afterCreating`.
+Tracked next, in no promised order: `has` / `for` relations, many-to-many, `recycle`, and `afterCreating`.
