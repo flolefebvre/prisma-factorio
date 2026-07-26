@@ -51,3 +51,7 @@ _Avoid_: nested factory, embedded relation
 **Recycle pool**:
 Per-model lists of existing rows carried by a factory chain; anywhere the graph would create a _related_ record of a pooled model, it connects one pool row per record it would have created — the records a factory itself creates are exempt, as is a slot the caller named outright through `for()` or overrides. Merged across `.recycle()` calls, propagated to the whole graph, never self-populating.
 _Avoid_: cache, registry
+
+**Callback**:
+A side effect a factory carries — declared in its config or added to the chain — belonging to each record the factory itself creates, and reaching it complete: the row as the database left it, its graph written, and the client the chain writes through. A row a recycle pool stood in with carries none, having been connected rather than created.
+_Avoid_: hook, listener, observer, afterCreate

@@ -8,7 +8,7 @@ This project is a Laravel-style model factory library for Prisma (TypeScript). T
 
 ## Stack
 
-TypeScript (strict, ESM) · Node ≥ 20 · Prisma ≥ 7 < 8 as peer dependency · @faker-js/faker as optional peer · Vitest · ESLint + Prettier + jscpd. Package manager: pnpm.
+TypeScript (strict, ESM) · Node ≥ 20 · @prisma/client ≥ 7 < 8 as required peer · prisma ≥ 7 < 8 and @faker-js/faker as optional peers · Vitest · ESLint + Prettier + jscpd. Package manager: pnpm.
 
 ## Layout
 
@@ -40,10 +40,12 @@ pnpm typecheck      Type-check without emitting (tsc --noEmit)
 pnpm lint           ESLint
 pnpm build          Compile to dist/ (tsconfig.build.json)
 pnpm format         Prettier write
+pnpm format:check   Prettier check without writing
 pnpm duplicates     jscpd copy-paste detection
 ```
 
 Each script echoes a `--<name> OK--` marker on success.
+A fresh clone runs `pnpm generate` before a bare `pnpm test` or `pnpm typecheck`; both need the generated test client, and only `pnpm gates` supplies it on its own.
 Run `pnpm format` after making changes so the diff stays limited to what you actually touched.
 
 **Before considering a change done, it must pass the gate:** `pnpm gates` — generate, typecheck, lint, format check, duplicates, test, build.
