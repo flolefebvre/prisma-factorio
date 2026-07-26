@@ -2,6 +2,8 @@
 
 Laravel-style model factories for [Prisma](https://www.prisma.io): tests and seeds declare the records they need through a fluent, fully typed API — inferred entirely from the Prisma client you already generate.
 
+[![npm](https://img.shields.io/npm/v/@flefebvre/prisma-factorio.svg)](https://www.npmjs.com/package/@flefebvre/prisma-factorio)
+[![CI](https://github.com/flolefebvre/prisma-factorio/actions/workflows/ci.yml/badge.svg)](https://github.com/flolefebvre/prisma-factorio/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/flolefebvre/prisma-factorio/blob/main/LICENSE)
 
 ```ts
@@ -61,8 +63,8 @@ The feature set is a port of [Laravel's model factories](https://laravel.com/doc
 ## Installation
 
 ```bash
-pnpm add -D prisma-factorio
-# or: npm install -D prisma-factorio · yarn add -D prisma-factorio
+pnpm add -D @flefebvre/prisma-factorio
+# or: npm install -D @flefebvre/prisma-factorio · yarn add -D @flefebvre/prisma-factorio
 ```
 
 Requirements:
@@ -77,7 +79,7 @@ Bootstrap once against your client, then define a factory per model:
 
 ```ts
 // factories.ts
-import { initPrismaFactorio } from "prisma-factorio";
+import { initPrismaFactorio } from "@flefebvre/prisma-factorio";
 import { prisma } from "./db.js"; // your own PrismaClient instance
 
 const prismaFactorio = initPrismaFactorio(() => prisma, { seed: 1234, locale: "en" });
@@ -511,7 +513,7 @@ Sharp edges worth knowing before they find you. The linked issues and ADRs carry
 
 ## Status
 
-**v1.0.0 — shipped.** The scope [PRD #26](https://github.com/flolefebvre/prisma-factorio/issues/26) set for v1 is delivered, and this README documents the released surface rather than a plan. What Laravel has and this does not is listed under [Deviations from Laravel](#deviations-from-laravel), each with the reason it was refused; the limitations that remain are named in the sections that own them.
+**v1 scope complete, published as 0.1.0.** The scope [PRD #26](https://github.com/flolefebvre/prisma-factorio/issues/26) set for v1 is delivered, and this README documents the released surface rather than a plan. The version number is deliberately below 1.0.0 while the API meets its first consumers outside this repository; nothing on the list below is planned to change. What Laravel has and this does not is listed under [Deviations from Laravel](#deviations-from-laravel), each with the reason it was refused; the limitations that remain are named in the sections that own them.
 
 The v1 surface: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for`, relation defaults on a field of either arity, `has` for the children on the other side, many-to-many in both shapes, `recycle` for reusing rows the graph would otherwise create, and `afterCreating` callbacks in the config and on the chain.
 
@@ -523,10 +525,12 @@ Bug reports, questions and ideas are welcome on the [issue tracker](https://gith
 pnpm install
 pnpm generate   # build the scratch Prisma client the tests run against
 pnpm test       # vitest, against an in-memory SQLite database
-pnpm gates      # full validation: generate, typecheck, lint, format, duplicates, test, build
+pnpm gates      # full validation: generate, typecheck, lint, format, duplicates, test, build, packed contents
 ```
 
 The project is developed test-first; tests sit next to the source they cover as `*.test.ts`. The domain vocabulary lives in [`CONTEXT.md`](CONTEXT.md) and the binding architecture decisions in [`docs/adr/`](docs/adr) — worth a read before proposing a change of direction. A pull request should pass `pnpm gates`.
+
+Releases are cut from a version tag; [`docs/releasing.md`](docs/releasing.md) has the procedure.
 
 ## License
 

@@ -15,7 +15,7 @@ import { factorioHarness, userDefinition } from "./tests/factorio.js";
 // silence. Each function below mirrors one block, named after the section it comes from, and every
 // `@ts-expect-error` pins a claim the prose makes about what the compiler refuses.
 //
-// The document's imports map onto this repository: `"prisma-factorio"` is `"./index.js"` and `./db.js`
+// The document's imports map onto this repository: `"@flefebvre/prisma-factorio"` is `"./index.js"` and `./db.js`
 // is the test harness's client. A block's module-scope `export const` declarations are locals of the
 // function that mirrors it, and a declaration a later block leans on is that function's parameter.
 //
