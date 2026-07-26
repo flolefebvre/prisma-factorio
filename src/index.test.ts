@@ -25,6 +25,22 @@ test("a state written against the published types reaches the config and the cal
   expect(user.name).toBe("anonymous (VIP)");
 });
 
+// A reusable callback is the reason the config key exists, and a callback held in a variable of its
+// own is nameable only from the root — through the same type both attachment points are declared with.
+test("a callback written against the published type reaches the config key and the fluent method", async () => {
+  const prisma = await disposableClient();
+  const seen: number[] = [];
+  const announced: api.AfterCreating<TestClient, "user"> = (user, { client }) => {
+    seen.push(user.id);
+    return client.post.count({ where: { authorId: user.id } });
+  };
+  const f = api.initPrismaFactorio(prisma);
+
+  await f.define("user", { definition: userDefinition, afterCreating: announced }).afterCreating(announced).create();
+
+  expect(seen).toHaveLength(2);
+});
+
 // The escape hatch is spelled only through this options object, so a caller holding one in a
 // variable of its own has to be able to name its type from the package root.
 test("a has() options object written against the published type reaches the call site", async () => {

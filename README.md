@@ -94,7 +94,7 @@ const once = await users.state({ name: "Ada Lovelace" }).create();
 - `.state(partialOrClosure)` applies a one-off transformation at the call site, typed exactly like a declared state.
 - **Order of application:** the definition, then the states in the order they were applied, then `create(overrides)`. Last write wins per key, save for the relation field a [`has()`](#children) layer adds to rather than replaces; a key valued `undefined` is skipped at every layer, so the layer before it stands; a `null` is written.
 - States evaluate once per record, so a closure in a `count(3)` chain sees each record's own `index` and `uid`.
-- A state may not be named `create`, `count`, `using`, `state`, `for`, `has`, `recycle` or `then` — the first seven are methods the factory already answers to, and a factory carrying a `then` would be thenable and never settle when awaited. Either way the collision is a compile error and a `TypeError` at `define`.
+- A state may not be named `create`, `count`, `using`, `state`, `for`, `has`, `recycle`, `afterCreating` or `then` — the first eight are methods the factory already answers to, and a factory carrying a `then` would be thenable and never settle when awaited. Either way the collision is a compile error and a `TypeError` at `define`.
 - Declare states in the object you pass to `define`. Annotating that object with `FactoryConfig<Client, "model">` leaves the state names unknown to the compiler, which is why a config typed that way accepts no `states` at all.
 
 ### Relations
@@ -263,7 +263,7 @@ const comment = await comments.recycle("user", ada).create();
 - **`seed` pins the picks as well as faker's values**, so one seed replays the same spread run for run. The picks belong to the graph that resolves them rather than to the bootstrap that defined the factory, so a factory reached from another bootstrap's graph draws from that graph's stream — the exception `initPrismaFactorio` documents.
 - **A pooled row of a model whose only unique constraint is compound cannot be connected yet** ([#41](https://github.com/flolefebvre/prisma-factorio/issues/41)). It is matched on Prisma's generated compound selector, which a flat row of scalars does not satisfy, so a pooled `Membership` fails exactly as `has([membership])` does. Pass native relation input — `{ connect: { userId_teamId: { … } } }` — meanwhile.
 
-**Children.** A `has()` child factory of a pooled model is never created: the layer connects drawn rows in the parent's own create, and that factory's definition and states never run.
+**Children.** A `has()` child factory of a pooled model is never created: the layer connects drawn rows in the parent's own create, and that factory's definition, states and callbacks never run.
 
 ```ts
 const author = await users.recycle("post", existingPosts).has(posts.count(3), "posts").create();
@@ -271,6 +271,34 @@ const author = await users.recycle("post", existingPosts).has(posts.count(3), "p
 ```
 
 The count is the child chain's own batch size — one pick per record it would have created — so `has(posts.count(0))` draws nothing and leaves the relation field unwritten. `has([rows])` is untouched by any of this: rows connect as they always did.
+
+### Callbacks
+
+`afterCreating()` runs a side effect after every record a factory persists. Declare one in the config for a factory-wide effect, or add one to the chain at the call site:
+
+```ts
+export const users = f.define("user", {
+  definition: ({ faker, uid }) => ({ email: `user-${uid}@example.com`, name: faker.person.fullName() }),
+  afterCreating: async (user, { client }) => {
+    await client.post.create({ data: { title: "Welcome", author: { connect: { id: user.id } } } });
+  },
+});
+
+const ada = await users
+  .afterCreating(async (user, { client }) => {
+    await client.post.create({ data: { title: "Second", author: { connect: { id: user.id } } } });
+  })
+  .create();
+// one user, two posts — the config's callback first, then the chain's
+```
+
+- **The callback receives the created row and the client the chain writes through.** The row carries its generated `id` and every database default; the client is the one `.using(tx)` named where a call named one, so a write the callback makes lands in the caller's transaction alongside the record. There is deliberately no global client to fall back on. Whatever the callback returns is awaited, then discarded.
+- **The graph is complete when it fires.** A record's `has()` children are written before its callbacks run, and the callbacks of the parents it resolved have already run — so a graph fires parent side first, then the record itself, then each child's own callbacks, and the record's own last.
+- **Config first, then chain order, one at a time.** A callback the config declared runs ahead of every callback the chain added, chain callbacks run in the order they were registered, and each is awaited before the next begins. `.afterCreating()` accumulates rather than replaces.
+- **Once per record.** `count(3)` runs the whole list three times, each with its own row; `count(0)` runs it none. A `for()` parent is created once per `create()` call, so its callbacks run once however large the batch it answers.
+- **A row the recycle pool stood in with fires nothing** — it was connected, never created.
+- **`.afterCreating()` returns a new factory**, like every other fluent call, and states survive it in both chaining directions. Reusable callbacks can be typed with the exported `AfterCreating<Client, "model">`.
+- **There is no `afterMaking()`.** Without `make()` there is nothing for it to follow — a deliberate deviation from Laravel, like `make()` itself.
 
 ## Good to know
 
@@ -284,12 +312,13 @@ The count is the child chain's own batch size — one pick per record it would h
 - **Connecting an existing row matches on the row's scalar fields.** A row parent's scalars are splatted into the `connect` where-clause — a relation the row was loaded with, as `include` hands back, is left out — because the runtime datamodel marks no field unique and no subset of a row is knowably the one Prisma would match on. Every field therefore narrows the match, so a row read _before_ the record changed fails loudly with Prisma's `P2025` rather than silently connecting to whatever the record has since become.
 - **A column named after a relation operation shadows the row.** A parent row whose only key is a column literally named `connect`, `create`, `connectOrCreate` or `createMany` is read as native relation input rather than as a row, so pass native `{ connect: { … } }` explicitly for a model declaring one.
 - **`.using(client)` covers the whole graph.** It redirects not just this factory's records but every parent factory its creates resolve and every child factory a `has()` layer creates records through, however deep the graph goes — so one `.using(tx)` puts a whole factory graph in a single interactive transaction, and a rollback leaves nothing behind. A factory that named a client of its own keeps it, and the factories it resolves in turn then run on that one. The library still opens no transaction itself, exactly as [ADR 0002](docs/adr/0002-relation-wiring.md) says.
+- **A throwing callback is not caught.** `create()` rejects with the error the callback threw. Bare, the record the callback followed is already committed and stays standing — the rejection undoes nothing; under `.using(tx)`, the same throw leaves your transaction callback and the whole graph rolls back. That is [ADR 0002](docs/adr/0002-relation-wiring.md)'s "atomicity is the caller's" composing as designed, not a special case.
 - **`CreateInput` is no longer a Prisma alias.** This package exports it, and this release changed what it means: a relation key now additionally accepts a `Factory` or a row, so a value typed `CreateInput<Client, "model">` is no longer assignable to Prisma's own `create` `data` argument. If you imported it as a stand-in for Prisma's input type, it has stopped being one.
 
 ## Status
 
 v1 is in progress; this README tracks what actually works today.
 
-Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for` with relation defaults, `has` for the children on the other side, many-to-many in both shapes, and `recycle` for reusing rows the graph would otherwise create.
+Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for` with relation defaults, `has` for the children on the other side, many-to-many in both shapes, `recycle` for reusing rows the graph would otherwise create, and `afterCreating` callbacks in the config and on the chain.
 
-Tracked next: `afterCreating`.
+Tracked next: relation defaults on has-many fields.

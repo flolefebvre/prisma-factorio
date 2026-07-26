@@ -374,6 +374,15 @@ test("a state named recycle is rejected where the factory is defined", async () 
   ).toThrow('The state "recycle" takes a name a factory reserves. Rename the state.');
 });
 
+test("a state named afterCreating is rejected where the factory is defined", async () => {
+  const { f } = await factorioHarness();
+
+  expect(() =>
+    // @ts-expect-error a state may not take the name the callback method answers to
+    f.define("user", { definition: userDefinition, states: { afterCreating: { name: "Grace" } } }),
+  ).toThrow('The state "afterCreating" takes a name a factory reserves. Rename the state.');
+});
+
 test("a state named __proto__ becomes a method rather than a write to the prototype", async () => {
   const { f } = await factorioHarness();
   const users = f.define("user", { definition: userDefinition, states: { ["__proto__"]: { name: "Grace" } } });
@@ -2093,6 +2102,290 @@ test("using(tx) covers a has() layer drawing from the pool, and a rollback drops
   await leftBehind(harness, target, [1, 1, 0]);
 });
 
+interface Notified {
+  seen: Row<TestClient, "user">[];
+  users: Factory<TestClient, "user">;
+}
+
+// The rows a config-declared callback was handed, in the order it was handed them.
+function notifiedUsers(f: Factorio<TestClient>): Notified {
+  const seen: Row<TestClient, "user">[] = [];
+  const users = f.define("user", {
+    definition: userDefinition,
+    afterCreating: (user) => {
+      seen.push(user);
+    },
+  });
+
+  return { seen, users };
+}
+
+test("a config-declared afterCreating fires with the created row", async () => {
+  const { f } = await factorioHarness();
+  const { seen, users } = notifiedUsers(f);
+
+  const ada = await users.create();
+
+  expect(seen).toStrictEqual([ada]);
+});
+
+test("count(3) fires the callback once per row, each with the row it was created for", async () => {
+  const { f } = await factorioHarness();
+  const { seen, users } = notifiedUsers(f);
+
+  const rows = await users.count(3).create();
+
+  expect(seen).toStrictEqual(rows);
+  expect(seen).toHaveLength(3);
+});
+
+test("count(0) creates no record and fires no callback", async () => {
+  const { f } = await factorioHarness();
+  const { seen, users } = notifiedUsers(f);
+
+  const rows = await users.count(0).create();
+
+  expect(rows).toStrictEqual([]);
+  expect(seen).toStrictEqual([]);
+});
+
+// A callback records the name it was registered under, which is what every ordering below is read
+// off. It takes no arguments, so one serves a factory of any model.
+function logging(log: string[], name: string): () => void {
+  return () => {
+    log.push(name);
+  };
+}
+
+// Two entries per callback rather than one: started together, the log would read "first in",
+// "second in", so only awaiting each before the next begins leaves the pairs unbroken.
+function yielding(log: string[], name: string): () => Promise<void> {
+  return async () => {
+    log.push(`${name} in`);
+    await Promise.resolve();
+    log.push(`${name} out`);
+  };
+}
+
+test("a fluent afterCreating fires with the created row", async () => {
+  const { users } = await factorioHarness();
+  const seen: Row<TestClient, "user">[] = [];
+
+  const ada = await users
+    .afterCreating((user) => {
+      seen.push(user);
+    })
+    .create();
+
+  expect(seen).toStrictEqual([ada]);
+});
+
+test("a config-declared callback runs before the fluent ones, which run in registration order", async () => {
+  const { f } = await factorioHarness();
+  const log: string[] = [];
+  const users = f.define("user", { definition: userDefinition, afterCreating: logging(log, "config") });
+
+  await users.afterCreating(logging(log, "first")).afterCreating(logging(log, "second")).create();
+
+  expect(log).toStrictEqual(["config", "first", "second"]);
+});
+
+test("each callback finishes before the next one starts", async () => {
+  const { users } = await factorioHarness();
+  const log: string[] = [];
+
+  await users.afterCreating(yielding(log, "first")).afterCreating(yielding(log, "second")).create();
+
+  expect(log).toStrictEqual(["first in", "first out", "second in", "second out"]);
+});
+
+test("afterCreating leaves the factory it was called on untouched", async () => {
+  const { users } = await factorioHarness();
+  const log: string[] = [];
+  const notified = users.afterCreating(logging(log, "once"));
+
+  await users.create();
+  await notified.create();
+
+  expect(log).toStrictEqual(["once"]);
+});
+
+test("afterCreating keeps the batch and the states, whichever order the chain was written in", async () => {
+  const { f } = await factorioHarness();
+  const log: string[] = [];
+  const users = statefulUsers(f);
+
+  const one = await users.afterCreating(logging(log, "before")).suspended().create();
+  const many = await users.count(2).afterCreating(logging(log, "after")).create();
+
+  expect(one.name).toBeNull();
+  expect(many).toHaveLength(2);
+  expect(log).toStrictEqual(["before", "after", "after"]);
+});
+
+function loggingUsers(f: Factorio<TestClient>, log: string[], name: string): Factory<TestClient, "user"> {
+  return f.define("user", { definition: userDefinition, afterCreating: logging(log, name) });
+}
+
+// A row already standing, which is what a pool hands over: written straight through the client, so no
+// factory ran for it and the log is empty before the graph under test does anything.
+async function standingUser(prisma: TestClient): Promise<Row<TestClient, "user">> {
+  return prisma.user.create({ data: { email: "standing@example.com", name: "Ada" } });
+}
+
+test("a parent's callback sees its has() children already written", async () => {
+  const { f, posts } = await factorioHarness();
+  const counted: number[] = [];
+  const users = f.define("user", {
+    definition: userDefinition,
+    afterCreating: async (user, { client }) => {
+      counted.push(await client.post.count({ where: { authorId: user.id } }));
+    },
+  });
+
+  await users.has(posts.count(2), "posts").create();
+
+  expect(counted).toStrictEqual([2]);
+});
+
+// The whole shape in one graph: a parent the definition embeds, two children a `has` layer creates,
+// and the record between them. The record's own entry counts its children, so the log pins that the
+// record was written before them as well as where its callbacks fall.
+test("a graph fires the parent's callbacks, then each child's own, then the record's last", async () => {
+  const { f, posts: standing } = await factorioHarness();
+  const log: string[] = [];
+  const users = loggingUsers(f, log, "parent");
+  const comments = f.define("comment", {
+    definition: ({ uid }) => ({ body: uid, post: standing }),
+    afterCreating: logging(log, "child"),
+  });
+  const posts = f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: users }),
+    afterCreating: async (post, { client }) => {
+      log.push(`record sees ${String(await client.comment.count({ where: { postId: post.id } }))} children`);
+    },
+  });
+
+  await posts.has(comments.count(2), "comments").create();
+
+  expect(log).toStrictEqual(["parent", "child", "child", "record sees 2 children"]);
+});
+
+// One parent answers the whole batch, so its own create runs once and so do the callbacks behind it.
+test("a for() parent's callbacks fire once per create() call rather than once per record", async () => {
+  const { f, posts } = await factorioHarness();
+  const log: string[] = [];
+  const users = loggingUsers(f, log, "user");
+
+  const written = await posts.count(3).for(users, "author").create();
+
+  expect(written).toHaveLength(3);
+  expect(log).toStrictEqual(["user"]);
+});
+
+// The second create runs the same graph with no pool: it fires once, which is what shows the first
+// create fired none rather than the callback never having been registered.
+test("a row drawn from the pool into an embedded slot fires no callback", async () => {
+  const { prisma, f } = await factorioHarness();
+  const log: string[] = [];
+  const users = loggingUsers(f, log, "user");
+  const posts = f.define("post", { definition: ({ uid }) => ({ title: uid, author: users }) });
+  const ada = await standingUser(prisma);
+
+  await posts.recycle("user", ada).create();
+  await posts.create();
+
+  expect(log).toStrictEqual(["user"]);
+});
+
+// The standing post is created through the factory, so the one entry on the log is its own: the two
+// records the `has` layer would have created were drawn from the pool instead and fired nothing.
+test("a has() child factory drawn from the pool fires no callback", async () => {
+  const { f, users } = await factorioHarness();
+  const log: string[] = [];
+  const posts = f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: users }),
+    afterCreating: logging(log, "post"),
+  });
+  const standing = await posts.create();
+
+  await users.recycle("post", standing).has(posts.count(2), "posts").create();
+
+  expect(log).toStrictEqual(["post"]);
+});
+
+// `for()` names the caller's own parent, which the pool never stands in for, so that record is created
+// like any other and the callbacks behind it run.
+test("a for() parent under a pool of its model is still created, and still fires", async () => {
+  const { prisma, f, posts } = await factorioHarness();
+  const log: string[] = [];
+  const users = loggingUsers(f, log, "user");
+  const ada = await standingUser(prisma);
+
+  await posts.recycle("user", ada).for(users, "author").create();
+
+  expect(log).toStrictEqual(["user"]);
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+test("a throwing callback rejects create(), leaving the record it followed committed", async () => {
+  const { prisma, f } = await factorioHarness();
+  const failed = new Error("the callback failed");
+  const users = f.define("user", {
+    definition: userDefinition,
+    afterCreating: () => {
+      throw failed;
+    },
+  });
+
+  await expect(users.create()).rejects.toBe(failed);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+// The same throw under a transaction the caller opened, with a write of the callback's own ahead of
+// it: nothing catches the throw, so the graph and the row the callback wrote roll back together. The
+// count taken inside the transaction is what tells that write from one that never happened.
+test("a throwing callback under using(tx) rolls its own writes back along with the graph", async () => {
+  const harness = await factorioHarness();
+  const target = await disposableClient();
+  const failed = new Error("the callback failed");
+  const inside: number[] = [];
+  const users = harness.f.define("user", {
+    definition: userDefinition,
+    afterCreating: async (user, { client }) => {
+      await client.post.create({ data: { title: "audit", author: { connect: { id: user.id } } } });
+      inside.push(await client.post.count());
+      throw failed;
+    },
+  });
+
+  const outcome: unknown = await target
+    .$transaction((tx) => users.has(harness.posts.count(2), "posts").using(tx).create())
+    .catch((error: unknown) => error);
+
+  expect(outcome).toBe(failed);
+  expect(inside).toStrictEqual([3]);
+  await leftBehind(harness, target, [0, 0, 0]);
+});
+
+// Bootstrapped on one database and redirected to another: the post reaches the second only because
+// the callback wrote through the client handed to it rather than through the one it could close over.
+test("a callback writes through the client the chain writes through", async () => {
+  const { prisma, f } = await factorioHarness();
+  const elsewhere = await disposableClient();
+  const users = f.define("user", {
+    definition: userDefinition,
+    afterCreating: async (user, { client }) => {
+      await client.post.create({ data: { title: "welcome", author: { connect: { id: user.id } } } });
+    },
+  });
+
+  await users.using(elsewhere).create();
+
+  await expect(elsewhere.post.count()).resolves.toBe(1);
+  await expect(prisma.post.count()).resolves.toBe(0);
+});
+
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
 // the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
 export function recycleCheckedByTheCompiler(
@@ -2236,4 +2529,34 @@ export function relationsCheckedByTheCompiler(
   void users.has(teams);
   // @ts-expect-error no belongs-to relation reaches a team from a user either
   void users.for(teams);
+}
+
+// Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
+// the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
+export function callbacksCheckedByTheCompiler(
+  f: Factorio<TestClient>,
+  users: Factory<TestClient, "user">,
+  stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
+): void {
+  const noted = (): void => undefined;
+
+  void users.afterCreating(noted).create();
+  // Whatever a callback hands back is awaited and discarded, so the concise form of an arrow — whose
+  // return type is the call's own — stands here as readily as a block body returning nothing.
+  void users.afterCreating(async (user, { client }) => client.post.count({ where: { authorId: user.id } })).create();
+  void f.define("user", { definition: userDefinition, afterCreating: noted });
+
+  expectTypeOf(users.afterCreating(noted)).toEqualTypeOf<Factory<TestClient, "user">>();
+  expectTypeOf(users.count(2).afterCreating(noted).create()).resolves.toEqualTypeOf<Row<TestClient, "user">[]>();
+  expectTypeOf(stateful.afterCreating(noted).suspended()).toEqualTypeOf<typeof stateful>();
+  expectTypeOf(stateful.suspended().afterCreating(noted)).toEqualTypeOf<typeof stateful>();
+
+  // @ts-expect-error the row is the factory's own model, so a column another model declares is not on it
+  void users.afterCreating((user) => user.slug);
+  // @ts-expect-error the context carries the client and nothing else
+  void users.afterCreating((user, { pool }) => pool);
+  // @ts-expect-error a value that is no callback at all
+  void users.afterCreating(42);
+  // @ts-expect-error the config key takes one callback rather than a list of them
+  void f.define("user", { definition: userDefinition, afterCreating: [noted] });
 }

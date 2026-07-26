@@ -122,10 +122,11 @@ interface Reserved {
   for?: never;
   has?: never;
   recycle?: never;
+  afterCreating?: never;
   then?: never;
 }
 
-const reservedNames = ["create", "count", "using", "state", "for", "has", "recycle", "then"];
+const reservedNames = ["create", "count", "using", "state", "for", "has", "recycle", "afterCreating", "then"];
 
 /**
  * What a factory's declared `states` must satisfy: every value exact, and no name the factory
@@ -147,6 +148,9 @@ export type DeclaredStates<C, M extends ModelName<C>, S> = Reserved & {
  * Annotating a config leaves `S` unsupplied, and a config typed that way accepts no `states` at all
  * — declare states inline at the `define` call, where both their names and their fields are checked.
  *
+ * `afterCreating` declares the one callback every record this factory persists is followed by — see
+ * {@link AfterCreating} — and {@link FactoryMethods.afterCreating} adds more behind it.
+ *
  * @example
  * ```ts
  * const config: FactoryConfig<PrismaClient, "user"> = {
@@ -157,7 +161,33 @@ export type DeclaredStates<C, M extends ModelName<C>, S> = Reserved & {
 export interface FactoryConfig<C, M extends ModelName<C>, D = CreateInput<C, M>, S = never> {
   definition: (context: EvaluationContext) => Attributes<C, M, D>;
   states?: S & StateMap<C, M>;
+  afterCreating?: AfterCreating<C, M>;
 }
+
+/**
+ * A side effect that follows every record a factory persists.
+ *
+ * `row` is the record as the database left it, generated id and column defaults carried, and `client`
+ * is the client this chain writes through — the one `using` named, where a call named one — so a write
+ * the callback makes lands wherever the record itself did. Whatever the callback returns is awaited
+ * and then discarded.
+ *
+ * The client stands here as every model delegate rather than as the client whole, an interactive
+ * transaction carrying none of the client's own methods. `using` asks for less than that — one
+ * delegate is all it takes — so a chain redirected to a hand-built stub carrying fewer models leaves a
+ * callback reaching a second one to the caller.
+ *
+ * @example
+ * ```ts
+ * const announced: AfterCreating<PrismaClient, "user"> = async (user, { client }) => {
+ *   await client.post.create({ data: { title: "Hello", author: { connect: { id: user.id } } } });
+ * };
+ * ```
+ */
+export type AfterCreating<C, M extends ModelName<C>> = (
+  row: Row<C, M>,
+  context: { client: Pick<C, ModelName<C>> },
+) => unknown;
 
 /**
  * The escape hatch `has` trails its arguments with.
@@ -277,6 +307,28 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * ```
    */
   recycle<P extends ModelName<C>>(model: P, rows: Row<C, P> | readonly Row<C, P>[]): Factory<C, M, R, S>;
+  /**
+   * Registers a side effect to run once every record this factory creates stands complete.
+   *
+   * Calls accumulate rather than replace one another, and a callback the config declared runs ahead of
+   * every callback registered here. They run one at a time, in that order, each awaited before the
+   * next begins, and a batch runs the whole list per record — so `count(0)` runs none. A callback runs
+   * where a record was created and nowhere else: a row a recycle pool stood in with was connected
+   * rather than created, and nothing fires for it.
+   *
+   * The record reaches the callback with its `has` children already written, and the callbacks of a
+   * parent this factory resolved have already run by then, so the graph the callback reads is whole.
+   *
+   * @example
+   * ```ts
+   * const welcomed = await users
+   *   .afterCreating(async (user, { client }) => {
+   *     await client.post.create({ data: { title: "Welcome", author: { connect: { id: user.id } } } });
+   *   })
+   *   .create();
+   * ```
+   */
+  afterCreating(callback: AfterCreating<C, M>): Factory<C, M, R, S>;
 }
 
 /**
@@ -330,6 +382,8 @@ interface FactoryChain<C, M extends ModelName<C>> {
   definition: (context: EvaluationContext) => Written;
   declared: Record<string, Step>;
   applied: readonly Layer[];
+  // The config seeds this list and the fluent method appends to it, which is the order they run in.
+  callbacks: readonly AfterCreating<C, M>[];
   client: () => Pick<C, M>;
   // Set by `using` alone: a client the chain inherited gives way to the client of the chain resolving
   // it, a client `using` named does not.
@@ -740,6 +794,9 @@ async function write<C, M extends ModelName<C>>(
   const client = chain.client();
   const model = String(chain.model);
   const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick };
+  // Every model the client carries, which is what a callback reaches a second one through. `using`
+  // asks for a single delegate, so a chain redirected to a stub carrying fewer stands on the caller.
+  const reached = { client: client as Pick<C, ModelName<C>> };
   const delegate = client[chain.model] as CreateDelegate;
   const applied = given(overrides);
   // A relation field the call names outright is the caller's own choice of parent, which the pool
@@ -760,6 +817,10 @@ async function write<C, M extends ModelName<C>>(
     // Depth first, layers in the order they were called: every child of one record exists before the
     // next record of the batch is created.
     for (const entry of pending) await borne(wiring, model, row, entry);
+
+    // The graph under this record stands complete here, and each callback settles before the next
+    // begins, so one holding the record open never overlaps the one behind it.
+    for (const callback of chain.callbacks) await callback(row as Row<C, M>, reached);
 
     rows.push(row);
   }
@@ -832,6 +893,9 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
     },
     recycle(model: ModelName<C>, rows: unknown): Factory<C, M, R, S> {
       return createFactory({ ...chain, pool: recycledPool(chain.pool, String(model), rows) });
+    },
+    afterCreating(callback: AfterCreating<C, M>): Factory<C, M, R, S> {
+      return createFactory({ ...chain, callbacks: [...chain.callbacks, callback] });
     },
   };
 
