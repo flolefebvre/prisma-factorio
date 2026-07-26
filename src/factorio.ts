@@ -15,8 +15,8 @@ import { createPicker } from "./rng.js";
  *
  * @example
  * ```ts
- * const f: Factorio<PrismaClient> = initPrismaFactorio(prisma);
- * const users = f.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });
+ * const prismaFactorio: Factorio<PrismaClient> = initPrismaFactorio(prisma);
+ * const userFactory = prismaFactorio.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });
  * ```
  */
 export interface Factorio<C> {
@@ -45,9 +45,9 @@ function resolver<C extends object>(source: C | (() => C)): () => C {
  *
  * @example
  * ```ts
- * const f = initPrismaFactorio(() => prisma, { seed: 1234, locale: "fr" });
- * const users = f.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });
- * const ada = await users.create({ name: "Ada" });
+ * const prismaFactorio = initPrismaFactorio(() => prisma, { seed: 1234, locale: "fr" });
+ * const userFactory = prismaFactorio.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });
+ * const ada = await userFactory.create({ name: "Ada" });
  * ```
  */
 export function initPrismaFactorio<C extends object>(

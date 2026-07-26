@@ -7,24 +7,24 @@ import { createTestClient, disposeTestClient, type TestClient } from "./client.j
 /**
  * A bootstrap over a throwaway database, with one factory per model already declared on it.
  *
- * `posts`, `comments` and `memberships` carry a relation default, so creating any of them walks the
+ * `postFactory`, `commentFactory` and `membershipFactory` carry a relation default, so creating any of them walks the
  * chain of factories behind it: a comment brings a post, which brings a user, and a membership brings
  * a user and a team both.
  *
  * @example
  * ```ts
- * const { prisma, users } = await factorioHarness({ seed: 7 });
+ * const { prisma, userFactory } = await factorioHarness({ seed: 7 });
  * ```
  */
 export interface Harness {
   prisma: TestClient;
-  f: Factorio<TestClient>;
-  users: Factory<TestClient, "user">;
-  posts: Factory<TestClient, "post">;
-  comments: Factory<TestClient, "comment">;
-  tags: Factory<TestClient, "tag">;
-  teams: Factory<TestClient, "team">;
-  memberships: Factory<TestClient, "membership">;
+  prismaFactorio: Factorio<TestClient>;
+  userFactory: Factory<TestClient, "user">;
+  postFactory: Factory<TestClient, "post">;
+  commentFactory: Factory<TestClient, "comment">;
+  tagFactory: Factory<TestClient, "tag">;
+  teamFactory: Factory<TestClient, "team">;
+  membershipFactory: Factory<TestClient, "membership">;
 }
 
 /**
@@ -32,7 +32,7 @@ export interface Harness {
  *
  * @example
  * ```ts
- * const users = f.define("user", { definition: userDefinition });
+ * const userFactory = prismaFactorio.define("user", { definition: userDefinition });
  * ```
  */
 export function userDefinition({ uid }: EvaluationContext): { email: string; name: string } {
@@ -58,24 +58,35 @@ export async function disposableClient(): Promise<TestClient> {
  *
  * @example
  * ```ts
- * const { users } = await factorioHarness();
- * const ada = await users.create({ name: "Ada" });
+ * const { userFactory } = await factorioHarness();
+ * const ada = await userFactory.create({ name: "Ada" });
  * ```
  */
 export async function factorioHarness(options: FactorioOptions = {}): Promise<Harness> {
   const prisma = await disposableClient();
-  const f = initPrismaFactorio(prisma, options);
-  const users = f.define("user", { definition: userDefinition });
-  const posts = f.define("post", { definition: ({ uid }) => ({ title: uid, author: users }) });
-  const comments = f.define("comment", { definition: ({ uid }) => ({ body: uid, post: posts }) });
-  const tags = f.define("tag", { definition: ({ uid }) => ({ label: uid }) });
-  const teams = f.define("team", { definition: ({ uid }) => ({ slug: uid }) });
+  const prismaFactorio = initPrismaFactorio(prisma, options);
+  const userFactory = prismaFactorio.define("user", { definition: userDefinition });
+  const postFactory = prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: userFactory }) });
+  const commentFactory = prismaFactorio.define("comment", {
+    definition: ({ uid }) => ({ body: uid, post: postFactory }),
+  });
+  const tagFactory = prismaFactorio.define("tag", { definition: ({ uid }) => ({ label: uid }) });
+  const teamFactory = prismaFactorio.define("team", { definition: ({ uid }) => ({ slug: uid }) });
   // Both legs of a join model are required, so its definition names a parent for each. A `has()` or a
   // `for()` layer replaces the leg it selects before anything is evaluated, leaving the factory named
   // here uncreated.
-  const memberships = f.define("membership", {
-    definition: () => ({ role: "member", user: users, team: teams }),
+  const membershipFactory = prismaFactorio.define("membership", {
+    definition: () => ({ role: "member", user: userFactory, team: teamFactory }),
   });
 
-  return { prisma, f, users, posts, comments, tags, teams, memberships };
+  return {
+    prisma,
+    prismaFactorio,
+    userFactory,
+    postFactory,
+    commentFactory,
+    tagFactory,
+    teamFactory,
+    membershipFactory,
+  };
 }

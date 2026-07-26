@@ -30,7 +30,7 @@ export interface FactorioOptions {
    *
    * @example
    * ```ts
-   * const f = initPrismaFactorio(prisma, { seed: 1234 });
+   * const prismaFactorio = initPrismaFactorio(prisma, { seed: 1234 });
    * ```
    */
   seed?: number | undefined;

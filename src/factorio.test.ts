@@ -8,21 +8,21 @@ import { disposableClient, factorioHarness, userDefinition } from "./tests/facto
 
 interface CountedBootstrap {
   resolutions: () => number;
-  users: Factory<TestClient, "user">;
+  userFactory: Factory<TestClient, "user">;
 }
 
 function bootstrapCountingResolutions(prisma: TestClient): CountedBootstrap {
   let resolutions = 0;
-  const f = initPrismaFactorio(() => {
+  const prismaFactorio = initPrismaFactorio(() => {
     resolutions += 1;
     return prisma;
   });
 
-  return { resolutions: () => resolutions, users: f.define("user", { definition: userDefinition }) };
+  return { resolutions: () => resolutions, userFactory: prismaFactorio.define("user", { definition: userDefinition }) };
 }
 
-function namesFrom(f: Factorio<TestClient>): Factory<TestClient, "user", { name: string | null }[]> {
-  return f
+function namesFrom(prismaFactorio: Factorio<TestClient>): Factory<TestClient, "user", { name: string | null }[]> {
+  return prismaFactorio
     .define("user", {
       definition: ({ faker, uid }) => ({ email: `${uid}@example.com`, name: faker.person.fullName() }),
     })
@@ -30,8 +30,8 @@ function namesFrom(f: Factorio<TestClient>): Factory<TestClient, "user", { name:
 }
 
 async function seededNames(options: FactorioOptions): Promise<(string | null)[]> {
-  const { f } = await factorioHarness(options);
-  const rows = await namesFrom(f).create();
+  const { prismaFactorio } = await factorioHarness(options);
+  const rows = await namesFrom(prismaFactorio).create();
 
   return rows.map((row) => row.name);
 }
@@ -68,19 +68,19 @@ test("a client instance and a thunk both reach the database", async () => {
 test("a thunk is not invoked until the first create()", async () => {
   const prisma = await disposableClient();
 
-  const { resolutions, users } = bootstrapCountingResolutions(prisma);
+  const { resolutions, userFactory } = bootstrapCountingResolutions(prisma);
 
   expect(resolutions()).toBe(0);
-  await users.create();
+  await userFactory.create();
   expect(resolutions()).toBe(1);
 });
 
 test("a thunk is invoked once however many records are created", async () => {
   const prisma = await disposableClient();
-  const { resolutions, users } = bootstrapCountingResolutions(prisma);
+  const { resolutions, userFactory } = bootstrapCountingResolutions(prisma);
 
-  await users.count(2).create();
-  await users.create();
+  await userFactory.count(2).create();
+  await userFactory.create();
 
   expect(resolutions()).toBe(1);
 });
@@ -94,21 +94,21 @@ test("a different seed produces different values through a definition", async ()
 });
 
 test("the locale reaches the faker a definition reads", async () => {
-  const { f } = await factorioHarness({ locale: "fr", seed: 3 });
-  const cities = f.define("user", {
+  const { prismaFactorio } = await factorioHarness({ locale: "fr", seed: 3 });
+  const cityFactory = prismaFactorio.define("user", {
     definition: ({ faker, uid }) => ({ email: `${uid}@example.com`, name: faker.location.city() }),
   });
 
-  const rows = await cities.count(10).create();
+  const rows = await cityFactory.count(10).create();
 
   expect(allLocales.fr.location?.city_name).toEqual(expect.arrayContaining(rows.map((row) => row.name)));
 });
 
 test("a definition that never reads faker runs with @faker-js/faker absent", async () => {
   const prisma = await disposableClient();
-  const f = await factorioWithoutFaker(prisma);
+  const prismaFactorio = await factorioWithoutFaker(prisma);
 
-  const user = await f.define("user", { definition: userDefinition }).create();
+  const user = await prismaFactorio.define("user", { definition: userDefinition }).create();
 
   expect(user.name).toBe("Ada");
 });
@@ -117,10 +117,10 @@ test("a definition that never reads faker runs with @faker-js/faker absent", asy
 // own import failure, so only the guidance tells the library's error apart from a propagated one.
 test("reading faker with @faker-js/faker absent names what to install", async () => {
   const prisma = await disposableClient();
-  const f = await factorioWithoutFaker(prisma);
-  const people = f.define("user", {
+  const prismaFactorio = await factorioWithoutFaker(prisma);
+  const personFactory = prismaFactorio.define("user", {
     definition: ({ faker, uid }) => ({ email: `${uid}@e.com`, name: faker.person.fullName() }),
   });
 
-  await expect(people.create()).rejects.toThrow(/Install it \(for example `pnpm add -D @faker-js\/faker`\)/);
+  await expect(personFactory.create()).rejects.toThrow(/Install it \(for example `pnpm add -D @faker-js\/faker`\)/);
 });
