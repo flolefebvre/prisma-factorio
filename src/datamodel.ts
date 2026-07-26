@@ -60,7 +60,7 @@ function relationFields(client: unknown, model: string): DataModelField[] {
  *
  * @example
  * ```ts
- * relationFieldsOf(prisma, "post"); // ["author", "editor", "comments"]
+ * relationFieldsOf(prisma, "post"); // ["author", "editor", "comments", "tags"]
  * ```
  */
 export function relationFieldsOf(client: unknown, model: string): string[] {
@@ -236,7 +236,7 @@ function fittingTarget(client: unknown, model: string, row: Record<string, unkno
 
   if (only === undefined || rest.length > 0)
     throw new TypeError(
-      `The row passed to for() fits no single model the relation fields of "${model}" point at. ` +
+      `The row fits no single model the relation fields of "${model}" point at. ` +
         "Pass the relation field explicitly. " +
         fieldListing(client, model),
     );

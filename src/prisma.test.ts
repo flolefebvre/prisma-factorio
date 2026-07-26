@@ -32,7 +32,7 @@ interface InverseOption {
 type Batched<M extends ModelName<TestClient>> = Factory<TestClient, M, Row<TestClient, M>[]>;
 
 test("a model name is a delegate the client carries", () => {
-  expectTypeOf<ModelName<TestClient>>().toEqualTypeOf<"user" | "post" | "comment">();
+  expectTypeOf<ModelName<TestClient>>().toEqualTypeOf<"user" | "post" | "comment" | "tag" | "team" | "membership">();
 });
 
 test("a row carries the model's scalars and none of its relations", () => {
@@ -41,8 +41,8 @@ test("a row carries the model's scalars and none of its relations", () => {
 });
 
 test("a relation key is a field pointing at another model, and never a scalar the model holds", () => {
-  expectTypeOf<RelationKey<TestClient, "post">>().toEqualTypeOf<"author" | "editor" | "comments">();
-  expectTypeOf<RelationKey<TestClient, "user">>().toEqualTypeOf<"posts" | "edited">();
+  expectTypeOf<RelationKey<TestClient, "post">>().toEqualTypeOf<"author" | "editor" | "comments" | "tags">();
+  expectTypeOf<RelationKey<TestClient, "user">>().toEqualTypeOf<"posts" | "edited" | "memberships">();
   expectTypeOf<RelationKey<TestClient, "comment">>().toEqualTypeOf<"post">();
 });
 
@@ -52,6 +52,37 @@ test("a relation key names the model it points at, whether it holds one record o
   expectTypeOf<TargetModel<TestClient, "post", "comments">>().toEqualTypeOf<"comment">();
   expectTypeOf<TargetModel<TestClient, "user", "posts">>().toEqualTypeOf<"post">();
   expectTypeOf<TargetModel<TestClient, "comment", "post">>().toEqualTypeOf<"post">();
+  expectTypeOf<TargetModel<TestClient, "post", "tags">>().toEqualTypeOf<"tag">();
+  expectTypeOf<TargetModel<TestClient, "tag", "posts">>().toEqualTypeOf<"post">();
+});
+
+// The hidden join table of an implicit many-to-many carries no model, so the pair is read as an
+// ordinary relation whose two sides both hold many records.
+test("an implicit many-to-many answers a has-many side at both ends and a belongs-to side at neither", () => {
+  expectTypeOf<RelationsTo<TestClient, "post", "tag", true>>().toEqualTypeOf<"tags">();
+  expectTypeOf<RelationsTo<TestClient, "tag", "post", true>>().toEqualTypeOf<"posts">();
+  expectTypeOf<RelationsTo<TestClient, "post", "tag">>().toBeNever();
+  expectTypeOf<RelationsTo<TestClient, "tag", "post">>().toBeNever();
+});
+
+// There is no sensible end to call `for()` from: the error is the type layer reporting that, and the
+// answer for a many-to-many is `has()` from whichever end reads better.
+test("for() takes an argument no relation field satisfies at either end of a many-to-many", () => {
+  expectTypeOf<RelationArgs<TestClient, "post", "tag">>().toEqualTypeOf<
+    [relationField: 'ERROR: no belongs-to relation from "post" to "tag"']
+  >();
+  expectTypeOf<RelationArgs<TestClient, "tag", "post">>().toEqualTypeOf<
+    [relationField: 'ERROR: no belongs-to relation from "tag" to "post"']
+  >();
+});
+
+test("has() leaves the relation field skippable at both ends of a many-to-many", () => {
+  expectTypeOf<HasManyArgs<TestClient, "post", "tag", InverseOption>>().toEqualTypeOf<
+    [relationField?: "tags", options?: InverseOption] | [options: InverseOption]
+  >();
+  expectTypeOf<HasManyArgs<TestClient, "tag", "post", InverseOption>>().toEqualTypeOf<
+    [relationField?: "posts", options?: InverseOption] | [options: InverseOption]
+  >();
 });
 
 test("the relations a model pair shares are read at the arity asked for", () => {

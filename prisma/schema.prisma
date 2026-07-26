@@ -10,11 +10,12 @@ generator client {
 }
 
 model User {
-  id     Int     @id @default(autoincrement())
-  email  String  @unique
-  name   String?
-  posts  Post[]  @relation("authored")
-  edited Post[]  @relation("edited")
+  id          Int          @id @default(autoincrement())
+  email       String       @unique
+  name        String?
+  posts       Post[]       @relation("authored")
+  edited      Post[]       @relation("edited")
+  memberships Membership[]
 }
 
 model Post {
@@ -25,6 +26,7 @@ model Post {
   editor   User?     @relation("edited", fields: [editorId], references: [id])
   editorId Int?
   comments Comment[]
+  tags     Tag[]
 }
 
 // The one relation this pair shares, left unnamed: the only case in the schema carrying an
@@ -34,4 +36,36 @@ model Comment {
   body   String
   post   Post   @relation(fields: [postId], references: [id])
   postId Int
+}
+
+// The implicit many-to-many, whose join table Prisma keeps hidden: both sides hold many records, so
+// neither is a belongs-to side. The scalar is `label` rather than `name` because a relation field the
+// caller leaves out is resolved by matching a row's keys against every model the parent points at,
+// and `{ id, name }` fits `User` as well as this one.
+model Tag {
+  id    Int    @id @default(autoincrement())
+  label String
+  posts Post[]
+}
+
+// `slug` is a scalar no other model declares, which is what keeps a row of this model resolvable:
+// `name` fits `User` at runtime, and `label` or `title` make this row indistinguishable from a `Tag`
+// or `Post` row at the type level, widening the model a parent or a child value is inferred as.
+model Team {
+  id          Int          @id @default(autoincrement())
+  slug        String
+  memberships Membership[]
+}
+
+// The explicit many-to-many: `User` and `Team` share no relation field, reaching each other through
+// this join model alone. Its compound key is the only one in the schema that a flat row of scalars
+// cannot satisfy as a `connect` where-clause.
+model Membership {
+  user   User   @relation(fields: [userId], references: [id])
+  userId Int
+  team   Team   @relation(fields: [teamId], references: [id])
+  teamId Int
+  role   String
+
+  @@id([userId, teamId])
 }

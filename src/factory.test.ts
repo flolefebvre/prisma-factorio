@@ -2,7 +2,7 @@ import { expect, expectTypeOf, onTestFinished, test, vi, type MockedFunction } f
 import { inverseRelationField } from "./datamodel.js";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
-import type { Row } from "./prisma.js";
+import type { ModelName, Row } from "./prisma.js";
 import { disposableClient, factorioHarness, userDefinition, type Harness } from "./tests/factorio.js";
 import type { TestClient } from "./tests/client.js";
 
@@ -1005,7 +1005,7 @@ test("has([]) rejects a relation field the model does not declare, naming it and
   const { users } = await factorioHarness();
 
   await expect(users.has([], "illustrated" as unknown as "posts").create()).rejects.toThrow(
-    'The model "user" has no relation field "illustrated". Relation fields on "user": "posts", "edited".',
+    'The model "user" has no relation field "illustrated". Relation fields on "user": "posts", "edited", "memberships".',
   );
 });
 
@@ -1210,11 +1210,17 @@ test("a child factory's own has() reaches the level below it", async () => {
   await expect(prisma.user.count()).resolves.toBe(1);
 });
 
+// `parent` spans every model the client carries, and the join model declares no `id` of its own, so
+// a closure reading one narrows before it reaches the column.
+function parentId(parent: Row<TestClient, ModelName<TestClient>> | undefined): number | undefined {
+  return parent !== undefined && "id" in parent ? parent.id : undefined;
+}
+
 test("a child state closure reads the created parent row through parent", async () => {
   const { prisma, f, users } = await factorioHarness();
   const credited = f.define("post", {
     definition: ({ uid }) => ({ title: uid, author: users }),
-    states: { credited: ({ parent }) => ({ title: `by ${String(parent?.id)}` }) },
+    states: { credited: ({ parent }) => ({ title: `by ${String(parentId(parent))}` }) },
   });
 
   const user = await users.has(credited.credited(), "posts").create();
@@ -1231,7 +1237,7 @@ test("a child factory reused after a has() chain reads no parent of its own", as
     definition: ({ uid }) => ({ title: uid, author: users }),
     states: {
       recorded: ({ parent }) => {
-        seen.push(parent?.id);
+        seen.push(parentId(parent));
         return {};
       },
     },
@@ -1252,7 +1258,7 @@ test("a grandchild reads the record just above it through parent, not the top of
   const { prisma, f, posts, users } = await factorioHarness();
   const credited = f.define("comment", {
     definition: ({ uid }) => ({ body: uid, post: posts }),
-    states: { credited: ({ parent }) => ({ body: `for ${String(parent?.id)}` }) },
+    states: { credited: ({ parent }) => ({ body: `for ${String(parentId(parent))}` }) },
   });
   await users.create();
 
@@ -1403,6 +1409,117 @@ test("the inverse option is checked before the parent record is written", async 
   await expect(prisma.user.count()).resolves.toBe(0);
 });
 
+// An implicit many-to-many holds many records at both ends, so `has` reaches it from either one and
+// the relation field is skippable on both. The join table Prisma keeps hidden carries no model of its
+// own, which is why none of this needs machinery beyond what a one-to-many already uses.
+test("has(factory) joins the children to the parent across an implicit many-to-many", async () => {
+  const { prisma, posts, tags } = await factorioHarness();
+
+  const post = await posts.has(tags.count(3)).create();
+  const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
+
+  expect(joined.tags).toHaveLength(3);
+  await expect(prisma.tag.count()).resolves.toBe(3);
+});
+
+test("has(factory) reaches a many-to-many from the far end just as well", async () => {
+  const { prisma, posts, tags } = await factorioHarness();
+
+  const tag = await tags.has(posts.count(2)).create();
+  const joined = await prisma.tag.findUniqueOrThrow({ where: { id: tag.id }, include: { posts: true } });
+
+  expect(joined.posts).toHaveLength(2);
+});
+
+test("has(rows) attaches records that already exist across a many-to-many, creating none", async () => {
+  const { prisma, posts, tags } = await factorioHarness();
+  const existing = await tags.count(2).create();
+
+  const post = await posts.has(existing).create();
+  const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
+
+  expect(new Set(joined.tags.map((tag) => tag.id))).toStrictEqual(new Set(existing.map((tag) => tag.id)));
+  await expect(prisma.tag.count()).resolves.toBe(2);
+});
+
+test("a many-to-many draws its children per parent record, the cadence every has() layer keeps", async () => {
+  const { prisma, posts, tags } = await factorioHarness();
+
+  await posts.count(3).has(tags.count(2)).create();
+  const joined = await prisma.post.findMany({ include: { tags: true } });
+
+  expect(joined.map((post) => post.tags.length)).toStrictEqual([2, 2, 2]);
+  await expect(prisma.tag.count()).resolves.toBe(6);
+});
+
+// An explicit many-to-many is composition rather than a method of its own: the datamodel holds no
+// relation between the two far models, so the join model's factory is what stands between them, and
+// its pivot columns are ordinary typed attributes a state reaches like any other.
+test("has(joinModel) composes an explicit many-to-many, the placeholder parent never evaluated", async () => {
+  const { prisma, users, memberships } = await factorioHarness();
+
+  const ada = await users.has(memberships.count(2).state({ role: "admin" }), "memberships").create();
+  const joined = await prisma.membership.findMany({ where: { userId: ada.id } });
+
+  expect(joined.map((membership) => membership.role)).toStrictEqual(["admin", "admin"]);
+  expect(new Set(joined.map((membership) => membership.teamId)).size).toBe(2);
+  await expect(prisma.team.count()).resolves.toBe(2);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("the join model's relation field may be left out, the pair sharing exactly one", async () => {
+  const { prisma, users, memberships } = await factorioHarness();
+
+  const ada = await users.has(memberships.count(2)).create();
+
+  await expect(prisma.membership.count({ where: { userId: ada.id } })).resolves.toBe(2);
+});
+
+test("for() names a leg of the join model, each record bringing the far side of its own", async () => {
+  const { prisma, users, memberships } = await factorioHarness();
+  const ada = await users.create();
+
+  await memberships.count(2).for(ada).create();
+
+  await expect(prisma.membership.count({ where: { userId: ada.id } })).resolves.toBe(2);
+  await expect(prisma.team.count()).resolves.toBe(2);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("a state pins an existing row into a leg of the join model rather than drawing a new one", async () => {
+  const { prisma, users, teams, memberships } = await factorioHarness();
+  const ada = await users.create();
+  const team = await teams.create();
+
+  const membership = await memberships.for(ada).state({ team }).create();
+
+  expect(membership.teamId).toBe(team.id);
+  await expect(prisma.team.count()).resolves.toBe(1);
+});
+
+// The join model's only unique constraint is its compound key, which Prisma exposes under the single
+// generated name `userId_teamId` and demands under that name; the flat scalars a row carries satisfy
+// no `WhereUniqueInput`. Tracked as issue #41, whose workaround is passing native relation input,
+// `{ connect: { userId_teamId: … } }`. The README paragraph naming #41 stands or falls with this test.
+test("connecting an existing join-model row fails on its compound key", async () => {
+  const { users, memberships } = await factorioHarness();
+  const ada = await users.create();
+  const membership = await memberships.for(ada).create();
+
+  await expect(users.has([membership], "memberships").create()).rejects.toThrow("Expected MembershipWhereUniqueInput");
+});
+
+// The schema being enforced, not the library misbehaving: one user belongs to one team once.
+test("two join-model records of the same pair collide on the compound key", async () => {
+  const { users, teams, memberships } = await factorioHarness();
+  const ada = await users.create();
+  const team = await teams.create();
+
+  await expect(memberships.count(2).for(ada).state({ team }).create()).rejects.toThrow(
+    "Unique constraint failed on the fields: (`userId`, `teamId`)",
+  );
+});
+
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
 // the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
 export function relationsCheckedByTheCompiler(
@@ -1414,6 +1531,10 @@ export function relationsCheckedByTheCompiler(
   commentRow: Row<TestClient, "comment">,
   stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
   draftable: Factory<TestClient, "post", Row<TestClient, "post">, { drafted: unknown }>,
+  tags: Factory<TestClient, "tag">,
+  tagRow: Row<TestClient, "tag">,
+  teams: Factory<TestClient, "team">,
+  memberships: Factory<TestClient, "membership">,
 ): void {
   void posts.for(users, "author").create();
   void posts.for(userRow, "editor").create();
@@ -1479,4 +1600,35 @@ export function relationsCheckedByTheCompiler(
   void users.has(posts, "posts", { inverze: "author" });
   // @ts-expect-error the options stand alone only where the relation field may be left out
   void users.has(posts, { inverse: "author" });
+
+  void posts.has(tags).create();
+  void posts.has(tags.count(3), "tags").create();
+  void posts.has([tagRow]).create();
+  void tags.has(posts).create();
+  void tags.has(posts.count(2), "posts").create();
+
+  // Both ends of an implicit many-to-many hold many records, so the pair has no belongs-to side at
+  // all and `has` is the only way in — from whichever end reads better.
+  // @ts-expect-error no belongs-to relation reaches a tag from a post
+  void posts.for(tags);
+  // @ts-expect-error naming the field does not make one, the field being a list at both ends
+  void posts.for(tags, "tags");
+  // @ts-expect-error no belongs-to relation reaches a post from a tag either
+  void tags.for(posts);
+  // @ts-expect-error a row names the same pair, and answers the same way
+  void posts.for(tagRow);
+
+  void users.has(memberships, "memberships").create();
+  void users.has(memberships.count(2)).create();
+  void teams.has(memberships).create();
+  void memberships.for(users).create();
+  void memberships.for(userRow).create();
+  void memberships.for(teams).create();
+
+  // The datamodel holds no relation between the two far models of an explicit many-to-many, so the
+  // pair answers at neither arity and the join model's factory is the only way across.
+  // @ts-expect-error no has-many relation reaches a team from a user
+  void users.has(teams);
+  // @ts-expect-error no belongs-to relation reaches a team from a user either
+  void users.for(teams);
 }
