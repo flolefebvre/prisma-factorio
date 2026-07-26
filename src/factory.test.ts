@@ -1889,6 +1889,20 @@ test("the join model's relation field may be left out, the pair sharing exactly 
   await expect(prisma.membership.count({ where: { userId: ada.id } })).resolves.toBe(2);
 });
 
+// The join model reached as a relation default rather than as a `has` layer: its records are created
+// once the parent row exists, so each carries the compound key whole and the leg the parent stands in
+// replaces the factory the definition names there, leaving no user behind.
+test("a batched factory in the join model's relation field creates its records for the parent", async () => {
+  const { prisma, users, memberships } = await factorioHarness();
+
+  const ada = await users.create({ memberships: memberships.count(2) });
+  const held = await prisma.membership.findMany({ where: { userId: ada.id } });
+
+  expect(held).toHaveLength(2);
+  expect(new Set(held.map((row) => row.teamId)).size).toBe(2);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
 test("for() names a leg of the join model, each record bringing the far side of its own", async () => {
   const { prisma, users, memberships } = await factorioHarness();
   const ada = await users.create();

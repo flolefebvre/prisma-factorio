@@ -312,11 +312,19 @@ interface Delegate {
 }
 
 function delegateOf(client: unknown, model: string): Delegate {
-  const delegate = (client as Record<string, Delegate | undefined>)[model];
+  const delegate = (client as Record<string, Delegate | null | undefined>)[model];
 
-  if (typeof delegate?.findFirst !== "function")
+  if (delegate === undefined || delegate === null)
     throw new TypeError(
       `The client carries no delegate for the model "${model}". Pass a generated Prisma client, not its relation metadata alone.`,
+    );
+
+  // A delegate carrying every method its caller ever needed still answers no arity: the query it is
+  // read off is one a hand-rolled double reaches only once a relation default stands in a field.
+  if (typeof delegate.findFirst !== "function")
+    throw new TypeError(
+      `The delegate for the model "${model}" answers no findFirst, which a relation field's arity is read through. ` +
+        "A client used with a relation default must answer findFirst on every model it carries.",
     );
 
   return delegate;

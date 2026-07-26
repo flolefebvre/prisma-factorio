@@ -592,10 +592,10 @@ function matching(client: unknown, model: string, field: string, row: Record<str
   return { connect: targetScalars(client, model, field, row) };
 }
 
-// A list connects as a list, which is what a relation field holding many records takes: a field holding
-// a single record has no reading for one, and keeps the value it was handed rather than reaching here.
-// A single row connects on its own, the one shape both arities take. A list holding no row connects
-// nothing at all, leaving the field to the layers around it.
+// A list connects as a list, which is what a relation field holding many records takes: a list found
+// standing in a field that holds a single record keeps the value it was handed rather than reaching
+// here, `resolved` turning it back on the arity. A single row connects on its own, the one shape both
+// arities take. A list holding no row connects nothing at all, leaving the field to the layers around it.
 function matchingAll(client: unknown, model: string, field: string, rows: readonly unknown[]): Written {
   return rows.length === 0 ? {} : { connect: rows.map((row) => targetScalars(client, model, field, row as Written)) };
 }

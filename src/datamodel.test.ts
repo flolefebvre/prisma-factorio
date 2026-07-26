@@ -425,10 +425,25 @@ test("a query the database refused leaves nothing held, so the next ask probes a
   expect(await holdsManyRecords(client, "user", "posts")).toBe(true);
 });
 
-test("a client carrying relation metadata but no delegate for the model is rejected", async () => {
+// A client carrying the relation field the arity is asked for, under whatever delegate the caller
+// hands it: absent, or standing there answering something other than the query the arity is read off.
+function delegated(delegate?: object): unknown {
   const client = relating([{ name: "posts", kind: "object", type: "Post", relationName: "written" }]);
 
-  await expect(holdsManyRecords(client, "user", "posts")).rejects.toThrow(
+  return delegate === undefined ? client : { ...(client as object), user: delegate };
+}
+
+test("a client carrying relation metadata but no delegate for the model is rejected", async () => {
+  await expect(holdsManyRecords(delegated(), "user", "posts")).rejects.toThrow(
     'The client carries no delegate for the model "user". Pass a generated Prisma client, not its relation metadata alone.',
+  );
+});
+
+// A hand-rolled double carries the delegates its caller needed, which is every method but this one
+// until a relation default asks an arity of it, so a missing delegate is the wrong cause to report.
+test("a delegate answering no findFirst is rejected for that rather than for standing absent", async () => {
+  await expect(holdsManyRecords(delegated({ create: () => undefined }), "user", "posts")).rejects.toThrow(
+    'The delegate for the model "user" answers no findFirst, which a relation field\'s arity is read through. ' +
+      "A client used with a relation default must answer findFirst on every model it carries.",
   );
 });

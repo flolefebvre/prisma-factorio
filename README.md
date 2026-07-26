@@ -127,7 +127,7 @@ export const posts = f.define("post", {
 await posts.create({ author: ada });
 ```
 
-Such a value is a factory, an existing row, or Prisma's own relation input — `{ connect: … }` and `{ create: … }` reach the client untouched. A field holding many records takes a list of rows besides.
+Such a value is a factory, an existing row, or Prisma's own relation input — `{ connect: … }` and `{ create: … }` reach the client untouched. A field holding many records takes a batched factory and a list of rows besides.
 
 **Ordering.** `for()` is a chain layer at the position it was called: an inline state that sets the relation field. So a relation default embedded in the definition loses to every layer above it, `for()` and states resolve against each other **by call order**, and the overrides `create()` was given beat both.
 
@@ -253,7 +253,7 @@ const ada = await users.has(memberships.count(2).state({ role: "admin" }), "memb
 - **`for()` works on the join model's own legs.** `memberships.count(2).for(ada)` gives one user two memberships, each bringing a team of its own.
 - **An existing row pins a leg.** `memberships.state({ team })` reuses that team rather than drawing a new one.
 - **Two records of the same pair collide** on the compound key. That is the schema being enforced, not a library bug.
-- **Connecting an existing join-model row does not work yet.** A model whose only unique constraint is compound is matched on Prisma's generated compound selector — `{ userId_teamId: { … } }` — which a flat row of scalars does not satisfy, so every route a row reaches a relation field by fails alike: `has([membership])`, a list standing in the field itself, and a row drawn from a [recycle](#recycle) pool ([#41](https://github.com/flolefebvre/prisma-factorio/issues/41)). Pass native relation input meanwhile.
+- **Connecting an existing join-model row does not work yet.** A model whose only unique constraint is compound is matched on Prisma's generated compound selector — `{ userId_teamId: { … } }` — which a flat row of scalars does not satisfy, so every route a row reaches a relation field by fails alike: `has([membership])`, a row or a list of them standing in the field itself, and a row drawn from a [recycle](#recycle) pool ([#41](https://github.com/flolefebvre/prisma-factorio/issues/41)). Pass native relation input meanwhile.
 
 ### Recycle
 
@@ -330,10 +330,10 @@ const ada = await users
 - **A column named after a relation operation shadows the row.** A parent row whose only key is a column literally named `connect`, `create`, `connectOrCreate` or `createMany` is read as native relation input rather than as a row, so pass native `{ connect: { … } }` explicitly for a model declaring one.
 - **`.using(client)` covers the whole graph.** It redirects not just this factory's records but every parent factory its creates resolve and every child factory a `has()` layer or a relation default creates records through, however deep the graph goes — so one `.using(tx)` puts a whole factory graph in a single interactive transaction, and a rollback leaves nothing behind. A factory that named a client of its own keeps it, and the factories it resolves in turn then run on that one. The library still opens no transaction itself, exactly as [ADR 0002](docs/adr/0002-relation-wiring.md) says.
 - **A throwing callback is not caught.** `create()` rejects with the error the callback threw. Bare, the record the callback followed is already committed and stays standing — the rejection undoes nothing; under `.using(tx)`, the same throw leaves your transaction callback and the whole graph rolls back. That is [ADR 0002](docs/adr/0002-relation-wiring.md)'s "atomicity is the caller's" composing as designed, not a special case.
-- **`CreateInput` is no longer a Prisma alias.** This package exports it, and this release changed what it means: a relation key now additionally accepts a `Factory` or a row, so a value typed `CreateInput<Client, "model">` is no longer assignable to Prisma's own `create` `data` argument. If you imported it as a stand-in for Prisma's input type, it has stopped being one.
+- **`CreateInput` is no longer a Prisma alias.** This package exports it, and this release changed what it means: a relation key now additionally accepts a `Factory`, a row, or a list of rows, so a value typed `CreateInput<Client, "model">` is no longer assignable to Prisma's own `create` `data` argument. If you imported it as a stand-in for Prisma's input type, it has stopped being one.
 
 ## Status
 
 v1 is in progress; this README tracks what actually works today.
 
-Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for` with relation defaults on a field of either arity, `has` for the children on the other side, many-to-many in both shapes, `recycle` for reusing rows the graph would otherwise create, and `afterCreating` callbacks in the config and on the chain.
+Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for`, relation defaults on a field of either arity, `has` for the children on the other side, many-to-many in both shapes, `recycle` for reusing rows the graph would otherwise create, and `afterCreating` callbacks in the config and on the chain.
