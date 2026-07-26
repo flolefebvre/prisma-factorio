@@ -1,9 +1,11 @@
 {
-  "name": "prisma-factorio",
-  "version": "1.0.0",
+  "name": "@flefebvre/prisma-factorio",
+  "version": "0.1.0",
   "description": "Laravel-style model factories for Prisma, fully typed",
   "license": "MIT",
+  "author": "Florian Lefebvre <florian.lefebvre.contact@gmail.com>",
   "type": "module",
+  "homepage": "https://github.com/flolefebvre/prisma-factorio#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/flolefebvre/prisma-factorio.git"
@@ -20,13 +22,15 @@
     "fixtures",
     "laravel"
   ],
+  "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -35,18 +39,22 @@
   "engines": {
     "node": ">=20"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "generate": "prisma generate && prisma migrate diff --from-empty --to-schema=prisma/schema.prisma --script --output=src/tests/generated/schema.sql && echo '--generate OK--'",
-    "prepare": "npm run build",
-    "prepack": "npm run build",
+    "clean": "rm -rf dist && echo '--clean OK--'",
+    "prepublishOnly": "pnpm clean && pnpm build",
     "typecheck": "tsc --noEmit && echo '--typecheck OK--'",
     "lint": "eslint . && echo '--lint OK--'",
     "test": "vitest run && echo '--test OK--'",
     "build": "tsc -p tsconfig.build.json && echo '--build OK--'",
+    "pack:check": "tsx scripts/check-pack.ts && echo '--pack:check OK--'",
     "format": "prettier --write .",
     "format:check": "prettier --check . && echo '--format:check OK--'",
     "duplicates": "jscpd && echo '--duplicates OK--'",
-    "gates": "pnpm generate && pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && echo '--gates OK--'"
+    "gates": "pnpm generate && pnpm typecheck && pnpm lint && pnpm format:check && pnpm duplicates && pnpm test && pnpm build && pnpm pack:check && echo '--gates OK--'"
   },
   "peerDependencies": {
     "@faker-js/faker": ">=10 <11",

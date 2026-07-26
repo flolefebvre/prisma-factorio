@@ -10,7 +10,7 @@ Wire the harness first — its own README covers the five files. The one rule th
 
 ```ts
 // tests/factories.ts
-import { initPrismaFactorio } from "prisma-factorio";
+import { initPrismaFactorio } from "@flefebvre/prisma-factorio";
 import { db } from "../src/db/client.js"; // the module named in the setup file's vi.mock
 
 const prismaFactorio = initPrismaFactorio(() => db);

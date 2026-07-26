@@ -1,0 +1,122 @@
+name: Release
+
+# Publishing is driven entirely by version tags: `git tag v0.1.0 && git push --tags`.
+# Nothing here runs on a merge to main, so landing a PR never publishes.
+on:
+  push:
+    tags: ["v*"]
+
+# A half-finished publish is the one state worth avoiding, so overlapping releases queue
+# rather than cancel each other.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege by default: the `publish` job widens this for itself.
+permissions:
+  contents: read
+
+jobs:
+  # Cheap pre-flight: publishing 0.1.0 from a tag that says v0.2.0 is close enough to
+  # irreversible (npm's unpublish window is narrow) to be worth 10 seconds up front.
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The most likely first-run failure, caught before the full gate rather than after
+      # it. Delete this step when you move to trusted publishing — there is no secret to
+      # check then, and its absence becomes the expected state.
+      - name: npm credentials are configured
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "No NPM_TOKEN secret is set, so the publish step would fail after the" >&2
+            echo "full test suite has already run. Either add an npm automation token as" >&2
+            echo "the NPM_TOKEN repository secret, or configure trusted publishing on" >&2
+            echo "npmjs.com and delete this step plus the publish job's env: block." >&2
+            exit 1
+          fi
+          echo "NPM_TOKEN is set."
+
+      - name: Tag matches package.json version
+        # No template literals: this is a double-quoted shell string, so a `${...}` would
+        # be expanded by the shell before node ever sees it.
+        run: |
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+            const tag = process.env.GITHUB_REF_NAME.replace(/^v/, '');
+            if (tag !== version) {
+              console.error('Tag ' + process.env.GITHUB_REF_NAME + ' implies version ' + tag + ', but package.json says ' + version + '.');
+              console.error('Bump package.json or move the tag so they agree, then push again.');
+              process.exit(1);
+            }
+            console.log('Tag and manifest agree on ' + version);
+          "
+
+  # The everyday gate, unmodified: generate, typecheck, lint, format, duplication, tests,
+  # build, and the tarball-contents assertion.
+  ci:
+    name: ci
+    needs: guard
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: publish
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      # Write, because the last step cuts the GitHub release for the tag.
+      contents: write
+      # Mints the OIDC token npm exchanges for a provenance attestation. Without it the
+      # `--provenance` flag below fails rather than silently publishing unattested.
+      id-token: write
+    # Job-scoped, not step-scoped: `setup-node` with `registry-url` writes an `.npmrc`
+    # containing a literal `${NODE_AUTH_TOKEN}`, and every subsequent npm/pnpm command in
+    # the job expands it — including `pnpm install`, which runs before the publish step.
+    # Scoping it to the publish step alone risks failing at install with an error that
+    # reads like a lockfile problem.
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          # Never cache in a release build: the tarball should come from a cold, clean
+          # resolve of the committed lockfile.
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `prepublishOnly` (clean + build) fires here, so `dist/` is rebuilt from this exact
+      # commit rather than inherited from the `ci` job's runner.
+      #
+      # `--access public` is required for the first publish of a scoped package; scoped
+      # packages default to restricted. `--provenance` needs `id-token: write` above.
+      #
+      # The job-level NODE_AUTH_TOKEN covers the first publish, when the package does not
+      # yet exist on npm and so has no settings page on which to configure a trusted
+      # publisher. Once 0.1.0 is live: add this repo + `release.yml` as the package's
+      # trusted publisher on npmjs.com, then delete the job's `env:` block, the guard
+      # job's credential check, and the NPM_TOKEN secret. Provenance is unaffected either
+      # way — it comes from the OIDC token, not from how npm authenticated the publish.
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag

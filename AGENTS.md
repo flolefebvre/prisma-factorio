@@ -22,9 +22,14 @@ src/
   datamodel.ts    Relation metadata off the client; the only reader of `_runtimeDataModel`
   tests/          Shared test helpers (never published)
     generated/    Generated scratch client and its DDL (gitignored, never published)
+scripts/
+  check-pack.ts   Asserts what `npm publish` would ship; the last gate
+.github/
+  workflows/      CI on every push and pull request, release on a `v*` tag
 docs/
   adr/            Architectural decision records
   agents/         Agent workflow docs (issue tracker, labels, domain)
+  releasing.md    How a version reaches npm, and the one-time npm setup
   laravel-factories.md   Laravel factories docs (original reference)
 ```
 
@@ -33,12 +38,13 @@ docs/
 All via pnpm.
 
 ```
-pnpm gates          Full validation: generate, typecheck, lint, format check, duplicates, test, build
+pnpm gates          Full validation: generate, typecheck, lint, format check, duplicates, test, build, packed contents
 pnpm generate       Regenerate the scratch Prisma client and its DDL; gates runs it first
 pnpm test           Run the test suite once (vitest run)
 pnpm typecheck      Type-check without emitting (tsc --noEmit)
 pnpm lint           ESLint
 pnpm build          Compile to dist/ (tsconfig.build.json)
+pnpm pack:check     Assert the tarball's contents; needs a current dist/
 pnpm format         Prettier write
 pnpm format:check   Prettier check without writing
 pnpm duplicates     jscpd copy-paste detection
@@ -48,7 +54,7 @@ Each script echoes a `--<name> OK--` marker on success.
 A fresh clone runs `pnpm install` and `pnpm generate` before a bare `pnpm test` or `pnpm typecheck`; both need the generated test client, and only `pnpm gates` supplies it on its own.
 Run `pnpm format` after making changes so the diff stays limited to what you actually touched.
 
-**Before considering a change done, it must pass the gate:** `pnpm gates` — generate, typecheck, lint, format check, duplicates, test, build.
+**Before considering a change done, it must pass the gate:** `pnpm gates` — generate, typecheck, lint, format check, duplicates, test, build, packed contents. CI runs the same list, step by step, on every pull request.
 
 ## Testing
 
