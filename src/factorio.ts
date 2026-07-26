@@ -65,6 +65,7 @@ export function initPrismaFactorio<C extends object>(
       definition: config.definition,
       declared: declaredStates(config.states),
       applied: [],
+      callbacks: config.afterCreating === undefined ? [] : [config.afterCreating],
       client,
       explicit: false,
       faker,

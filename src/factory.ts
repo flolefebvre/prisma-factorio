@@ -157,7 +157,33 @@ export type DeclaredStates<C, M extends ModelName<C>, S> = Reserved & {
 export interface FactoryConfig<C, M extends ModelName<C>, D = CreateInput<C, M>, S = never> {
   definition: (context: EvaluationContext) => Attributes<C, M, D>;
   states?: S & StateMap<C, M>;
+  afterCreating?: AfterCreating<C, M>;
 }
+
+/**
+ * A side effect that follows every record a factory persists.
+ *
+ * `row` is the record as the database left it, generated id and column defaults carried, and `client`
+ * is the client this chain writes through — the one `using` named, where a call named one — so a write
+ * the callback makes lands wherever the record itself did. Whatever the callback returns is awaited
+ * and then discarded.
+ *
+ * The client stands here as every model delegate rather than as the client whole, an interactive
+ * transaction carrying none of the client's own methods. `using` asks for less than that — one
+ * delegate is all it takes — so a chain redirected to a hand-built stub carrying fewer models leaves a
+ * callback reaching a second one to the caller.
+ *
+ * @example
+ * ```ts
+ * const announced: AfterCreating<PrismaClient, "user"> = async (user, { client }) => {
+ *   await client.post.create({ data: { title: "Hello", author: { connect: { id: user.id } } } });
+ * };
+ * ```
+ */
+export type AfterCreating<C, M extends ModelName<C>> = (
+  row: Row<C, M>,
+  context: { client: Pick<C, ModelName<C>> },
+) => unknown;
 
 /**
  * The escape hatch `has` trails its arguments with.
@@ -330,6 +356,9 @@ interface FactoryChain<C, M extends ModelName<C>> {
   definition: (context: EvaluationContext) => Written;
   declared: Record<string, Step>;
   applied: readonly Layer[];
+  // A callback produces no attributes, so it rides here rather than among the layers: the config
+  // seeds this list and the fluent method appends to it, which is the order they run in.
+  callbacks: readonly AfterCreating<C, M>[];
   client: () => Pick<C, M>;
   // Set by `using` alone: a client the chain inherited gives way to the client of the chain resolving
   // it, a client `using` named does not.
@@ -740,6 +769,9 @@ async function write<C, M extends ModelName<C>>(
   const client = chain.client();
   const model = String(chain.model);
   const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick };
+  // The chain holds the whole client rather than one delegate, whatever the narrower shape `using`
+  // takes, so a callback reaching a second model reaches it here.
+  const reached = { client: client as Pick<C, ModelName<C>> };
   const delegate = client[chain.model] as CreateDelegate;
   const applied = given(overrides);
   // A relation field the call names outright is the caller's own choice of parent, which the pool
@@ -760,6 +792,10 @@ async function write<C, M extends ModelName<C>>(
     // Depth first, layers in the order they were called: every child of one record exists before the
     // next record of the batch is created.
     for (const entry of pending) await borne(wiring, model, row, entry);
+
+    // After the children rather than before, which is what puts the completed graph in reach of the
+    // callback; one at a time, so a callback holding the record open still finishes before the next.
+    for (const callback of chain.callbacks) await callback(row as Row<C, M>, reached);
 
     rows.push(row);
   }

@@ -2093,6 +2093,71 @@ test("using(tx) covers a has() layer drawing from the pool, and a rollback drops
   await leftBehind(harness, target, [1, 1, 0]);
 });
 
+interface Notified {
+  seen: Row<TestClient, "user">[];
+  users: Factory<TestClient, "user">;
+}
+
+// The rows a config-declared callback was handed, in the order it was handed them.
+function notifiedUsers(f: Factorio<TestClient>): Notified {
+  const seen: Row<TestClient, "user">[] = [];
+  const users = f.define("user", {
+    definition: userDefinition,
+    afterCreating: (user) => {
+      seen.push(user);
+    },
+  });
+
+  return { seen, users };
+}
+
+test("a config-declared afterCreating fires with the created row", async () => {
+  const { f } = await factorioHarness();
+  const { seen, users } = notifiedUsers(f);
+
+  const ada = await users.create();
+
+  expect(seen).toStrictEqual([ada]);
+});
+
+test("count(3) fires the callback once per row, each with the row it was created for", async () => {
+  const { f } = await factorioHarness();
+  const { seen, users } = notifiedUsers(f);
+
+  const rows = await users.count(3).create();
+
+  expect(seen).toStrictEqual(rows);
+  expect(seen).toHaveLength(3);
+});
+
+test("count(0) creates no record and fires no callback", async () => {
+  const { f } = await factorioHarness();
+  const { seen, users } = notifiedUsers(f);
+
+  const rows = await users.count(0).create();
+
+  expect(rows).toStrictEqual([]);
+  expect(seen).toStrictEqual([]);
+});
+
+// Bootstrapped on one database and redirected to another: the post reaches the second only because
+// the callback wrote through the client handed to it rather than through the one it could close over.
+test("a callback writes through the client the chain writes through", async () => {
+  const { prisma, f } = await factorioHarness();
+  const elsewhere = await disposableClient();
+  const users = f.define("user", {
+    definition: userDefinition,
+    afterCreating: async (user, { client }) => {
+      await client.post.create({ data: { title: "welcome", author: { connect: { id: user.id } } } });
+    },
+  });
+
+  await users.using(elsewhere).create();
+
+  await expect(elsewhere.post.count()).resolves.toBe(1);
+  await expect(prisma.post.count()).resolves.toBe(0);
+});
+
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
 // the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
 export function recycleCheckedByTheCompiler(
