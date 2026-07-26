@@ -2342,15 +2342,19 @@ test("a throwing callback rejects create(), leaving the record it followed commi
   await expect(prisma.user.count()).resolves.toBe(1);
 });
 
-// The same throw under a transaction the caller opened: nothing catches it, so the transaction the
-// whole graph was written through rolls back and the committed record of the test above is gone too.
-test("a throwing callback under using(tx) leaves the whole graph rolled back", async () => {
+// The same throw under a transaction the caller opened, with a write of the callback's own ahead of
+// it: nothing catches the throw, so the graph and the row the callback wrote roll back together. The
+// count taken inside the transaction is what tells that write from one that never happened.
+test("a throwing callback under using(tx) rolls its own writes back along with the graph", async () => {
   const harness = await factorioHarness();
   const target = await disposableClient();
   const failed = new Error("the callback failed");
+  const inside: number[] = [];
   const users = harness.f.define("user", {
     definition: userDefinition,
-    afterCreating: () => {
+    afterCreating: async (user, { client }) => {
+      await client.post.create({ data: { title: "audit", author: { connect: { id: user.id } } } });
+      inside.push(await client.post.count());
       throw failed;
     },
   });
@@ -2360,6 +2364,7 @@ test("a throwing callback under using(tx) leaves the whole graph rolled back", a
     .catch((error: unknown) => error);
 
   expect(outcome).toBe(failed);
+  expect(inside).toStrictEqual([3]);
   await leftBehind(harness, target, [0, 0, 0]);
 });
 

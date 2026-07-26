@@ -148,6 +148,9 @@ export type DeclaredStates<C, M extends ModelName<C>, S> = Reserved & {
  * Annotating a config leaves `S` unsupplied, and a config typed that way accepts no `states` at all
  * — declare states inline at the `define` call, where both their names and their fields are checked.
  *
+ * `afterCreating` declares the one callback every record this factory persists is followed by — see
+ * {@link AfterCreating} — and {@link FactoryMethods.afterCreating} adds more behind it.
+ *
  * @example
  * ```ts
  * const config: FactoryConfig<PrismaClient, "user"> = {
@@ -318,7 +321,11 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    *
    * @example
    * ```ts
-   * await users.afterCreating(async (user, { client }) => client.audit.create({ data: { user: user.id } }));
+   * const welcomed = await users
+   *   .afterCreating(async (user, { client }) => {
+   *     await client.post.create({ data: { title: "Welcome", author: { connect: { id: user.id } } } });
+   *   })
+   *   .create();
    * ```
    */
   afterCreating(callback: AfterCreating<C, M>): Factory<C, M, R, S>;
@@ -375,8 +382,7 @@ interface FactoryChain<C, M extends ModelName<C>> {
   definition: (context: EvaluationContext) => Written;
   declared: Record<string, Step>;
   applied: readonly Layer[];
-  // A callback produces no attributes, so it rides here rather than among the layers: the config
-  // seeds this list and the fluent method appends to it, which is the order they run in.
+  // The config seeds this list and the fluent method appends to it, which is the order they run in.
   callbacks: readonly AfterCreating<C, M>[];
   client: () => Pick<C, M>;
   // Set by `using` alone: a client the chain inherited gives way to the client of the chain resolving
@@ -788,8 +794,8 @@ async function write<C, M extends ModelName<C>>(
   const client = chain.client();
   const model = String(chain.model);
   const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick };
-  // The chain holds the whole client rather than one delegate, whatever the narrower shape `using`
-  // takes, so a callback reaching a second model reaches it here.
+  // Every model the client carries, which is what a callback reaches a second one through. `using`
+  // asks for a single delegate, so a chain redirected to a stub carrying fewer stands on the caller.
   const reached = { client: client as Pick<C, ModelName<C>> };
   const delegate = client[chain.model] as CreateDelegate;
   const applied = given(overrides);
@@ -812,8 +818,8 @@ async function write<C, M extends ModelName<C>>(
     // next record of the batch is created.
     for (const entry of pending) await borne(wiring, model, row, entry);
 
-    // After the children rather than before, which is what puts the completed graph in reach of the
-    // callback; one at a time, so a callback holding the record open still finishes before the next.
+    // The graph under this record stands complete here, and each callback settles before the next
+    // begins, so one holding the record open never overlaps the one behind it.
     for (const callback of chain.callbacks) await callback(row as Row<C, M>, reached);
 
     rows.push(row);
