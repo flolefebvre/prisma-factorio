@@ -350,6 +350,15 @@ test("a state named for is rejected where the factory is defined", async () => {
   ).toThrow('The state "for" takes a name a factory reserves. Rename the state.');
 });
 
+test("a state named has is rejected where the factory is defined", async () => {
+  const { f } = await factorioHarness();
+
+  expect(() =>
+    // @ts-expect-error a state may not take the name the has-many method answers to
+    f.define("user", { definition: userDefinition, states: { has: { name: "Grace" } } }),
+  ).toThrow('The state "has" takes a name a factory reserves. Rename the state.');
+});
+
 test("a state named __proto__ becomes a method rather than a write to the prototype", async () => {
   const { f } = await factorioHarness();
   const users = f.define("user", { definition: userDefinition, states: { ["__proto__"]: { name: "Grace" } } });
@@ -892,6 +901,171 @@ test("a parent factory naming a client of its own is created through it, not the
   expect(authors).toHaveLength(1);
 });
 
+interface Attachable {
+  harness: Harness;
+  first: Row<TestClient, "post">;
+  second: Row<TestClient, "post">;
+}
+
+// Two posts already in the database, each brought by an author of its own, so a user a `has` layer
+// connects them to is never the one they were created under.
+async function attachable(): Promise<Attachable> {
+  const harness = await factorioHarness();
+
+  return { harness, first: await harness.posts.create(), second: await harness.posts.create() };
+}
+
+async function authoredBy(prisma: TestClient, authorId: number): Promise<number[]> {
+  const rows = await prisma.post.findMany({ where: { authorId }, orderBy: { id: "asc" } });
+
+  return rows.map((post) => post.id);
+}
+
+async function userCreateData(
+  harness: Harness,
+  attach: (users: Factory<TestClient, "user">) => Factory<TestClient, "user">,
+): Promise<Record<string, unknown>> {
+  const { client, written } = recording(harness.prisma, "user");
+
+  await attach(harness.users.using(client)).create();
+
+  return written[0] ?? {};
+}
+
+test("has(rows) connects records that already exist rather than creating any", async () => {
+  const { harness, first, second } = await attachable();
+
+  const user = await harness.users.has([first, second], "posts").create();
+
+  await expect(authoredBy(harness.prisma, user.id)).resolves.toStrictEqual([first.id, second.id]);
+  await expect(harness.prisma.post.count()).resolves.toBe(2);
+});
+
+test("has(row) takes one row where the relation holds many", async () => {
+  const { harness, first } = await attachable();
+
+  const user = await harness.users.has(first, "edited").create();
+
+  await expect(harness.prisma.post.findUniqueOrThrow({ where: { id: first.id } })).resolves.toMatchObject({
+    editorId: user.id,
+  });
+});
+
+test("has(rows) resolves the one has-many relation the model pair shares when the name is left out", async () => {
+  const { prisma, comments, posts } = await factorioHarness();
+  const comment = await comments.create();
+
+  const post = await posts.has([comment]).create();
+
+  await expect(prisma.comment.findUniqueOrThrow({ where: { id: comment.id } })).resolves.toMatchObject({
+    postId: post.id,
+  });
+});
+
+test("has() rejects a relation field the model pair does not share, naming it and the candidates", async () => {
+  const { harness, first } = await attachable();
+
+  await expect(harness.users.has([first], "illustrated" as unknown as "posts").create()).rejects.toThrow(
+    'The model "user" has no relation field "illustrated" pointing at "post". ' +
+      'Relation fields on "user" pointing at "post": "posts", "edited".',
+  );
+});
+
+test("has([]) creates the parent and no record beyond it", async () => {
+  const { prisma, users } = await factorioHarness();
+
+  const user = await users.has([], "posts").create();
+
+  expect(user.id).toBeGreaterThan(0);
+  await expect(prisma.post.count()).resolves.toBe(0);
+});
+
+// Naming the field and leaving it empty would hand Prisma a nested write with nothing to do.
+test("a has layer the parent's own create has nothing to connect leaves the relation field unwritten", async () => {
+  const harness = await factorioHarness();
+
+  const none = await userCreateData(harness, (users) => users.has([], "posts"));
+  const children = await userCreateData(harness, (users) => users.has(harness.posts, "posts"));
+
+  expect(Object.keys(none)).toStrictEqual(["email", "name"]);
+  expect(Object.keys(children)).toStrictEqual(["email", "name"]);
+});
+
+test("has(rows) hands create the relation field as a connect list of the rows' scalars", async () => {
+  const { harness, first, second } = await attachable();
+
+  const data = await userCreateData(harness, (users) => users.has([first, second], "posts"));
+
+  expect(data.posts).toStrictEqual({ connect: [first, second] });
+});
+
+test("has(rows) loaded with include connects on the rows' scalars, the loaded relation left out", async () => {
+  const harness = await factorioHarness();
+  const loaded = await postWithComments(harness);
+  const { comments, ...scalars } = loaded;
+
+  const data = await userCreateData(harness, (users) => users.has([loaded], "posts"));
+
+  expect(comments).toStrictEqual([]);
+  expect(data.posts).toStrictEqual({ connect: [scalars] });
+});
+
+test("two has() calls on one relation field both apply", async () => {
+  const { harness, first, second } = await attachable();
+
+  const user = await harness.users.has([first], "posts").has([second], "posts").create();
+
+  await expect(authoredBy(harness.prisma, user.id)).resolves.toStrictEqual([first.id, second.id]);
+});
+
+test("two has() calls naming different relation fields both apply", async () => {
+  const { harness, first, second } = await attachable();
+
+  const user = await harness.users.has([first], "posts").has([second], "edited").create();
+
+  await expect(authoredBy(harness.prisma, user.id)).resolves.toStrictEqual([first.id]);
+  await expect(harness.prisma.post.findMany({ where: { editorId: user.id } })).resolves.toMatchObject([
+    { id: second.id },
+  ]);
+});
+
+test("has() adds to the relation field a state before it left standing", async () => {
+  const { harness, first, second } = await attachable();
+
+  const held = harness.users.state({ posts: { connect: [{ id: first.id }] } });
+  const user = await held.has([second], "posts").create();
+
+  await expect(authoredBy(harness.prisma, user.id)).resolves.toStrictEqual([first.id, second.id]);
+});
+
+test("a state after has() replaces the relation field, the children it had gathered dropped", async () => {
+  const { harness, first, second } = await attachable();
+
+  const gathered = harness.users.has([first], "posts");
+  const user = await gathered.state({ posts: { connect: [{ id: second.id }] } }).create();
+
+  await expect(authoredBy(harness.prisma, user.id)).resolves.toStrictEqual([second.id]);
+});
+
+test("create(overrides) replaces the relation field has() filled, the children it had gathered dropped", async () => {
+  const { harness, first, second } = await attachable();
+
+  const gathered = harness.users.has([first], "posts");
+  const user = await gathered.create({ posts: { connect: [{ id: second.id }] } });
+
+  await expect(authoredBy(harness.prisma, user.id)).resolves.toStrictEqual([second.id]);
+});
+
+test("has returns a new factory rather than changing the one it was called on", async () => {
+  const { harness, first } = await attachable();
+
+  const authored = harness.users.has([first], "posts");
+  const user = await harness.users.create();
+
+  expect(authored).not.toBe(harness.users);
+  await expect(authoredBy(harness.prisma, user.id)).resolves.toStrictEqual([]);
+});
+
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
 // the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
 export function relationsCheckedByTheCompiler(
@@ -900,7 +1074,9 @@ export function relationsCheckedByTheCompiler(
   users: Factory<TestClient, "user">,
   userRow: Row<TestClient, "user">,
   postRow: Row<TestClient, "post">,
+  commentRow: Row<TestClient, "comment">,
   stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
+  draftable: Factory<TestClient, "post", Row<TestClient, "post">, { drafted: unknown }>,
 ): void {
   void posts.for(users, "author").create();
   void posts.for(userRow, "editor").create();
@@ -928,4 +1104,42 @@ export function relationsCheckedByTheCompiler(
   void posts.for(42, "author");
   // @ts-expect-error a batched factory creates a row each, so it stands for no one parent
   void posts.for(users.count(3), "author");
+
+  void users.has(posts, "posts").create();
+  void users.has(draftable, "posts").create();
+  void users.has(draftable.drafted(), "posts").create();
+  void users.has(posts.count(3), "edited").create();
+  void users.has(postRow, "posts").create();
+  void users.has([postRow], "posts").create();
+  void posts.has(comments).create();
+  void posts.has(commentRow).create();
+  void users.has(posts, "posts", { inverse: "author" }).create();
+  void posts.has(comments, { inverse: "post" }).create();
+  // The option is declared as skippable rather than merely optional, so a name held elsewhere reaches
+  // the call whether or not it was found.
+  void users.has(posts, "posts", { inverse: undefined }).create();
+
+  expectTypeOf(users.has(posts, "posts")).toEqualTypeOf<Factory<TestClient, "user">>();
+  expectTypeOf(users.count(2).has(posts, "posts").create()).resolves.toEqualTypeOf<Row<TestClient, "user">[]>();
+
+  // @ts-expect-error the relation field is required where the model pair shares several
+  void users.has(posts);
+  // @ts-expect-error a row infers the model it belongs to, so this pair shares several too
+  void users.has(postRow);
+  // @ts-expect-error the one relation reaching a post from a comment holds one record
+  void comments.has(posts, "post");
+  // @ts-expect-error the one relation reaching a post from a comment holds one record, name left out
+  void comments.has(posts);
+  // @ts-expect-error no relation of any arity reaches a user from a comment
+  void comments.has(users);
+  // @ts-expect-error the relations reaching a user from a post hold one record each
+  void posts.has(users, "author");
+  // @ts-expect-error a relation field the model pair does not share
+  void users.has(posts, "illustrated");
+  // @ts-expect-error a value that is neither a factory, a row, nor a list of rows
+  void users.has(42, "posts");
+  // @ts-expect-error an option the escape hatch does not carry
+  void users.has(posts, "posts", { inverze: "author" });
+  // @ts-expect-error the options stand alone only where the relation field may be left out
+  void users.has(posts, { inverse: "author" });
 }
