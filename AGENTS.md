@@ -14,6 +14,7 @@ TypeScript (strict, ESM) · Node ≥ 20 · @prisma/client ≥ 7 < 8 as required 
 
 ```
 CONTEXT.md        Domain glossary
+context7.json     What Context7 indexes for consumers, and the rules it serves them
 prisma.config.ts  Prisma CLI configuration (required by Prisma 7)
 prisma/
   schema.prisma   Scratch schema for this library's own tests
