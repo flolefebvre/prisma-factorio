@@ -311,8 +311,11 @@ export function explicitIdAndRelation(posts: Factory<TestClient, "post">): void 
 }
 
 // README "Good to know", the bullet "A wrong-model row in a relation attribute is not caught". The
-// four calls without a directive are that hole: they compile, and a directive on any of them would
-// fail this gate until the hole is closed (#48). What the bullet says *is* caught follows them.
+// seven calls without a directive are that hole: they compile, and a directive on any of them would
+// fail this gate until the hole is closed (#48). A row rides through at both arities and by every route
+// an attribute is reached by; a factory rides through inside a list alone. What the bullet says *is*
+// caught follows them, and what a row that compiles then does to the database is pinned in
+// `factory.test.ts`.
 export function wrongModelValues(
   users: Factory<TestClient, "user">,
   posts: Factory<TestClient, "post">,
@@ -323,6 +326,9 @@ export function wrongModelValues(
   void users.create({ posts: teamRow });
   void users.create({ posts: [teamRow] });
   void posts.state({ author: teamRow });
+  void users.create({ posts: [teams] });
+  void users.create({ posts: [teams.count(2)] });
+  void users.state({ posts: [teams] });
 
   // @ts-expect-error no belongs-to relation from "post" to "team"
   void posts.for(teamRow, "author");
@@ -332,6 +338,8 @@ export function wrongModelValues(
   void posts.create({ author: teams });
   // @ts-expect-error a factory of a model the has-many relation does not point at
   void users.create({ posts: teams });
+  // @ts-expect-error a factory of a model the belongs-to relation does not point at, through a state
+  void posts.state({ author: teams });
 }
 
 // Held rather than written at the call site: a fresh object literal would be measured by excess

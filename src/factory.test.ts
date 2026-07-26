@@ -812,6 +812,38 @@ test("connecting a row that has since changed fails rather than reaching the rec
   await expect(posts.create({ author: ada })).rejects.toMatchObject({ code: "P2025" });
 });
 
+// The same filter read the other way: a row is cut down to the target model's scalar names before it
+// stands in the `where`, so a `Team` row `{ id, slug }` collapses to `{ id }`, which a `User` satisfies
+// as readily. Ids start at 1 per model, so a wrong-model row the type system let through finds a record
+// to connect rather than failing. The README bullet "A wrong-model row in a relation attribute is not
+// caught" rests on this test and the one under it for what happens at runtime; `readme.test.ts` pins
+// the half the compiler answers for.
+test("a wrong-model row in a belongs-to attribute connects the record that shares its id", async () => {
+  const { posts, teams, users } = await factorioHarness();
+  const ada = await users.create();
+  const team = await teams.create();
+  expect(team.id).toBe(ada.id);
+
+  const post = await posts.create({ author: team });
+
+  expect(post.authorId).toBe(ada.id);
+});
+
+// The same collapse at the other arity, where the connect rewrites a foreign key the record already
+// carries: the wrong-model row re-homes a post that belonged to somebody else.
+test("a wrong-model row in a has-many attribute re-homes the record that shares its id", async () => {
+  const { prisma, posts, teams, users } = await factorioHarness();
+  const post = await posts.create();
+  const team = await teams.create();
+  expect(team.id).toBe(post.id);
+
+  const stranger = await users.create({ posts: team });
+
+  await expect(prisma.post.findUniqueOrThrow({ where: { id: post.id } })).resolves.toMatchObject({
+    authorId: stranger.id,
+  });
+});
+
 test("a factory carrying no value that could stand in a relation field never reads the relation metadata", async () => {
   const { prisma } = await factorioHarness();
   const delegates = initPrismaFactorio({ user: prisma.user });
@@ -2495,7 +2527,7 @@ interface PerRecord {
 async function drawnPerRecord(
   attach: (posts: Factory<TestClient, "post">, children: ChildTags) => Factory<TestClient, "post", unknown>,
 ): Promise<PerRecord> {
-  const harness = await factorioHarness({ seed: 7 });
+  const harness = await factorioHarness();
   const tag = await harness.tags.create();
   const { client, written: writes } = recording(harness.prisma, "post");
 
@@ -2523,9 +2555,7 @@ test("a pooled has() child is drawn per parent record, the whole batch of them",
 // A connect into a relation field backed by a required foreign key re-homes the child, rewriting the
 // column the pooled copy still carries: the next parent record drawing that row matches it on scalars
 // the database no longer holds. Tracked as issue #47, which leaves a pooled row of such a relation good
-// for one parent record. The README paragraph naming #47 stands or falls with this test. The cadence
-// tests run over the implicit many-to-many alone, so this route wants a positive cadence test again
-// once #47 is fixed.
+// for one parent record. The README paragraph naming #47 stands or falls with this test.
 test("a pooled has() child fails the second parent record, its foreign key rewritten by the first", async () => {
   const { harness, authors } = await attaching(1);
 
