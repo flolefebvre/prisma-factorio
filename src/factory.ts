@@ -60,9 +60,10 @@ export interface EvaluationContext {
 export interface StateContext<C, M extends ModelName<C>> extends EvaluationContext {
   attrs: PartialAttributes<C, M>;
   /**
-   * The record this one is created for: the row a `has` layer created just before reaching this
-   * factory, its generated id and every database default carried. A record no `has` layer brought
-   * has none, which is what the `undefined` stands for.
+   * The record this one is created for: the row created just before reaching this factory, its
+   * generated id and every database default carried. A `has` layer brings one, and so does a factory
+   * standing in a relation field that holds many records. A record neither brought has none, which is
+   * what the `undefined` stands for.
    *
    * The type spans every model the client carries, since the model at the far end of a relation is
    * not knowable from this one, so a field only some of them declare is reached by narrowing first.
@@ -613,22 +614,46 @@ function native(value: Record<string, unknown>): boolean {
   return keys.length > 0 && keys.every((key) => relationOperations.includes(key));
 }
 
+// The position a value standing in a relation field is created at, which is ahead of every `has` layer:
+// no call named it, so it carries the order of none, and it ties with the values standing in the other
+// relation fields, which a stable sort leaves in the order the keys of the merge fall.
+const standingOrder = -1;
+
+// A factory standing in a relation field holding many records is a `has` layer written as an attribute:
+// its records hang off a row that does not exist yet, so they wait in `pending` rather than being
+// created and connected, which would leave whatever their own foreign keys brought behind. A field
+// holding a single record is the side the record has to exist first for, and is created here.
+async function embodied(
+  wiring: Wiring,
+  model: string,
+  field: string,
+  value: Embedded,
+  pending: Pending[],
+  explicit: boolean,
+): Promise<Written> {
+  const row = pooled(value, wiring, explicit);
+
+  if (row !== undefined) return matching(wiring.client, model, field, row);
+
+  if (!(await holdsManyRecords(wiring.client, model, field)))
+    return { connect: await recycling(inheriting(value, wiring.client), wiring).create() };
+
+  pending.push({ field, children: value, inverse: undefined, order: standingOrder });
+
+  return {};
+}
+
 async function connected(
   wiring: Wiring,
   model: string,
   field: string,
   value: Standing,
+  pending: Pending[],
   explicit = false,
 ): Promise<Written> {
   if (Array.isArray(value)) return matchingAll(wiring.client, model, field, value);
 
-  if (isFactory(value)) {
-    const row = pooled(value, wiring, explicit);
-
-    return row === undefined
-      ? { connect: await recycling(inheriting(value, wiring.client), wiring).create() }
-      : matching(wiring.client, model, field, row);
-  }
+  if (isFactory(value)) return embodied(wiring, model, field, value, pending, explicit);
 
   return native(value) ? value : matching(wiring.client, model, field, value);
 }
@@ -692,7 +717,7 @@ async function attaching(
   // Overrides replace the relation field whole, children and all, so what a `has` layer gathered on
   // top of is never the caller's own choice of parent.
   const held = standing(value.base);
-  const base = held === undefined ? {} : await connected(wiring, model, field, held);
+  const base = held === undefined ? {} : await connected(wiring, model, field, held, pending);
 
   return connecting(base, rows);
 }
@@ -720,7 +745,7 @@ async function resolved(
 
     const input = isAttached(value)
       ? await attaching(wiring, model, key, value, pending)
-      : await connected(wiring, model, key, value, explicit.has(key));
+      : await connected(wiring, model, key, value, pending, explicit.has(key));
 
     // What the parent's own create has nothing to say about — a list holding no row, children created
     // once the parent row exists, and none at all — leaves the relation field unwritten rather than
@@ -731,10 +756,10 @@ async function resolved(
   return { data: given(written), pending: pending.sort((one, next) => one.order - next.order) };
 }
 
-// The children a `has` layer left pending are created once the parent row exists, through their own
-// factory, so every layer their own chain holds still applies. They reach back to that row on the
-// relation field pairing with the one they hang off it by, which the escape hatch names outright in
-// place of looking it up.
+// The children left pending — by a `has` layer, or by a factory standing in a relation field holding
+// many records — are created once the parent row exists, through their own factory, so every layer their
+// own chain holds still applies. They reach back to that row on the relation field pairing with the one
+// they hang off it by, which the escape hatch names outright in place of looking it up.
 async function borne(wiring: Wiring, model: string, row: unknown, entry: Pending): Promise<void> {
   const { client } = wiring;
   const target = entry.children[brand];
@@ -842,8 +867,9 @@ async function write<C, M extends ModelName<C>>(
     const { data, pending } = await resolved(wiring, model, { ...attrs, ...applied }, explicit);
     const row = await delegate.create({ data });
 
-    // Depth first, layers in the order they were called: every child of one record exists before the
-    // next record of the batch is created.
+    // Depth first: every child of one record exists before the next record of the batch is created,
+    // the children a relation field's own value left pending ahead of the ones the `has` layers add,
+    // and those in the order the calls were made.
     for (const entry of pending) await borne(wiring, model, row, entry);
 
     // The graph under this record stands complete here, and each callback settles before the next
