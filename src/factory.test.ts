@@ -2309,12 +2309,12 @@ async function attaching(rows: number): Promise<Attaching> {
 }
 
 // A drawn child leaves nothing behind that a created one would not, so what tells the picks apart is
-// the connect list the parent's own create was handed: one entry per pick. A relation field holding
-// many records takes a single connect as readily as a list, and both shapes reach here.
+// the connect list the parent's own create was handed: one entry per pick, where a slot that connected
+// nothing leaves no relation field to read at all.
 function connectedIds(data: Record<string, unknown>, field: string): number[] {
-  const held = data[field] as { connect?: { id: number } | { id: number }[] } | undefined;
+  const held = data[field] as { connect?: { id: number }[] } | undefined;
 
-  return [held?.connect ?? []].flat().map((row) => row.id);
+  return (held?.connect ?? []).map((row) => row.id);
 }
 
 // A post factory at either arity, which is what `has` takes and what `count` hands back.
@@ -2446,10 +2446,12 @@ test("a pooled join-model row fails on its compound key too, drawn into the pare
 });
 
 // What the post's own create was handed under `comments`, one entry per record of the batch, alongside
-// every comment standing once the graph is done and the row the pool was handed. A drawn child leaves
-// nothing behind that a created one would not, and a pool of one hands that row out every time, so the
-// connect list is what tells one pick from two.
+// what the post holds once the graph is done, every comment standing by then and the row the pool was
+// handed. A drawn child leaves nothing behind that a created one would not, and a pool of one hands
+// that row out every time, so the connect list is what tells one pick from two where the database tells
+// whether the picks landed on the post at all.
 interface Drawn {
+  attached: number[];
   connected: number[][];
   keys: string[][];
   written: number;
@@ -2466,9 +2468,13 @@ async function pooledChildren(
   const { harness, first } = await spare();
   const { client, written: writes } = recording(harness.prisma, "post");
 
-  await attach(harness, harness.comments.count(records)).recycle("comment", first).using(client).create();
+  const post = (await attach(harness, harness.comments.count(records))
+    .recycle("comment", first)
+    .using(client)
+    .create()) as Row<TestClient, "post">;
 
   return {
+    attached: await attachedTo(harness.prisma, post.id, "comments"),
     connected: writes.map((data) => connectedIds(data, "comments")),
     keys: writes.map((data) => Object.keys(data)),
     written: await harness.prisma.comment.count(),
@@ -2479,11 +2485,12 @@ async function pooledChildren(
 // The batch size the child's own chain carries is what the pool answers for, record for record: a layer
 // collapsing it to one pick would connect half the children the slot was asked for.
 test("a to-many default a state names loses to the pool, one pick per record it would have created", async () => {
-  const { connected, written, drawn } = await pooledChildren(2, (harness, comments) =>
+  const { attached, connected, written, drawn } = await pooledChildren(2, (harness, comments) =>
     harness.posts.state({ comments }),
   );
 
   expect(connected).toStrictEqual([[drawn, drawn]]);
+  expect(attached).toStrictEqual([drawn]);
   expect(written).toBe(2);
 });
 

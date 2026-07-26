@@ -705,10 +705,11 @@ function drawn(children: Embedded, wiring: Wiring, explicit: boolean): Record<st
 }
 
 // The two forms part here: a row goes into the connect list the parent's own create carries, and a
-// factory goes into `pending`, which is created once that create has returned the parent row. Nothing
-// a `has` layer holds is the caller's own choice of parent: the layer names the relation field its
+// factory goes into `pending`, which is created once that create has returned the parent row. Neither
+// the children nor the base they gathered on top of is explicit: the layer names the relation field its
 // children hang off and never a record standing in a slot, and an override replaces the relation field
-// whole, children and all, so what the layer gathered on top of was named by no override either.
+// whole, children and all, so the base survived every override there was. A `for` stand-in does reach
+// `connected` as that base, and stays the caller's own by the mark it carries rather than by the flag.
 async function attaching(
   wiring: Wiring,
   model: string,

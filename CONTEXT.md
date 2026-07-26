@@ -41,13 +41,13 @@ The record a factory attaches the records it creates to, named by `for()`, by a 
 _Avoid_: owner, target, related record
 
 **Child**:
-A record on the many side of a relation field, attached to one parent by `has()` — created per parent record by a factory of its own, or connected as an existing row.
+A record on the many side of a relation field, attached to one parent by `has()` or by a relation default — created per parent record by a factory of its own, or connected as an existing row.
 _Avoid_: descendant, dependent, sub-record
 
 **Relation default**:
-A relation-valued attribute in a definition, a state or `create()` overrides, holding a factory, an existing row, or native Prisma relation input.
+A relation-valued attribute in a definition, a state or `create()` overrides, holding a factory, an existing row, native Prisma relation input, or — where the field holds many records — a list of rows. It sets the field rather than adding to it, and stands for children rather than for a parent wherever the field holds many records.
 _Avoid_: nested factory, embedded relation
 
 **Recycle pool**:
-Per-model lists of existing rows carried by a factory chain; anywhere the graph would create a _related_ record of a pooled model, it connects a pool row instead — the records a factory itself creates are exempt, as is a parent the caller named through `for()` or overrides. Merged across `.recycle()` calls, propagated to the whole graph, never self-populating.
+Per-model lists of existing rows carried by a factory chain; anywhere the graph would create a _related_ record of a pooled model, it connects one pool row per record it would have created — the records a factory itself creates are exempt, as is a slot the caller named outright through `for()` or overrides. Merged across `.recycle()` calls, propagated to the whole graph, never self-populating.
 _Avoid_: cache, registry
