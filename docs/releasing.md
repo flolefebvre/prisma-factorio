@@ -36,6 +36,8 @@ Provenance survives the switch either way: it comes from the OIDC token GitHub m
 
 It indexes `README.md`, `CONTEXT.md` and `docs/prisma-test-helper.md` — the three documents written for a consumer — and excludes everything written for whoever works on the library: `AGENTS.md` and `CLAUDE.md`, `docs/adr/`, `docs/agents/`, this file, the repository's own tooling config, and `src/` with its tests. `docs/laravel-factories.md` is excluded by name: it is Laravel's own PHP documentation, vendored as a reference, and indexing it would answer TypeScript questions with PHP.
 
+Claiming is stricter than configuring: the claim modal's submission accepts a `context7.json` holding `url` and `public_key` and nothing else, and rejects the configured file with "context7.json format is incorrect for claiming". Claim with the bare pair, then restore the configuration in a second commit — the claim stays verified.
+
 Two things to keep current:
 
 - **`rules`** state the constraints an assistant most often gets wrong — ESM only, immutable factories, no transaction of its own. A change to any of them belongs here as well as in the README.

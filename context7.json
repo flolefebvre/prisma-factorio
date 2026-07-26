@@ -1,4 +1,44 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
   "url": "https://context7.com/flolefebvre/prisma-factorio",
-  "public_key": "pk_4Czm4B19o3pEf9xBjNGnP"
+  "public_key": "pk_4Czm4B19o3pEf9xBjNGnP",
+  "projectTitle": "@flefebvre/prisma-factorio",
+  "description": "Laravel-style model factories for Prisma: tests and seeds declare the records they need through a fluent, fully typed API, inferred from the generated Prisma client. No codegen, no schema parsing, no build step.",
+  "branch": "main",
+  "folders": [],
+  "excludeFolders": [".github", "docs/adr", "docs/agents", "dist", "node_modules", "prisma", "scripts", "src"],
+  "excludeFiles": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "laravel-factories.md",
+    "releasing.md",
+    "skills-lock.json",
+    ".jscpd.json",
+    ".prettierrc.json",
+    "eslint.config.js",
+    "prisma.config.ts",
+    "vitest.config.ts",
+    "tsconfig.json",
+    "tsconfig.build.json",
+    "pnpm-workspace.yaml",
+    "pnpm-lock.yaml"
+  ],
+  "rules": [
+    "Import from \"@flefebvre/prisma-factorio\". ESM only, Node >= 20; there is no CommonJS require entry. `@prisma/client` >=7 <8 is the only required peer.",
+    "Bootstrap once per client: `const prismaFactorio = initPrismaFactorio(() => prisma, { seed, locale })`. Prefer the thunk — it is called on the first create() and never again.",
+    "The library never builds a Prisma client; the caller passes their own. A Prisma 7 client is constructed with a driver adapter.",
+    "Every fluent call returns a new factory. `userFactory.count(3)` leaves userFactory untouched, so factories are safe to share, compose and export from a module.",
+    "create() persists through the client and returns the real database row — or an array of rows when the factory carries count(n).",
+    "Definitions are checked against the model's Prisma create input, nested relation input included. A misspelled field or a state that does not exist is a compile error, not a runtime surprise.",
+    "States declared in the config become typed methods on the factory: a `suspended` state gives `userFactory.suspended()`. Add one on the chain with .state().",
+    "Attach a parent with for(), children with has(), or put a factory or row directly in a relation field of the definition. Prefer for() and has(): a wrong-model row in a relation attribute is not type-checked.",
+    "The library opens no transaction of its own — atomicity is the caller's. Route a whole graph through one with `prisma.$transaction((tx) => factory.using(tx).create())`.",
+    "A definition receives { faker, index, uid } and is evaluated once per record, so count(n) yields n distinct records rather than n copies.",
+    "seed pins faker's values and recycle's picks, but does not make a run reproducible: uid draws a fresh random prefix per process, so never snapshot uid-derived columns.",
+    "recycle() hands existing rows to a graph so it connects them instead of creating duplicates. A pooled row whose relation is backed by a required foreign key can be connected once only.",
+    "afterCreating callbacks run on the completed record, declared in the config or added on the chain. A throwing callback rejects create() and rolls nothing back unless you are inside your own transaction.",
+    "There is no code generation of any kind and no generator to add to schema.prisma: every type is inferred from the Prisma client you already generate.",
+    "An explicit `id` and a belongs-to relation field cannot be passed together — naming an id forces Prisma's unchecked create input, which drops relation fields. Pass the raw foreign key instead, or let the id be generated.",
+    "Records are written one create() at a time, sequentially. There is no createMany fast path, because relations, callbacks and returned rows all depend on created-then-continue semantics."
+  ]
 }
