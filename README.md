@@ -404,7 +404,7 @@ The feature set is Laravel's, ported to Prisma's semantics. Where the two part c
 - **No `sequence()`.** A state closure reads `index`, the record's own position in the batch, so alternating a column across a batch is one call rather than a second concept:
 
   ```ts
-  await users
+  await userFactory
     .count(10)
     .state(({ index }) => ({ name: index % 2 === 0 ? "Ada" : "Grace" }))
     .create();

@@ -34,9 +34,9 @@ test("a state written against the published types reaches the config and the cal
   const prisma = await disposableClient();
   const suspended = { name: null } satisfies api.PartialAttributes<TestClient, "user">;
   const vip = ({ attrs }: api.StateContext<TestClient, "user">) => ({ name: `${attrs.name ?? "anonymous"} (VIP)` });
-  const f = api.initPrismaFactorio(prisma);
+  const prismaFactorio = api.initPrismaFactorio(prisma);
 
-  const user = await f
+  const user = await prismaFactorio
     .define("user", { definition: userDefinition, states: { suspended } })
     .suspended()
     .state(vip)
@@ -54,9 +54,12 @@ test("a callback written against the published type reaches the config key and t
     seen.push(user.id);
     return client.post.count({ where: { authorId: user.id } });
   };
-  const f = api.initPrismaFactorio(prisma);
+  const prismaFactorio = api.initPrismaFactorio(prisma);
 
-  await f.define("user", { definition: userDefinition, afterCreating: announced }).afterCreating(announced).create();
+  await prismaFactorio
+    .define("user", { definition: userDefinition, afterCreating: announced })
+    .afterCreating(announced)
+    .create();
 
   expect(seen).toHaveLength(2);
 });
@@ -64,10 +67,10 @@ test("a callback written against the published type reaches the config key and t
 // The escape hatch is spelled only through this options object, so a caller holding one in a
 // variable of its own has to be able to name its type from the package root.
 test("a has() options object written against the published type reaches the call site", async () => {
-  const { prisma, posts, users } = await factorioHarness();
+  const { prisma, postFactory, userFactory } = await factorioHarness();
   const options: api.HasOptions = { inverse: "author" };
 
-  const user = await users.has(posts, "posts", options).create();
+  const user = await userFactory.has(postFactory, "posts", options).create();
 
   await expect(prisma.post.count({ where: { authorId: user.id } })).resolves.toBe(1);
 });

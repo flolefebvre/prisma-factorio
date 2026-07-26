@@ -192,10 +192,10 @@ test("a relation field holding many records takes a factory, a row, an array of 
 });
 
 test("create() is typed as the model's row and count(n).create() as an array of them", async () => {
-  const { users } = await factorioHarness();
+  const { userFactory } = await factorioHarness();
 
-  const one = await users.create();
-  const many = await users.count(2).create();
+  const one = await userFactory.create();
+  const many = await userFactory.count(2).create();
 
   expectTypeOf(one).toEqualTypeOf<UserRow>();
   expectTypeOf(many).toEqualTypeOf<UserRow[]>();
@@ -218,102 +218,112 @@ declare const misspeltOption: { invrese: string };
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
 // the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
 export function checkedByTheCompiler(
-  f: Factorio<TestClient>,
-  users: Factory<TestClient, "user">,
-  posts: Factory<TestClient, "post">,
+  prismaFactorio: Factorio<TestClient>,
+  userFactory: Factory<TestClient, "user">,
+  postFactory: Factory<TestClient, "post">,
   named: boolean,
   userRow: Row<TestClient, "user">,
   postRow: Row<TestClient, "post">,
   postRows: Row<TestClient, "post">[],
-  stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
-  comments: Factory<TestClient, "comment">,
+  statefulFactory: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
+  commentFactory: Factory<TestClient, "comment">,
   commentRows: Row<TestClient, "comment">[],
 ): void {
-  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com`, posts: { create: { title: "t" } } }) });
-  f.define("post", { definition: ({ uid }) => ({ title: uid, author: { connect: { id: 1 } } }) });
-  f.define("post", { definition: ({ uid }) => ({ title: uid, authorId: 1 }) });
-  void users.create({ posts: { create: { title: "t" } } });
-  void posts.create({ author: { create: { email: "ada@example.com" } } });
-  void users.create({ name: undefined });
-  void users.create({ name: named ? "Ada" : undefined });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({ email: `${uid}@example.com`, posts: { create: { title: "t" } } }),
+  });
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: { connect: { id: 1 } } }) });
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, authorId: 1 }) });
+  void userFactory.create({ posts: { create: { title: "t" } } });
+  void postFactory.create({ author: { create: { email: "ada@example.com" } } });
+  void userFactory.create({ name: undefined });
+  void userFactory.create({ name: named ? "Ada" : undefined });
 
-  f.define("post", { definition: ({ uid }) => ({ title: uid, author: users, editor: userRow }) });
-  f.define("post", { definition: ({ uid }) => ({ title: uid, author: stateful }) });
-  f.define("comment", { definition: ({ uid }) => ({ body: uid, post: posts }) });
-  f.define("comment", { definition: ({ uid }) => ({ body: uid, post: postRow }) });
-  f.define("post", {
-    definition: ({ uid }) => ({ title: uid, author: users }),
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: userFactory, editor: userRow }) });
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: statefulFactory }) });
+  prismaFactorio.define("comment", { definition: ({ uid }) => ({ body: uid, post: postFactory }) });
+  prismaFactorio.define("comment", { definition: ({ uid }) => ({ body: uid, post: postRow }) });
+  prismaFactorio.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: userFactory }),
     states: { byRow: { author: userRow } },
   });
-  void posts.create({ author: users });
-  void posts.create({ author: userRow });
-  void posts.state({ author: users });
-  void posts.state(({ index }) => ({ author: index === 0 ? users : userRow }));
+  void postFactory.create({ author: userFactory });
+  void postFactory.create({ author: userRow });
+  void postFactory.state({ author: userFactory });
+  void postFactory.state(({ index }) => ({ author: index === 0 ? userFactory : userRow }));
 
-  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@e.com`, posts: posts, edited: postRow }) });
-  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@e.com`, memberships: [], posts: posts.count(3) }) });
-  void users.create({ posts: postRows });
-  void users.state({ edited: posts.count(3) });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({ email: `${uid}@e.com`, posts: postFactory, edited: postRow }),
+  });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({ email: `${uid}@e.com`, memberships: [], posts: postFactory.count(3) }),
+  });
+  void userFactory.create({ posts: postRows });
+  void userFactory.state({ edited: postFactory.count(3) });
 
   // @ts-expect-error a model name the client does not carry
-  f.define("usre", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });
+  prismaFactorio.define("usre", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });
   // @ts-expect-error a field the model does not have
-  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com`, nmae: "Ada" }) });
+  prismaFactorio.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com`, nmae: "Ada" }) });
   // @ts-expect-error a field given the wrong value type
-  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com`, name: 42 }) });
+  prismaFactorio.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com`, name: 42 }) });
   // @ts-expect-error a required field left out
-  f.define("user", { definition: () => ({ name: "Ada" }) });
-  // @ts-expect-error a field the nested relation input does not have
-  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@e.com`, posts: { create: { titel: "t" } } }) });
-  // @ts-expect-error both halves of a mutually exclusive relation input at once
-  f.define("post", { definition: ({ uid }) => ({ title: uid, authorId: 1, author: { connect: { id: 1 } } }) });
+  prismaFactorio.define("user", { definition: () => ({ name: "Ada" }) });
+  prismaFactorio.define("user", {
+    // @ts-expect-error a field the nested relation input does not have
+    definition: ({ uid }) => ({ email: `${uid}@e.com`, posts: { create: { titel: "t" } } }),
+  });
+  prismaFactorio.define("post", {
+    // @ts-expect-error both halves of a mutually exclusive relation input at once
+    definition: ({ uid }) => ({ title: uid, authorId: 1, author: { connect: { id: 1 } } }),
+  });
   // @ts-expect-error overrides naming a field the model does not have
-  void users.create({ nmae: "Ada" });
+  void userFactory.create({ nmae: "Ada" });
   // @ts-expect-error overrides giving a field the wrong value type
-  void users.create({ name: 42 });
+  void userFactory.create({ name: 42 });
   // @ts-expect-error overrides naming both halves of a mutually exclusive relation input
-  void posts.create({ authorId: 1, author: { connect: { id: 1 } } });
+  void postFactory.create({ authorId: 1, author: { connect: { id: 1 } } });
   // @ts-expect-error a plain object carries no delegate
-  void users.using({});
+  void userFactory.using({});
 
   const widened: Record<string, unknown> = { nmae: "Ada" };
   // @ts-expect-error a record widened to string keys can name fields the model does not have
-  void users.create(widened);
+  void userFactory.create(widened);
 
   // @ts-expect-error a factory of a model the relation does not point at
-  f.define("post", { definition: ({ uid }) => ({ title: uid, author: posts }) });
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: postFactory }) });
   // @ts-expect-error a factory of a model the has-many relation does not point at
-  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@e.com`, posts: comments }) });
+  prismaFactorio.define("user", { definition: ({ uid }) => ({ email: `${uid}@e.com`, posts: commentFactory }) });
   // @ts-expect-error a factory where the model declares a scalar
-  f.define("post", { definition: () => ({ title: users, author: users }) });
+  prismaFactorio.define("post", { definition: () => ({ title: userFactory, author: userFactory }) });
   // @ts-expect-error a factory on the relation half while the raw foreign key holds the other
-  f.define("post", { definition: ({ uid }) => ({ title: uid, authorId: 1, author: users }) });
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, authorId: 1, author: userFactory }) });
   // @ts-expect-error a state naming a relation field of a model the relation does not point at
-  void posts.state({ author: posts });
+  void postFactory.state({ author: postFactory });
   // @ts-expect-error a batched factory creates a row each, so it stands for no one record
-  f.define("post", { definition: ({ uid }) => ({ title: uid, author: users.count(3) }) });
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: userFactory.count(3) }) });
   // @ts-expect-error a batched factory in overrides stands for no one record either
-  void posts.create({ author: users.count(3) });
+  void postFactory.create({ author: userFactory.count(3) });
 
-  hasChildren("post", comments);
-  hasChildren("post", comments.count(3));
+  hasChildren("post", commentFactory);
+  hasChildren("post", commentFactory.count(3));
   hasChildren("post", commentRows);
-  hasChildren("post", comments, "comments");
-  hasChildren("post", comments, inverseOption);
-  hasChildren("post", comments, "comments", inverseOption);
-  hasChildren("user", posts.count(3), "posts");
-  hasChildren("user", posts.count(3), "edited", inverseOption);
+  hasChildren("post", commentFactory, "comments");
+  hasChildren("post", commentFactory, inverseOption);
+  hasChildren("post", commentFactory, "comments", inverseOption);
+  hasChildren("user", postFactory.count(3), "posts");
+  hasChildren("user", postFactory.count(3), "edited", inverseOption);
 
   // @ts-expect-error the pair shares two has-many relations, so the relation field has to be named
-  hasChildren("user", posts.count(3));
+  hasChildren("user", postFactory.count(3));
   // @ts-expect-error the options object stands in for no relation field where one has to be named
-  hasChildren("user", posts.count(3), inverseOption);
+  hasChildren("user", postFactory.count(3), inverseOption);
   // @ts-expect-error a relation field the parent model does not declare
-  hasChildren("post", comments, "commnets");
+  hasChildren("post", commentFactory, "commnets");
   // @ts-expect-error an option key the options object does not declare
-  hasChildren("post", comments, "comments", misspeltOption);
+  hasChildren("post", commentFactory, "comments", misspeltOption);
   // @ts-expect-error the relation the pair shares holds one record, not many
-  hasChildren("comment", posts, "post");
+  hasChildren("comment", postFactory, "post");
   // @ts-expect-error the pair shares no relation at either arity
-  hasChildren("comment", users);
+  hasChildren("comment", userFactory);
 }

@@ -15,7 +15,7 @@ import { createPicker } from "./rng.js";
  *
  * @example
  * ```ts
- * const f: Factorio<PrismaClient> = initPrismaFactorio(prisma);
+ * const prismaFactorio: Factorio<PrismaClient> = initPrismaFactorio(prisma);
  * const userFactory = prismaFactorio.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });
  * ```
  */
