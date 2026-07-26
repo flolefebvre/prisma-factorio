@@ -213,7 +213,7 @@ export interface HasOptions {
  *
  * @example
  * ```ts
- * const rows = await users.count(3).state({ name: "Ada" }).create();
+ * const rows = await userFactory.count(3).state({ name: "Ada" }).create();
  * ```
  */
 export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
@@ -236,7 +236,7 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    *
    * @example
    * ```ts
-   * await prisma.$transaction(async (tx) => posts.for(users, "author").using(tx).create());
+   * await prisma.$transaction(async (tx) => postFactory.for(userFactory, "author").using(tx).create());
    * ```
    */
   using(client: Pick<C, M>): Factory<C, M, R, S>;
@@ -260,7 +260,7 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    *
    * @example
    * ```ts
-   * const drafts = await posts.count(3).for(users, "author").create();
+   * const drafts = await postFactory.count(3).for(userFactory, "author").create();
    * ```
    */
   for<T extends ParentValue<C>>(parent: T, ...args: RelationArgs<C, M, ParentModel<C, T>>): Factory<C, M, R, S>;
@@ -281,7 +281,7 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    *
    * @example
    * ```ts
-   * const author = await users.has(posts.count(3), "posts").create();
+   * const author = await userFactory.has(postFactory.count(3), "posts").create();
    * ```
    */
   has<T extends ChildValue<C>>(
@@ -313,7 +313,7 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    *
    * @example
    * ```ts
-   * const comment = await comments.recycle("user", ada).create();
+   * const comment = await commentFactory.recycle("user", ada).create();
    * ```
    */
   recycle<P extends ModelName<C>>(model: P, rows: Row<C, P> | readonly Row<C, P>[]): Factory<C, M, R, S>;
@@ -331,7 +331,7 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    *
    * @example
    * ```ts
-   * const welcomed = await users
+   * const welcomed = await userFactory
    *   .afterCreating(async (user, { client }) => {
    *     await client.post.create({ data: { title: "Welcome", author: { connect: { id: user.id } } } });
    *   })
@@ -355,8 +355,8 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
  *
  * @example
  * ```ts
- * const admins = users.count(3).suspended();
- * const rows = await admins.using(tx).create({ name: "Ada" });
+ * const adminFactory = userFactory.count(3).suspended();
+ * const rows = await adminFactory.using(tx).create({ name: "Ada" });
  * ```
  */
 export type Factory<C, M extends ModelName<C>, R = Row<C, M>, S = Record<never, never>> = FactoryMethods<C, M, R, S> & {
@@ -935,7 +935,7 @@ async function write<C, M extends ModelName<C>>(
  *
  * @example
  * ```ts
- * const users = createFactory<PrismaClient, "user", Row<PrismaClient, "user">, object>(chain);
+ * const userFactory = createFactory<PrismaClient, "user", Row<PrismaClient, "user">, object>(chain);
  * ```
  */
 export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryChain<C, M>): Factory<C, M, R, S> {
