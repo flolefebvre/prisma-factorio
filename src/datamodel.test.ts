@@ -1,5 +1,7 @@
 import { expect, test } from "vitest";
 import {
+  inverseRelationField,
+  namedRelationField,
   relationFieldsOf,
   relationFieldsTo,
   resolveRelationField,
@@ -31,6 +33,21 @@ interface Field {
 function clientWith(models: Record<string, Field[]>): unknown {
   const entries = Object.entries(models).map(([tag, fields]): [string, { fields: Field[] }] => [tag, { fields }]);
   return { _runtimeDataModel: { models: Object.fromEntries(entries) } };
+}
+
+// The scratch schema pairs every relation field it declares, so the shapes a Prisma release could
+// hand back instead need a stand-in too: `user` holds the fields under test, `post` the far side.
+function relating(fields: Field[]): unknown {
+  return clientWith({
+    User: fields,
+    Post: [{ name: "author", kind: "object", type: "User", relationName: "written" }],
+  });
+}
+
+// The scratch schema holds no model relating to itself, the one shape putting both sides of a
+// pairing on one model.
+function selfRelating(...names: string[]): unknown {
+  return clientWith({ Node: names.map((name) => ({ name, kind: "object", type: "Node", relationName: "tree" })) });
 }
 
 test("the relation fields of a model that point at a target are read off the generated client", async () => {
@@ -117,6 +134,25 @@ test("an explicit relation field pointing at another model reports the missing r
   );
 });
 
+test("a name the model declares as a relation field resolves to itself", async () => {
+  const prisma = await disposableClient();
+
+  expect(namedRelationField(prisma, "user", "edited")).toBe("edited");
+});
+
+// The model at the far end is what tells a relation field from a scalar apart from the caller, and a
+// call reaching here has none to name, so both misses are reported as the one thing they have in
+// common: the model declares no relation field under that name.
+test("a name the model declares as no relation field is rejected, naming it and the fields it holds", async () => {
+  const prisma = await disposableClient();
+
+  for (const name of ["illustrated", "email"]) {
+    expect(() => namedRelationField(prisma, "user", name)).toThrow(
+      `The model "user" has no relation field "${name}". Relation fields on "user": "posts", "edited".`,
+    );
+  }
+});
+
 test("a row resolves the relation field through the one target model its own fields fit", async () => {
   const prisma = await disposableClient();
 
@@ -180,4 +216,75 @@ test("an explicit relation field the model does not declare is rejected, naming 
   const prisma = await disposableClient();
 
   expect(() => resolveRowRelationField(prisma, "post", userShape, "illustrator")).toThrow(unsharedField);
+});
+
+// `comments` and `post` are paired by a label Prisma generates rather than one the schema names, so
+// the pairing is read the same way whether or not `@relation` carries a name.
+test("the inverse of a relation field is the field the target model pairs it with", async () => {
+  const prisma = await disposableClient();
+
+  expect(inverseRelationField(prisma, "user", "posts")).toBe("author");
+  expect(inverseRelationField(prisma, "post", "author")).toBe("posts");
+  expect(inverseRelationField(prisma, "user", "edited")).toBe("editor");
+  expect(inverseRelationField(prisma, "post", "comments")).toBe("post");
+  expect(inverseRelationField(prisma, "comment", "post")).toBe("comments");
+});
+
+test("a field the model does not declare is rejected, naming the relation fields it holds", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => inverseRelationField(prisma, "user", "psots")).toThrow(
+    'The model "user" declares no field "psots". Relation fields on "user": "posts", "edited".',
+  );
+});
+
+test("a field the model declares as something other than a relation is rejected", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => inverseRelationField(prisma, "user", "email")).toThrow(
+    'The field "email" on the model "user" is not a relation field. Relation fields on "user": "posts", "edited".',
+  );
+});
+
+test("a model holding no relation field at all is reported as holding none", () => {
+  const client = clientWith({ Log: [{ name: "message", kind: "scalar", type: "String" }] });
+
+  expect(() => inverseRelationField(client, "log", "message")).toThrow(
+    'The field "message" on the model "log" is not a relation field. Relation fields on "log": none.',
+  );
+});
+
+test("a relation field the datamodel pairs with nothing at all is rejected", () => {
+  const client = relating([{ name: "posts", kind: "object", type: "Post" }]);
+
+  expect(() => inverseRelationField(client, "user", "posts")).toThrow(
+    'The relation field "posts" on the model "user" carries no metadata pairing it with a relation field on "post". ' +
+      'Pass the inverse relation field as the "inverse" option of has(). Relation fields on "post": "author".',
+  );
+});
+
+test("a relation field nothing on the target model pairs with is rejected", () => {
+  const client = relating([{ name: "posts", kind: "object", type: "Post", relationName: "authored" }]);
+
+  expect(() => inverseRelationField(client, "user", "posts")).toThrow(
+    'The model "post" has no relation field pairing with "posts" on "user". ' +
+      'Pass the inverse relation field as the "inverse" option of has(). Relation fields on "post": "author".',
+  );
+});
+
+test("a self-relation pairs each of its two sides with the other rather than with itself", () => {
+  const client = selfRelating("parent", "children");
+
+  expect(inverseRelationField(client, "node", "children")).toBe("parent");
+  expect(inverseRelationField(client, "node", "parent")).toBe("children");
+});
+
+test("more than one relation field pairing with the one the lookup starts from is rejected, naming them", () => {
+  const client = selfRelating("parent", "children", "leaves");
+
+  expect(() => inverseRelationField(client, "node", "parent")).toThrow(
+    'The model "node" has more than one relation field pairing with "parent" on "node". ' +
+      'Pass the inverse relation field as the "inverse" option of has(). ' +
+      'Relation fields on "node" pairing with "parent" on "node": "children", "leaves".',
+  );
 });

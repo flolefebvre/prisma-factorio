@@ -41,12 +41,14 @@ function quoted(names: string[]): string {
   return names.map((name) => `"${name}"`).join(", ");
 }
 
+function declaredFields(client: unknown, model: string): DataModelField[] {
+  return entryOf(modelsOf(client), model)?.[1].fields ?? [];
+}
+
 // A field pointing at another model is the only one the datamodel gives kind `object`; a raw foreign
 // key column backing one is a scalar like any other.
 function relationFields(client: unknown, model: string): DataModelField[] {
-  const fields = entryOf(modelsOf(client), model)?.[1].fields ?? [];
-
-  return fields.filter((field) => field.kind === "object");
+  return declaredFields(client, model).filter((field) => field.kind === "object");
 }
 
 /**
@@ -125,6 +127,96 @@ export function resolveRelationField(client: unknown, model: string, target: str
   return only;
 }
 
+const inverseOption = 'Pass the inverse relation field as the "inverse" option of has(). ';
+
+function fieldListing(client: unknown, model: string): string {
+  const names = relationFieldsOf(client, model);
+
+  return `Relation fields on "${model}": ${names.length === 0 ? "none" : quoted(names)}.`;
+}
+
+/**
+ * The relation field a model declares under a name, checked against the fields it holds.
+ *
+ * The model is named by its delegate key. This is the whole of what a caller naming no model at the
+ * far end can be held to — a name the model declares as a scalar and one it declares not at all are
+ * reported alike — so a call carrying a target model resolves through {@link resolveRelationField}
+ * instead, which narrows the candidates to that pair.
+ *
+ * @example
+ * ```ts
+ * namedRelationField(prisma, "user", "posts"); // "posts"
+ * ```
+ */
+export function namedRelationField(client: unknown, model: string, relationField: string): string {
+  if (!relationFieldsOf(client, model).includes(relationField))
+    throw new TypeError(
+      `The model "${model}" has no relation field "${relationField}". ${fieldListing(client, model)}`,
+    );
+
+  return relationField;
+}
+
+/**
+ * The relation field a model reaches back through the relation another one of its own points along.
+ *
+ * The model is named by its delegate key, the relation field by the name it carries on that model.
+ * The two sides of a relation are matched on the metadata pairing them rather than on their names, so
+ * a relation the schema names and one it leaves unnamed answer alike. A model relating to itself
+ * carries both sides, where the field asked about is never its own inverse. Metadata pairing that
+ * field with anything other than exactly one relation field throws, listing the relation fields the
+ * target model holds, which the runtime cannot narrow down to the ones a given call accepts.
+ *
+ * @example
+ * ```ts
+ * inverseRelationField(prisma, "user", "posts"); // "author"
+ * ```
+ */
+export function inverseRelationField(client: unknown, model: string, relationField: string): string {
+  const field = declaredFields(client, model).find((candidate) => candidate.name === relationField);
+
+  if (field === undefined)
+    throw new TypeError(`The model "${model}" declares no field "${relationField}". ${fieldListing(client, model)}`);
+
+  if (field.kind !== "object")
+    throw new TypeError(
+      `The field "${relationField}" on the model "${model}" is not a relation field. ${fieldListing(client, model)}`,
+    );
+
+  const target = delegateKey(field.type);
+
+  if (field.relationName === undefined)
+    throw new TypeError(
+      `The relation field "${relationField}" on the model "${model}" carries no metadata pairing it with a relation field on "${target}". ` +
+        inverseOption +
+        fieldListing(client, target),
+    );
+
+  const paired = relationFields(client, target)
+    .filter((candidate) => candidate.relationName === field.relationName)
+    .map((candidate) => candidate.name);
+  // A model relating to itself carries both sides of one pairing, so the field the lookup starts from
+  // answers that pairing alongside the inverse being looked for.
+  const candidates = target === model ? paired.filter((name) => name !== relationField) : paired;
+  const [only, ...rest] = candidates;
+
+  if (only === undefined)
+    throw new TypeError(
+      `The model "${target}" has no relation field pairing with "${relationField}" on "${model}". ` +
+        inverseOption +
+        fieldListing(client, target),
+    );
+
+  if (rest.length > 0)
+    throw new TypeError(
+      `The model "${target}" has more than one relation field pairing with "${relationField}" on "${model}". ` +
+        inverseOption +
+        `Relation fields on "${target}" pairing with "${relationField}" on "${model}": ${quoted(candidates)}.`,
+    );
+
+  return only;
+}
+
 function scalarNames(models: Record<string, DataModelModel>, tag: string): string[] {
   return (models[tag]?.fields ?? []).filter((field) => field.kind !== "object").map((field) => field.name);
 }
@@ -146,7 +238,7 @@ function fittingTarget(client: unknown, model: string, row: Record<string, unkno
     throw new TypeError(
       `The row passed to for() fits no single model the relation fields of "${model}" point at. ` +
         "Pass the relation field explicitly. " +
-        `Relation fields on "${model}": ${quoted(relationFieldsOf(client, model))}.`,
+        fieldListing(client, model),
     );
 
   return delegateKey(only);

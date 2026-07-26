@@ -1,8 +1,18 @@
-import { relationFieldsOf, resolveRelationField, resolveRowRelationField, targetScalars } from "./datamodel.js";
+import {
+  inverseRelationField,
+  namedRelationField,
+  relationFieldsOf,
+  resolveRelationField,
+  resolveRowRelationField,
+  targetScalars,
+} from "./datamodel.js";
 import type { FakerInstance, FakerProvider } from "./faker.js";
 import type {
   Attributes,
+  ChildModel,
+  ChildValue,
   CreateInput,
+  HasManyArgs,
   ModelName,
   Overrides,
   ParentModel,
@@ -46,8 +56,20 @@ export interface EvaluationContext {
  */
 export interface StateContext<C, M extends ModelName<C>> extends EvaluationContext {
   attrs: PartialAttributes<C, M>;
-  /** The row this record is created for; stays `undefined` until `has` populates it (#30). */
-  parent: unknown;
+  /**
+   * The record this one is created for: the row a `has` layer created just before reaching this
+   * factory, its generated id and every database default carried. A record no `has` layer brought
+   * has none, which is what the `undefined` stands for.
+   *
+   * The type spans every model the client carries, since the model at the far end of a relation is
+   * not knowable from this one, so a field only some of them declare is reached by narrowing first.
+   *
+   * @example
+   * ```ts
+   * const credited = ({ parent }: StateContext<PrismaClient, "post">) => ({ title: `by ${String(parent?.id)}` });
+   * ```
+   */
+  parent: Row<C, ModelName<C>> | undefined;
 }
 
 /**
@@ -94,10 +116,11 @@ interface Reserved {
   using?: never;
   state?: never;
   for?: never;
+  has?: never;
   then?: never;
 }
 
-const reservedNames = ["create", "count", "using", "state", "for", "then"];
+const reservedNames = ["create", "count", "using", "state", "for", "has", "then"];
 
 /**
  * What a factory's declared `states` must satisfy: every value exact, and no name the factory
@@ -132,6 +155,22 @@ export interface FactoryConfig<C, M extends ModelName<C>, D = CreateInput<C, M>,
 }
 
 /**
+ * The escape hatch `has` trails its arguments with.
+ *
+ * `inverse` names the relation field the child model reaches its parent back through, for a relation
+ * whose two sides the client's metadata cannot pair down to one. It bypasses that lookup and nothing
+ * else, so the form connecting rows — which never looks an inverse up — is untouched by it.
+ *
+ * @example
+ * ```ts
+ * const options: HasOptions = { inverse: "author" };
+ * ```
+ */
+export interface HasOptions {
+  inverse?: string | undefined;
+}
+
+/**
  * Everything a factory answers to beyond the states its config declares.
  *
  * @example
@@ -146,9 +185,10 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * Redirects the records this factory creates to a client of its own, an interactive transaction's
    * among them.
    *
-   * Every parent factory a create resolves runs on that client too, however many models the chain of
-   * relation defaults reaches through, so one call covers the whole graph. A parent factory that
-   * named a client of its own keeps it, and its own parents then run on that one.
+   * Every parent factory a create resolves runs on that client too, as does every child factory a
+   * `has` layer creates records through, however many models the graph reaches, so one call covers it
+   * whole. A factory that named a client of its own keeps it, and the factories it resolves in turn
+   * then run on that one.
    *
    * @example
    * ```ts
@@ -180,6 +220,30 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * ```
    */
   for<T extends ParentValue<C>>(parent: T, ...args: RelationArgs<C, M, ParentModel<C, T>>): Factory<C, M, R, S>;
+  /**
+   * Fills a relation field this model holds many records in, alongside every record it creates.
+   *
+   * The relation field may be left out where the model pair shares exactly one has-many relation, and
+   * must be named where it shares several. Rows are connected as they stand, no record of the child
+   * model being created for them; a child factory creates records of its own per parent record and
+   * reaches back through the inverse relation field, which `inverse` names where the client's metadata
+   * pairs the two sides down to more than one. Every child of one record is created before the next
+   * record of a batch is, layer by layer in the order the calls were made, and each one reads the
+   * record it was created for through `parent`.
+   *
+   * `has` adds to the relation field rather than replacing it: two calls on one field both apply, and
+   * a call made after a state adds to what that state left standing. Every other layer — a definition
+   * value, a state, the overrides `create` was given — replaces the field whole, children and all.
+   *
+   * @example
+   * ```ts
+   * const author = await users.has(posts.count(3), "posts").create();
+   * ```
+   */
+  has<T extends ChildValue<C>>(
+    children: T,
+    ...args: HasManyArgs<C, M, ChildModel<C, T>, HasOptions>
+  ): Factory<C, M, R, S>;
 }
 
 /**
@@ -187,7 +251,8 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
  * returns a new factory, leaving the receiver untouched.
  *
  * Attributes merge in one order: the definition, then the states in the order they were applied,
- * then the overrides `create` was given. Last write wins per key; a key valued `undefined` is
+ * then the overrides `create` was given. Last write wins per key, save for the relation field a `has`
+ * layer adds to rather than replaces — see {@link FactoryMethods.has}; a key valued `undefined` is
  * skipped at every layer, so the layer before it stands; a `null` is written.
  *
  * `count` takes a non-negative whole number and throws a `RangeError` on anything else; `count(0)`
@@ -218,7 +283,14 @@ interface Relation {
   relationField: string | undefined;
 }
 
-type Layer = Step | Relation;
+// Kept whole for the same reason a `Relation` is, and told from one by the key it carries.
+interface Children {
+  children: object;
+  relationField: string | undefined;
+  inverse: string | undefined;
+}
+
+type Layer = Step | Relation | Children;
 
 interface FactoryChain<C, M extends ModelName<C>> {
   model: M;
@@ -231,6 +303,8 @@ interface FactoryChain<C, M extends ModelName<C>> {
   explicit: boolean;
   faker: FakerProvider;
   batch: number | undefined;
+  // Set by the `has` layer creating this chain's records, and read by every layer of the merge.
+  parent: unknown;
 }
 
 function step(state: unknown): Step {
@@ -269,24 +343,77 @@ function given(attributes: Written | undefined): Written {
 // Registered globally: a duplicated package instance recognises the other instance's factories.
 const brand = Symbol.for("prisma-factorio.factory");
 const rebind = Symbol.for("prisma-factorio.rebind");
+const bearer = Symbol.for("prisma-factorio.parent");
 
 // Every operation Prisma's create input accepts inside a relation field, to-one and to-many alike.
 // A value naming only these is Prisma's own input, and reaches the client untouched.
 const relationOperations = ["connect", "create", "connectOrCreate", "createMany"];
 
 // The brand holds the factory's model, which is the parent model a `for` call needs and the one
-// thing a value standing in a relation field cannot be asked for. The rebind is absent from the
-// stand-in `shared` builds, which has taken its client already.
+// thing a value standing in a relation field cannot be asked for. The rebind and the bearer are
+// absent from the stand-in `shared` builds, which has taken its client already and bears no parent.
 interface Embedded {
-  create: () => Promise<unknown>;
+  create: (overrides?: Written) => Promise<unknown>;
   [brand]: string;
   [rebind]?: (client: unknown) => Embedded;
+  [bearer]?: (parent: unknown) => Embedded;
 }
 
 // A row carries whatever columns the model declares, `create` among them where the schema says so,
 // so the brand is what tells a factory from a row.
 function isFactory(value: object): value is Embedded {
   return brand in value;
+}
+
+// What a `has` layer writes under the relation field it names, in place of a value Prisma takes:
+// `base` is what the layers before it left standing, `entries` every child added to that field, in
+// call order. A layer of any other kind overwrites the key, which drops the children along with it.
+const attached = Symbol("prisma-factorio.attached");
+
+interface Attachment {
+  children: object;
+  inverse: string | undefined;
+  // The position of the `has` call among the layers, which is what the children are created in: the
+  // keys of the merge fall in the order the layers first named them, one field at a time.
+  order: number;
+}
+
+interface Attached {
+  [attached]: true;
+  base: unknown;
+  entries: readonly Attachment[];
+}
+
+// What the parent's own create leaves behind: a factory creating records once the parent row exists,
+// the relation field they hang off it by, and the inverse relation field where the call named one.
+interface Pending {
+  field: string;
+  children: Embedded;
+  inverse: string | undefined;
+  order: number;
+}
+
+interface Resolved {
+  data: Written;
+  pending: Pending[];
+}
+
+function isAttached(value: unknown): value is Attached {
+  return typeof value === "object" && value !== null && attached in value;
+}
+
+function listed(value: unknown): unknown[] {
+  return Array.isArray(value) ? (value as unknown[]) : [value];
+}
+
+function accumulating(held: unknown, entry: Attachment): Attached {
+  const previous = isAttached(held) ? held : undefined;
+
+  return {
+    [attached]: true,
+    base: previous === undefined ? held : previous.base,
+    entries: [...(previous?.entries ?? []), entry],
+  };
 }
 
 // A row and Prisma's own relation input are both plain objects; a value carrying a prototype of its
@@ -303,6 +430,12 @@ function plainObject(value: unknown): Record<string, unknown> | undefined {
 // whole graph a create reaches; a parent whose own chain named a client keeps that one.
 function inheriting(parent: Embedded, client: unknown): Embedded {
   return parent[rebind]?.(client) ?? parent;
+}
+
+// The row a child factory hangs off, handed over just before its create so that a state closure of
+// its own reads the record it is created for.
+function bearing(children: Embedded, parent: unknown): Embedded {
+  return children[bearer]?.(parent) ?? children;
 }
 
 async function connected(
@@ -325,22 +458,82 @@ async function connected(
     : { connect: targetScalars(client, model, field, value) };
 }
 
-async function resolved(client: unknown, model: string, data: Written): Promise<Written> {
+// A single connect is what a to-one relation field takes and what a to-many one accepts alongside the
+// list, so whatever the layers before the `has` call left standing is widened before the rows join it.
+function connecting(base: Written, rows: unknown[]): Written {
+  if (rows.length === 0) return base;
+
+  const held = base.connect;
+
+  return { ...base, connect: [...(held === undefined ? [] : listed(held)), ...rows] };
+}
+
+// The two forms part here: a row goes into the connect list the parent's own create carries, and a
+// factory goes into `pending`, which is created once that create has returned the parent row.
+async function attaching(
+  client: unknown,
+  model: string,
+  field: string,
+  value: Attached,
+  pending: Pending[],
+): Promise<Written> {
+  const rows: unknown[] = [];
+
+  for (const entry of value.entries) {
+    if (isFactory(entry.children)) {
+      pending.push({ field, children: entry.children, inverse: entry.inverse, order: entry.order });
+      continue;
+    }
+
+    for (const row of listed(entry.children)) rows.push(targetScalars(client, model, field, row as Written));
+  }
+
+  const held = plainObject(value.base);
+  const base = held === undefined ? {} : ((await connected(client, model, field, held)) as Written);
+
+  return connecting(base, rows);
+}
+
+async function resolved(client: unknown, model: string, data: Written): Promise<Resolved> {
   const embedded = Object.entries(data).flatMap(([key, value]) => {
     const object = plainObject(value);
     return object === undefined ? [] : [[key, object] as const];
   });
 
-  if (embedded.length === 0) return data;
+  if (embedded.length === 0) return { data, pending: [] };
 
   const relations = relationFieldsOf(client, model);
+  const pending: Pending[] = [];
   const written: Written = { ...data };
 
   for (const [key, value] of embedded) {
-    if (relations.includes(key)) written[key] = await connected(client, model, key, value);
+    if (!relations.includes(key)) continue;
+
+    if (!isAttached(value)) {
+      written[key] = await connected(client, model, key, value);
+      continue;
+    }
+
+    const input = await attaching(client, model, key, value, pending);
+
+    // Children the parent's own create says nothing about — factories, and none at all — leave the
+    // relation field unwritten rather than naming it and giving Prisma nothing to do.
+    written[key] = Object.keys(input).length === 0 ? undefined : input;
   }
 
-  return written;
+  return { data: given(written), pending: pending.sort((one, next) => one.order - next.order) };
+}
+
+// The children a `has` layer left pending are created once the parent row exists, through their own
+// factory, so every layer their own chain holds still applies. They reach back to that row on the
+// relation field pairing with the one they hang off it by, which the escape hatch names outright in
+// place of looking it up.
+async function borne(client: unknown, model: string, row: unknown, entry: Pending): Promise<void> {
+  const target = entry.children[brand];
+  const back = entry.inverse ?? inverseRelationField(client, model, entry.field);
+  const connect = targetScalars(client, target, back, row as Written);
+
+  await bearing(inheriting(entry.children, client), row).create({ [back]: { connect } });
 }
 
 // A `for` call names one specific parent, so the parent factory runs at most once however many
@@ -351,6 +544,8 @@ function shared(parent: Record<string, unknown>, client: unknown): Record<string
   const factory = inheriting(parent, client);
   let row: Promise<unknown> | undefined;
 
+  // This `create` takes no overrides, though the type it stands in for declares them: one row answers
+  // every record of the batch, so there is no single caller whose overrides it could carry.
   return { create: (): Promise<unknown> => (row ??= factory.create()), [brand]: factory[brand] };
 }
 
@@ -365,6 +560,45 @@ function relationStep(client: unknown, model: string, { parent, relationField }:
   return (): Written => ({ [field]: value });
 }
 
+// A list holding no row stands for no model, which is what a named field is checked without and what
+// an omitted one cannot be resolved from at all.
+function attachField(client: unknown, model: string, { children, relationField }: Children): string | undefined {
+  if (isFactory(children)) return resolveRelationField(client, model, children[brand], relationField);
+
+  const [first] = listed(children) as (Record<string, unknown> | undefined)[];
+
+  if (first !== undefined) return resolveRowRelationField(client, model, first, relationField);
+
+  return relationField === undefined ? undefined : namedRelationField(client, model, relationField);
+}
+
+// The name the escape hatch carries is checked against the relation fields the child model points
+// back with, never through the pairing metadata, which is the one lookup it exists to route around.
+// Only a child factory ever reaches back, so the form connecting rows has no name to check.
+function attachInverse(client: unknown, model: string, { children, inverse }: Children): string | undefined {
+  if (inverse === undefined || !isFactory(children)) return inverse;
+
+  return resolveRelationField(client, children[brand], model, inverse);
+}
+
+// A layer naming no relation field leaves it exactly as the layers around it leave it; one naming a
+// field with nothing to connect writes an entry the parent's own create then finds empty.
+function attachStep(client: unknown, model: string, layer: Children, order: number): Step {
+  const field = attachField(client, model, layer);
+
+  if (field === undefined) return (): Written => ({});
+
+  const entry: Attachment = { children: layer.children, inverse: attachInverse(client, model, layer), order };
+
+  return ({ attrs }): Written => ({ [field]: accumulating(attrs[field], entry) });
+}
+
+function layerStep(client: unknown, model: string, layer: Layer, order: number): Step {
+  if (typeof layer === "function") return layer;
+
+  return "children" in layer ? attachStep(client, model, layer, order) : relationStep(client, model, layer);
+}
+
 async function write<C, M extends ModelName<C>>(
   chain: FactoryChain<C, M>,
   overrides: Written | undefined,
@@ -375,20 +609,23 @@ async function write<C, M extends ModelName<C>>(
   const model = String(chain.model);
   const delegate = client[chain.model] as CreateDelegate;
   const applied = given(overrides);
-  const steps = chain.applied.map((layer) =>
-    typeof layer === "function" ? layer : relationStep(client, model, layer),
-  );
+  const steps = chain.applied.map((layer, order) => layerStep(client, model, layer, order));
   const rows: unknown[] = [];
 
   for (let index = 0; index < (chain.batch ?? 1); index += 1) {
-    const context = { faker, index, uid: nextUid(), parent: undefined };
+    const context = { faker, index, uid: nextUid(), parent: chain.parent };
     let attrs = given(chain.definition(context));
 
     for (const state of steps) attrs = { ...attrs, ...given(state({ ...context, attrs })) };
 
-    const data = await resolved(client, model, { ...attrs, ...applied });
+    const { data, pending } = await resolved(client, model, { ...attrs, ...applied });
+    const row = await delegate.create({ data });
 
-    rows.push(await delegate.create({ data }));
+    // Depth first, layers in the order they were called: every child of one record exists before the
+    // next record of the batch is created.
+    for (const entry of pending) await borne(client, model, row, entry);
+
+    rows.push(row);
   }
 
   return rows;
@@ -405,6 +642,10 @@ async function write<C, M extends ModelName<C>>(
  * It carries `Symbol.for("prisma-factorio.rebind")` the same way, valued with a call that takes a
  * client and hands back this factory bound to it — or this factory untouched, where `using` named a
  * client of its own. Resolving a relation calls it, which is what spreads one `using` over a graph.
+ *
+ * It carries `Symbol.for("prisma-factorio.parent")` the same way, valued with a call that takes a row
+ * and hands back this factory creating its records for it. A `has` layer calls it once per parent
+ * record, which is what puts that record in reach of the children's own state closures.
  *
  * @example
  * ```ts
@@ -434,6 +675,19 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
     for(parent: object, relationField?: string): Factory<C, M, R, S> {
       return derive({ parent: parent as Record<string, unknown>, relationField });
     },
+    has(children: object, ...args: unknown[]): Factory<C, M, R, S> {
+      const [first] = args;
+      // Read off the tail rather than off a position: a relation field the model pair leaves skippable
+      // may still be passed, valued `undefined`, with the options behind it.
+      const tail: unknown = args.at(-1);
+      const options = (typeof tail === "object" ? tail : undefined) as HasOptions | null | undefined;
+
+      return derive({
+        children,
+        relationField: typeof first === "string" ? first : undefined,
+        inverse: options?.inverse,
+      });
+    },
   };
 
   const named = Object.entries(chain.declared).map(([name, state]) => [name, (): Factory<C, M, R, S> => derive(state)]);
@@ -443,8 +697,10 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
   // hands over serves this factory's model as well as its own.
   const inherit = (client: unknown): Factory<C, M, R, S> =>
     chain.explicit ? factory : createFactory({ ...chain, client: () => client as Pick<C, M> });
+  const bear = (parent: unknown): Factory<C, M, R, S> => createFactory({ ...chain, parent });
 
   Object.defineProperty(factory, brand, { value: String(chain.model) });
+  Object.defineProperty(factory, rebind, { value: inherit });
 
-  return Object.defineProperty(factory, rebind, { value: inherit });
+  return Object.defineProperty(factory, bearer, { value: bear });
 }

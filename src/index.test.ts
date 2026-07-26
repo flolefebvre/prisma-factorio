@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import * as api from "./index.js";
 import type { TestClient } from "./tests/client.js";
-import { disposableClient, userDefinition } from "./tests/factorio.js";
+import { disposableClient, factorioHarness, userDefinition } from "./tests/factorio.js";
 
 test("the package root exports the bootstrap and nothing else at runtime", () => {
   expect(api.initPrismaFactorio).toBeTypeOf("function");
@@ -23,4 +23,15 @@ test("a state written against the published types reaches the config and the cal
     .create();
 
   expect(user.name).toBe("anonymous (VIP)");
+});
+
+// The escape hatch is spelled only through this options object, so a caller holding one in a
+// variable of its own has to be able to name its type from the package root.
+test("a has() options object written against the published type reaches the call site", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const options: api.HasOptions = { inverse: "author" };
+
+  const user = await users.has(posts, "posts", options).create();
+
+  await expect(prisma.post.count({ where: { authorId: user.id } })).resolves.toBe(1);
 });

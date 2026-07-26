@@ -140,6 +140,68 @@ export type ParentValue<C> = Parent<C, ModelName<C>>;
  */
 export type ParentModel<C, T> = { [P in ModelName<C>]: [T] extends [Parent<C, P>] ? P : never }[ModelName<C>];
 
+/**
+ * What stands for the records a model holds many of: a factory of it, batched or not, a row of it, or
+ * an array of rows.
+ *
+ * The row the factory returns is read at either arity, which is the whole of what separates this from
+ * {@link Parent}: a batched factory creates a record per parent record here, and stands for no one
+ * record there.
+ *
+ * @example
+ * ```ts
+ * const written: Child<PrismaClient, "post"> = postFactory.count(3);
+ * ```
+ */
+export type Child<C, P> =
+  P extends ModelName<C> ? Factory<C, P, Row<C, P> | Row<C, P>[], unknown> | Row<C, P> | readonly Row<C, P>[] : never;
+
+/**
+ * What stands for the records of any model the client carries.
+ *
+ * @example
+ * ```ts
+ * declare function attach<T extends ChildValue<PrismaClient>>(children: T): void;
+ * ```
+ */
+export type ChildValue<C> = Child<C, ModelName<C>>;
+
+/**
+ * The model a child value belongs to, recovered from the value's own type the way {@link ParentModel}
+ * recovers a parent's, and ambiguous under the same shapes.
+ *
+ * @example
+ * ```ts
+ * type Model = ChildModel<PrismaClient, Row<PrismaClient, "post">[]>; // "post"
+ * ```
+ */
+export type ChildModel<C, T> = { [P in ModelName<C>]: [T] extends [Child<C, P>] ? P : never }[ModelName<C>];
+
+// A relation field the pair leaves optional is skippable, so the options object stands alone as well;
+// where the field has to be named — or where no field satisfies the parameter at all — it does not.
+// Appending the options to the spread alone would bar the options-only call, which the tuple reaches
+// by position and never by shape.
+type WithOptions<A extends unknown[], Options> = [] extends A
+  ? [...A, options?: Options] | [options: Options]
+  : [...A, options?: Options];
+
+/**
+ * How the has-many relation from `M` to `MC` is selected, and the options object trailing it.
+ *
+ * The field selected is the one `M` declares, so the pair is read in the order {@link RelationArgs}
+ * reads it — the model holding the field first — at the arity holding many records.
+ *
+ * @example
+ * ```ts
+ * type Args = HasManyArgs<PrismaClient, "user", "post", { inverse?: string }>;
+ * // [relationField: "posts" | "edited", options?: { inverse?: string }]
+ * ```
+ */
+export type HasManyArgs<C, M extends ModelName<C>, MC extends ModelName<C>, Options> = WithOptions<
+  RelationArgs<C, M, MC, true>,
+  Options
+>;
+
 // A relation field whose arity is not the one asked for keeps Prisma's own input.
 type RelationValue<C, M extends ModelName<C>, K, List extends boolean = false> =
   K extends RelationKey<C, M> ? (IsList<C, M, K> extends List ? Parent<C, TargetModel<C, M, K>> : never) : never;
