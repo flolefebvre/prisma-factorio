@@ -1522,16 +1522,30 @@ test("a state pins an existing row into a leg of the join model rather than draw
   await expect(prisma.team.count()).resolves.toBe(1);
 });
 
+interface Joined {
+  harness: Harness;
+  membership: Row<TestClient, "membership">;
+}
+
+// A join-model record already written, which is where every route to connecting one starts: handed to
+// a `has` layer outright, or drawn from a pool.
+async function joined(): Promise<Joined> {
+  const harness = await factorioHarness();
+  const ada = await harness.users.create();
+
+  return { harness, membership: await harness.memberships.for(ada).create() };
+}
+
 // The join model's only unique constraint is its compound key, which Prisma exposes under the single
 // generated name `userId_teamId` and demands under that name; the flat scalars a row carries satisfy
 // no `WhereUniqueInput`. Tracked as issue #41, whose workaround is passing native relation input,
 // `{ connect: { userId_teamId: … } }`. The README paragraph naming #41 stands or falls with this test.
 test("connecting an existing join-model row fails on its compound key", async () => {
-  const { users, memberships } = await factorioHarness();
-  const ada = await users.create();
-  const membership = await memberships.for(ada).create();
+  const { harness, membership } = await joined();
 
-  await expect(users.has([membership], "memberships").create()).rejects.toThrow("Expected MembershipWhereUniqueInput");
+  await expect(harness.users.has([membership], "memberships").create()).rejects.toThrow(
+    "Expected MembershipWhereUniqueInput",
+  );
 });
 
 // The schema being enforced, not the library misbehaving: one user belongs to one team once.
@@ -2017,6 +2031,17 @@ test("a pooled has() child joins the parent across an implicit many-to-many", as
   await expect(prisma.tag.count()).resolves.toBe(1);
 });
 
+// A drawn row lands in the parent's own create, which is a call site of its own: the tripwire above
+// reaches the same compound key through the rows a caller hands `has`, and neither route stands in
+// for the other. Both hold until #41 is fixed, and the README paragraph naming it rests on the pair.
+test("a pooled join-model row fails on its compound key too, drawn into the parent's own create", async () => {
+  const { harness, membership } = await joined();
+
+  await expect(harness.users.recycle("membership", membership).has(harness.memberships).create()).rejects.toThrow(
+    "Expected MembershipWhereUniqueInput",
+  );
+});
+
 // The three ways a graph reaches a record of another model, in one create: the author the definition
 // names, the editor a state names, and the tag a `has` layer brings. Every one of them is drawn.
 test("the pool fills a definition slot, a state slot and a has() child of one graph alike", async () => {
@@ -2031,6 +2056,41 @@ test("the pool fills a definition slot, a state slot and a has() child of one gr
   expect(joined.tags.map((row) => row.id)).toStrictEqual([tag.id]);
   await expect(prisma.user.count()).resolves.toBe(1);
   await expect(prisma.tag.count()).resolves.toBe(1);
+});
+
+// What a rollback leaves standing: on the target, the rows written before the transaction opened and
+// nothing the graph created inside it; on the database the harness bootstrapped, nothing at all.
+async function leftBehind(harness: Harness, target: TestClient, standing: Graph): Promise<void> {
+  await expect(graphOf(target)).resolves.toStrictEqual(standing);
+  await expect(graphOf(harness.prisma)).resolves.toStrictEqual([0, 0, 0]);
+}
+
+// The pooled row is written to the target outside the transaction, which is what the graph connects
+// to and what stands there afterwards: a row the pool hands over is never the transaction's to drop.
+test("using(tx) covers a graph that recycles, and a rollback leaves nothing behind", async () => {
+  const harness = await editedPosts();
+  const target = await disposableClient();
+  const ada = await harness.users.using(target).create();
+
+  await rolledBack(target, (tx) => harness.comments.recycle("user", ada).using(tx).create(), [1, 1, 1]);
+
+  await leftBehind(harness, target, [1, 0, 0]);
+});
+
+// A drawn child joins the parent's own create rather than being created after it, so the client that
+// create runs on is the one its connect list is resolved against.
+test("using(tx) covers a has() layer drawing from the pool, and a rollback drops the parent", async () => {
+  const harness = await factorioHarness();
+  const target = await disposableClient();
+  const post = await harness.posts.using(target).create();
+
+  await rolledBack(
+    target,
+    (tx) => harness.users.recycle("post", post).has(harness.posts, "posts").using(tx).create(),
+    [2, 1, 0],
+  );
+
+  await leftBehind(harness, target, [1, 1, 0]);
 });
 
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails

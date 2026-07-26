@@ -94,7 +94,7 @@ const once = await users.state({ name: "Ada Lovelace" }).create();
 - `.state(partialOrClosure)` applies a one-off transformation at the call site, typed exactly like a declared state.
 - **Order of application:** the definition, then the states in the order they were applied, then `create(overrides)`. Last write wins per key, save for the relation field a [`has()`](#children) layer adds to rather than replaces; a key valued `undefined` is skipped at every layer, so the layer before it stands; a `null` is written.
 - States evaluate once per record, so a closure in a `count(3)` chain sees each record's own `index` and `uid`.
-- A state may not be named `create`, `count`, `using`, `state`, `for`, `has` or `then` — the first six are methods the factory already answers to, and a factory carrying a `then` would be thenable and never settle when awaited. Either way the collision is a compile error and a `TypeError` at `define`.
+- A state may not be named `create`, `count`, `using`, `state`, `for`, `has`, `recycle` or `then` — the first seven are methods the factory already answers to, and a factory carrying a `then` would be thenable and never settle when awaited. Either way the collision is a compile error and a `TypeError` at `define`.
 - Declare states in the object you pass to `define`. Annotating that object with `FactoryConfig<Client, "model">` leaves the state names unknown to the compiler, which is why a config typed that way accepts no `states` at all.
 
 ### Relations
@@ -239,6 +239,39 @@ const ada = await users.has(memberships.count(2).state({ role: "admin" }), "memb
 - **Two records of the same pair collide** on the compound key. That is the schema being enforced, not a library bug.
 - **Connecting an existing join-model row does not work yet.** A model whose only unique constraint is compound is matched on Prisma's generated compound selector — `{ userId_teamId: { … } }` — which a flat row of scalars does not satisfy, so `has([membership])` fails ([#41](https://github.com/flolefebvre/prisma-factorio/issues/41)). Pass native relation input meanwhile.
 
+### Recycle
+
+`recycle()` pools rows that already exist, so that anywhere the graph would otherwise create a record of that model it connects a pooled row instead. The model is named outright — a row carries nothing that says which model it belongs to — and the name is a key of your client's models, so the row is checked against that model: one missing a required scalar is a compile error, and one loaded with `include` is accepted. Here `Post.author` and `Post.editor` both point at `User`, and a comment reaches a user through its post:
+
+```ts
+export const posts = f.define("post", {
+  definition: ({ uid }) => ({ title: uid, author: users, editor: users }),
+});
+
+export const comments = f.define("comment", { definition: ({ uid }) => ({ body: uid, post: posts }) });
+
+const ada = await users.create({ name: "Ada Lovelace" });
+const comment = await comments.recycle("user", ada).create();
+```
+
+`create()` returns the **comment**; the post behind it holds `ada` in both `author` and `editor`, two levels down, and no user is created. The same graph without `recycle()` draws two distinct users.
+
+- **The pool covers the whole graph.** It reaches factories embedded in a definition or a state, `has()` children, and the graph under a `for()` parent, recursively — one call at the top reaches every level below it. It never self-populates: a record the graph creates is never adopted, so every pick comes from the rows you handed over. Nor does it stand in for the record you asked for — `comments.recycle("comment", one)` still creates a comment.
+- **`for()` and `create()` overrides beat the pool; a state does not.** A parent the call names outright is the caller's own choice and creates its own record, and a row named there was never something the pool could stand in for. A factory reaching a slot through the definition **or through a state** — declared in the config or inline `.state()` — loses to the pool: a state is not explicit, whichever way it was written. Explicitness protects the immediate slot and nothing under it, so the pool still fills the sub-graph beneath a `for()` parent or an override factory.
+- **Picks are per record, drawn with replacement**, from the library's own PRNG rather than from faker. A pool of two rows under `count(3)` is legal and hands the same row out twice — **there is no distinctness guarantee**, so do not rely on one. Across an implicit many-to-many, repeated picks collapse into a single join row.
+- **Successive calls merge per model.** `recycle("user", a).recycle("user", b)` pools both, so a factory configured with a pool keeps its baseline rows when a call site adds more, and every model keeps a list of its own. A pool can be extended by an inner `recycle()` but never confined to a sub-graph: rows handed down from above reach the whole graph.
+- **`seed` pins the picks as well as faker's values**, so one seed replays the same spread run for run. The picks belong to the graph that resolves them rather than to the bootstrap that defined the factory, so a factory reached from another bootstrap's graph draws from that graph's stream — the exception `initPrismaFactorio` documents.
+- **A pooled row of a model whose only unique constraint is compound cannot be connected yet** ([#41](https://github.com/flolefebvre/prisma-factorio/issues/41)). It is matched on Prisma's generated compound selector, which a flat row of scalars does not satisfy, so a pooled `Membership` fails exactly as `has([membership])` does. Pass native relation input — `{ connect: { userId_teamId: { … } } }` — meanwhile.
+
+**Children.** A `has()` child factory of a pooled model is never created: the layer connects drawn rows in the parent's own create, and that factory's definition and states never run.
+
+```ts
+const author = await users.recycle("post", existingPosts).has(posts.count(3), "posts").create();
+// one user, three picks from the pool, no post created
+```
+
+The count is the child chain's own batch size — one pick per record it would have created — so `has(posts.count(0))` draws nothing and leaves the relation field unwritten. `has([rows])` is untouched by any of this: rows connect as they always did.
+
 ## Good to know
 
 - **Every fluent call returns a new factory.** `users.count(3)` does not change `users`.
@@ -257,6 +290,6 @@ const ada = await users.has(memberships.count(2).state({ role: "admin" }), "memb
 
 v1 is in progress; this README tracks what actually works today.
 
-Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for` with relation defaults, `has` for the children on the other side, and many-to-many in both shapes.
+Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for` with relation defaults, `has` for the children on the other side, many-to-many in both shapes, and `recycle` for reusing rows the graph would otherwise create.
 
-Tracked next, in no promised order: `recycle` and `afterCreating`.
+Tracked next: `afterCreating`.

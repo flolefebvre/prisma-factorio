@@ -250,16 +250,26 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
     ...args: HasManyArgs<C, M, ChildModel<C, T>, HasOptions>
   ): Factory<C, M, R, S>;
   /**
-   * Pools existing rows of one model, so that anywhere the graph would otherwise create a record of
-   * that model it connects a pooled row instead.
+   * Pools existing rows of one model, so that a factory of that model standing in a relation field
+   * connects a pooled row rather than creating a record.
    *
    * The model is named outright, a row carrying nothing that says which model it belongs to. Rows
    * merge across calls rather than replacing one another, so a factory configured with a pool and
    * recycled again at a call site keeps its baseline rows, and every model keeps a list of its own.
    * Pooling no rows is legal and leaves the model exactly as it stands.
    *
-   * A row of the named model is what the argument takes, whatever else it carries: one loaded with
-   * `include` stands here as readily as one straight from a create.
+   * The pool reaches every factory the graph resolves, however deep, and gives way to the caller's
+   * own choice of parent: a `for` layer and the overrides `create` was given each create a record of
+   * their own, while a factory arriving through the definition or through a state — declared or
+   * inline — is drawn from. That precedence covers the slot named and nothing under it, so the pool
+   * still fills the graph beneath such a parent. Nothing the graph creates ever joins the pool.
+   *
+   * A `has` layer whose children are a factory of a pooled model connects drawn rows in place of
+   * creating records, one pick per record that chain would have created, drawn with replacement.
+   *
+   * A row of the named model is what the argument takes, whatever else it carries: pooled rows
+   * connect on the target model's scalars, so one loaded with `include` stands here as readily as one
+   * straight from a create.
    *
    * @example
    * ```ts
