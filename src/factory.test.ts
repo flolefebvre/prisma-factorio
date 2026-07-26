@@ -612,6 +612,161 @@ test("native relation input naming create reaches Prisma untouched", async () =>
   await expect(prisma.user.findMany()).resolves.toMatchObject([{ id: post.authorId, name: "Grace" }]);
 });
 
+// Records of both models a post holds many of, already written and hanging off records of their own,
+// so the post a to-many slot attaches them to is never the one they were created under.
+interface Spare {
+  harness: Harness;
+  first: Row<TestClient, "comment">;
+  second: Row<TestClient, "comment">;
+  tag: Row<TestClient, "tag">;
+  other: Row<TestClient, "tag">;
+}
+
+async function spare(): Promise<Spare> {
+  const harness = await factorioHarness();
+
+  return {
+    harness,
+    first: await harness.comments.create(),
+    second: await harness.comments.create(),
+    tag: await harness.tags.create(),
+    other: await harness.tags.create(),
+  };
+}
+
+function ids(rows: readonly { id: number }[]): number[] {
+  return rows.map((row) => row.id);
+}
+
+// What a post ended up holding on one of the two relations it holds many records in. A many-to-many
+// answers in join order, which is no order the caller declared, so the ids are sorted.
+async function attachedTo(prisma: TestClient, post: number, field: "comments" | "tags"): Promise<number[]> {
+  const held = await prisma.post.findUniqueOrThrow({ where: { id: post }, include: { comments: true, tags: true } });
+
+  return ids(held[field]).sort((one, next) => one - next);
+}
+
+test("an array of rows in create() overrides attaches every one of them", async () => {
+  const { harness, first, second } = await spare();
+
+  const post = await harness.posts.create({ comments: [first, second] });
+
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toStrictEqual(ids([first, second]));
+});
+
+test("an array of rows in create() overrides attaches every one across a many-to-many", async () => {
+  const { harness, tag, other } = await spare();
+
+  const post = await harness.posts.create({ tags: [tag, other] });
+
+  await expect(attachedTo(harness.prisma, post.id, "tags")).resolves.toStrictEqual(ids([tag, other]));
+});
+
+test("an array of rows in a definition attaches every one of them", async () => {
+  const { harness, first, second } = await spare();
+  const drafts = harness.f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: harness.users, comments: [first, second] }),
+  });
+
+  const post = await drafts.create();
+
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toStrictEqual(ids([first, second]));
+});
+
+test("an array of rows in a state attaches every one of them", async () => {
+  const { harness, tag, other } = await spare();
+
+  const post = await harness.posts.state({ tags: [tag, other] }).create();
+
+  await expect(attachedTo(harness.prisma, post.id, "tags")).resolves.toStrictEqual(ids([tag, other]));
+});
+
+// A relation field holding many records takes a single connect as readily as a list of them, so one
+// row stands in it exactly as it stands in a field holding a single record.
+test("a single row in a relation field holding many records attaches it", async () => {
+  const { harness, first } = await spare();
+
+  const post = await harness.posts.create({ comments: first });
+
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toStrictEqual([first.id]);
+});
+
+test("a single row in a many-to-many relation field attaches it", async () => {
+  const { harness, tag } = await spare();
+
+  const post = await harness.posts.state({ tags: tag }).create();
+
+  await expect(attachedTo(harness.prisma, post.id, "tags")).resolves.toStrictEqual([tag.id]);
+});
+
+// The rows reach the parent's own create and the children are created after it, so which of them the
+// relation ends up holding first is not the order the calls were made in.
+test("an array of rows under a has() layer on the same field attaches alongside the children", async () => {
+  const { harness, first, second } = await spare();
+
+  const post = await harness.posts
+    .state({ comments: [first, second] })
+    .has(harness.comments, "comments")
+    .create();
+  const held = await attachedTo(harness.prisma, post.id, "comments");
+
+  expect(held).toHaveLength(3);
+  expect(held).toEqual(expect.arrayContaining(ids([first, second])));
+});
+
+test("an array of rows under a has() layer attaches alongside the children across a many-to-many", async () => {
+  const { harness, tag, other } = await spare();
+
+  const post = await harness.posts
+    .state({ tags: [tag, other] })
+    .has(harness.tags, "tags")
+    .create();
+  const held = await attachedTo(harness.prisma, post.id, "tags");
+
+  expect(held).toHaveLength(3);
+  expect(held).toEqual(expect.arrayContaining(ids([tag, other])));
+});
+
+// A `has` layer gathers on top of the field rather than under it, so the rows a value of its own
+// contributes reach the parent's own create ahead of the rows the layer adds.
+test("the rows a value contributes come before the rows a later has() layer adds", async () => {
+  const { harness, first, second } = await spare();
+  const { client, written } = recording(harness.prisma, "post");
+
+  await harness.posts
+    .using(client)
+    .state({ comments: [first] })
+    .has([second], "comments")
+    .create();
+
+  expect(written[0]?.comments).toStrictEqual({ connect: [first, second] });
+});
+
+// Naming the field and leaving it empty would hand Prisma a nested write with nothing to do, which is
+// the reading a `has` layer holding no children already takes.
+test("an array holding no row leaves the relation field unwritten", async () => {
+  const { prisma, posts } = await factorioHarness();
+  const { client, written } = recording(prisma, "post");
+
+  await posts.using(client).create({ comments: [], tags: [] });
+
+  expect(Object.keys(written[0] ?? {})).toStrictEqual(["title", "author"]);
+});
+
+// The whole of Prisma's own nested input at this arity, none of it read as rows to connect. The
+// many-to-many takes no `createMany`, the join table Prisma hides carrying no envelope of its own.
+test("native relation input in a field holding many records reaches Prisma untouched", async () => {
+  const { harness, first, tag } = await spare();
+
+  const post = await harness.posts.create({
+    comments: { connect: [{ id: first.id }], create: [{ body: "written" }], createMany: { data: [{ body: "made" }] } },
+    tags: { connectOrCreate: [{ where: { id: tag.id }, create: { label: "reused" } }] },
+  });
+
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toHaveLength(3);
+  await expect(attachedTo(harness.prisma, post.id, "tags")).resolves.toStrictEqual([tag.id]);
+});
+
 test("a relation default in a definition evaluates once per record, so a batch draws a parent each", async () => {
   const { prisma, posts } = await factorioHarness();
 
@@ -1553,6 +1708,19 @@ test("connecting an existing join-model row fails on its compound key", async ()
   const { harness, membership } = await joined();
 
   await expect(harness.users.has([membership], "memberships").create()).rejects.toThrow(
+    "Expected MembershipWhereUniqueInput",
+  );
+});
+
+// The same compound key reached through the relation field itself rather than through a `has` layer: a
+// list of rows connects on the target model's scalars either way, and the flat scalars a join-model row
+// carries satisfy no `WhereUniqueInput`. Tracked as issue #41, whose workaround is passing native
+// relation input, `{ connect: { userId_teamId: … } }`. The README paragraph naming #41 stands or falls
+// with this test.
+test("a list of existing join-model rows in a relation field fails on the compound key", async () => {
+  const { harness, membership } = await joined();
+
+  await expect(harness.users.create({ memberships: [membership] })).rejects.toThrow(
     "Expected MembershipWhereUniqueInput",
   );
 });

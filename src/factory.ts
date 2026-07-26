@@ -531,9 +531,15 @@ function accumulating(held: unknown, entry: Attachment): Attached {
   };
 }
 
-// A row and Prisma's own relation input are both plain objects; a value carrying a prototype of its
-// own — a date, a byte array, a scalar list — is neither, and stands for itself.
-function plainObject(value: unknown): Record<string, unknown> | undefined {
+// What may stand in a relation field: a row, a list of rows, a factory and Prisma's own relation input
+// alike. A value carrying a prototype of its own — a date, a byte array — is none of them and stands
+// for itself. A scalar list carries a list's own prototype, so what tells the two apart is the key the
+// value falls under rather than the value itself.
+type Standing = Record<string, unknown> | unknown[];
+
+function standing(value: unknown): Standing | undefined {
+  if (Array.isArray(value)) return value as unknown[];
+
   if (typeof value !== "object" || value === null) return undefined;
 
   const prototype: unknown = Object.getPrototypeOf(value);
@@ -582,13 +588,31 @@ function matching(client: unknown, model: string, field: string, row: Record<str
   return { connect: targetScalars(client, model, field, row) };
 }
 
+// A list connects as a list, which is what a relation field holding many records takes and what one
+// holding a single record has no reading for; a single row connects on its own, the one shape both
+// arities take. So a value declares the arity it stands at and the field is never asked for its own. A
+// list holding no row connects nothing at all, leaving the field to the layers around it.
+function matchingAll(client: unknown, model: string, field: string, rows: readonly unknown[]): Written {
+  return rows.length === 0 ? {} : { connect: rows.map((row) => targetScalars(client, model, field, row as Written)) };
+}
+
+// Prisma's own input, told from a row by the keys it carries: every one of them names an operation,
+// where a row names the columns of a model.
+function native(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value);
+
+  return keys.length > 0 && keys.every((key) => relationOperations.includes(key));
+}
+
 async function connected(
   wiring: Wiring,
   model: string,
   field: string,
-  value: Record<string, unknown>,
+  value: Standing,
   explicit = false,
-): Promise<unknown> {
+): Promise<Written> {
+  if (Array.isArray(value)) return matchingAll(wiring.client, model, field, value);
+
   if (isFactory(value)) {
     const row = pooled(value, wiring, explicit);
 
@@ -597,11 +621,7 @@ async function connected(
       : matching(wiring.client, model, field, row);
   }
 
-  const keys = Object.keys(value);
-
-  return keys.length > 0 && keys.every((key) => relationOperations.includes(key))
-    ? value
-    : matching(wiring.client, model, field, value);
+  return native(value) ? value : matching(wiring.client, model, field, value);
 }
 
 // A single connect is what a to-one relation field takes and what a to-many one accepts alongside the
@@ -662,8 +682,8 @@ async function attaching(
 
   // Overrides replace the relation field whole, children and all, so what a `has` layer gathered on
   // top of is never the caller's own choice of parent.
-  const held = plainObject(value.base);
-  const base = held === undefined ? {} : ((await connected(wiring, model, field, held)) as Written);
+  const held = standing(value.base);
+  const base = held === undefined ? {} : await connected(wiring, model, field, held);
 
   return connecting(base, rows);
 }
@@ -675,8 +695,8 @@ async function resolved(
   explicit: ReadonlySet<string>,
 ): Promise<Resolved> {
   const embedded = Object.entries(data).flatMap(([key, value]) => {
-    const object = plainObject(value);
-    return object === undefined ? [] : [[key, object] as const];
+    const held = standing(value);
+    return held === undefined ? [] : [[key, held] as const];
   });
 
   if (embedded.length === 0) return { data, pending: [] };
@@ -688,15 +708,13 @@ async function resolved(
   for (const [key, value] of embedded) {
     if (!relations.includes(key)) continue;
 
-    if (!isAttached(value)) {
-      written[key] = await connected(wiring, model, key, value, explicit.has(key));
-      continue;
-    }
+    const input = isAttached(value)
+      ? await attaching(wiring, model, key, value, pending)
+      : await connected(wiring, model, key, value, explicit.has(key));
 
-    const input = await attaching(wiring, model, key, value, pending);
-
-    // Children the parent's own create says nothing about — factories, and none at all — leave the
-    // relation field unwritten rather than naming it and giving Prisma nothing to do.
+    // What the parent's own create has nothing to say about — a list holding no row, children created
+    // once the parent row exists, and none at all — leaves the relation field unwritten rather than
+    // naming it and giving Prisma nothing to do.
     written[key] = Object.keys(input).length === 0 ? undefined : input;
   }
 
