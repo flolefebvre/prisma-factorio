@@ -1,5 +1,5 @@
 import { expect, expectTypeOf, onTestFinished, test, vi, type MockedFunction } from "vitest";
-import { inverseRelationField } from "./datamodel.js";
+import { holdsManyRecords, inverseRelationField } from "./datamodel.js";
 import type { FakerOptions } from "./faker.js";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
@@ -612,8 +612,9 @@ test("native relation input naming create reaches Prisma untouched", async () =>
   await expect(prisma.user.findMany()).resolves.toMatchObject([{ id: post.authorId, name: "Grace" }]);
 });
 
-// Records of both models a post holds many of, already written and hanging off records of their own,
-// so the post a to-many slot attaches them to is never the one they were created under.
+// Records of both models a post holds many of, already written. A comment hangs off a post of its own,
+// so the post a to-many slot attaches it to is never the one it was created under; a tag hangs off no
+// record at all, its factory naming none.
 interface Spare {
   harness: Harness;
   first: Row<TestClient, "comment">;
@@ -753,6 +754,20 @@ test("an array holding no row leaves the relation field unwritten", async () => 
   expect(Object.keys(written[0] ?? {})).toStrictEqual(["title", "author"]);
 });
 
+// A list stands for rows to connect on a relation field holding many records alone. One holding a
+// single record has no reading for a list, empty or not, so the value reaches the delegate as it stands
+// and Prisma refuses it rather than the field going silently unwritten.
+test("an array in a relation field holding a single record reaches Prisma, which refuses it", async () => {
+  const { posts, users } = await factorioHarness();
+  const ada = await users.create();
+
+  for (const editor of [[], [ada]]) {
+    await expect(posts.create({ editor })).rejects.toThrow(
+      "Argument `editor`: Invalid value provided. Expected UserCreateNestedOneWithoutEditedInput",
+    );
+  }
+});
+
 // The whole of Prisma's own nested input at this arity, none of it read as rows to connect. The
 // many-to-many takes no `createMany`, the join table Prisma hides carrying no envelope of its own.
 test("native relation input in a field holding many records reaches Prisma untouched", async () => {
@@ -797,13 +812,25 @@ test("connecting a row that has since changed fails rather than reaching the rec
   await expect(posts.create({ author: ada })).rejects.toMatchObject({ code: "P2025" });
 });
 
-test("a factory with no relation value to resolve never reads the client's relation metadata", async () => {
+test("a factory carrying no value that could stand in a relation field never reads the relation metadata", async () => {
   const { prisma } = await factorioHarness();
   const delegates = initPrismaFactorio({ user: prisma.user });
 
   const user = await delegates.define("user", { definition: userDefinition }).create();
 
   expect(user.name).toBe("Ada");
+});
+
+// The arity of a relation field is answered by querying it, so it is asked for a list alone: a probe of
+// a field the caller never named can fail on the database rather than answering.
+test("a value that is no list never asks the client for the arity of the field it stands in", async () => {
+  const { harness, first } = await spare();
+  const oracle = vi.mocked(holdsManyRecords);
+
+  oracle.mockClear();
+  await harness.posts.create({ comments: first });
+
+  expect(oracle).not.toHaveBeenCalled();
 });
 
 // Distinct from the harness's own user factory, which names every record "Ada": whichever name the

@@ -1,4 +1,5 @@
 import {
+  holdsManyRecords,
   inverseRelationField,
   namedRelationField,
   relationFieldsOf,
@@ -588,12 +589,20 @@ function matching(client: unknown, model: string, field: string, row: Record<str
   return { connect: targetScalars(client, model, field, row) };
 }
 
-// A list connects as a list, which is what a relation field holding many records takes and what one
-// holding a single record has no reading for; a single row connects on its own, the one shape both
-// arities take. So a value declares the arity it stands at and the field is never asked for its own. A
-// list holding no row connects nothing at all, leaving the field to the layers around it.
+// A list connects as a list, which is what a relation field holding many records takes: a field holding
+// a single record has no reading for one, and keeps the value it was handed rather than reaching here.
+// A single row connects on its own, the one shape both arities take. A list holding no row connects
+// nothing at all, leaving the field to the layers around it.
 function matchingAll(client: unknown, model: string, field: string, rows: readonly unknown[]): Written {
   return rows.length === 0 ? {} : { connect: rows.map((row) => targetScalars(client, model, field, row as Written)) };
+}
+
+// A value a relation field has no reading for: a list standing in a field that holds a single record,
+// which keeps the value it was handed so that Prisma's own validation refuses it rather than the field
+// going unwritten. The arity costs a query to answer, so it is asked of a field a list stands in and of
+// no other.
+async function unread(client: unknown, model: string, field: string, value: Standing): Promise<boolean> {
+  return Array.isArray(value) && !(await holdsManyRecords(client, model, field));
 }
 
 // Prisma's own input, told from a row by the keys it carries: every one of them names an operation,
@@ -707,6 +716,7 @@ async function resolved(
 
   for (const [key, value] of embedded) {
     if (!relations.includes(key)) continue;
+    if (await unread(wiring.client, model, key, value)) continue;
 
     const input = isAttached(value)
       ? await attaching(wiring, model, key, value, pending)
