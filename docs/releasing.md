@@ -30,6 +30,17 @@ Once the first version is live on npm, switch to [trusted publishing](https://do
 
 Provenance survives the switch either way: it comes from the OIDC token GitHub mints for the job, not from how npm authenticated the publish.
 
+## Context7
+
+[`context7.json`](../context7.json) claims the library on [Context7](https://context7.com/flolefebvre/prisma-factorio), which indexes the repository so coding assistants answer about this package from its current documentation rather than from training data.
+
+It indexes `README.md`, `CONTEXT.md` and `docs/prisma-test-helper.md` — the three documents written for a consumer — and excludes everything written for whoever works on the library: `AGENTS.md` and `CLAUDE.md`, `docs/adr/`, `docs/agents/`, this file, the repository's own tooling config, and `src/` with its tests. `docs/laravel-factories.md` is excluded by name: it is Laravel's own PHP documentation, vendored as a reference, and indexing it would answer TypeScript questions with PHP.
+
+Two things to keep current:
+
+- **`rules`** state the constraints an assistant most often gets wrong — ESM only, immutable factories, no transaction of its own. A change to any of them belongs here as well as in the README.
+- **`previousVersions`** takes the outgoing version's tag when a new one goes out, so an assistant pinned to an older release still gets that release's documentation. Add `{ "tag": "v0.1.0" }` when 0.2.0 ships.
+
 ## What ships
 
 `files` in `package.json` limits the tarball to `dist/` and `LICENSE`; npm adds `README.md` and `package.json` on its own. `pnpm pack:check` asserts exactly that — nothing stray, no test files, both entry points present — and runs in `pnpm gates`, so a change that would publish the scratch client or the test helpers fails in the pull request rather than on npm.
