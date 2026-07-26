@@ -1,5 +1,5 @@
 import { onTestFinished } from "vitest";
-import type { FakerOptions } from "../faker.js";
+import type { FactorioOptions } from "../faker.js";
 import { initPrismaFactorio, type Factorio } from "../factorio.js";
 import type { EvaluationContext, Factory } from "../factory.js";
 import { createTestClient, disposeTestClient, type TestClient } from "./client.js";
@@ -62,7 +62,7 @@ export async function disposableClient(): Promise<TestClient> {
  * const ada = await users.create({ name: "Ada" });
  * ```
  */
-export async function factorioHarness(options: FakerOptions = {}): Promise<Harness> {
+export async function factorioHarness(options: FactorioOptions = {}): Promise<Harness> {
   const prisma = await disposableClient();
   const f = initPrismaFactorio(prisma, options);
   const users = f.define("user", { definition: userDefinition });

@@ -1,6 +1,7 @@
 import {
   holdsManyRecords,
   inverseRelationField,
+  type InverseAdvice,
   namedRelationField,
   relationFieldsOf,
   resolveRelationField,
@@ -224,8 +225,14 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    *
    * Every parent factory a create resolves runs on that client too, as does every child factory a
    * `has` layer creates records through, however many models the graph reaches, so one call covers it
-   * whole. A factory that named a client of its own keeps it, and the factories it resolves in turn
-   * then run on that one.
+   * whole. What is handed down is the client itself rather than the one delegate this signature names,
+   * so it has to be a generated client, or a derivative of one keeping its relation metadata — which an
+   * interactive transaction's does. A hand-built object of delegates keeps none, so it type-checks here
+   * and then throws the moment the graph reaches a second model, however many delegates it carries.
+   *
+   * A factory that named a client of its own through `using` keeps it, and the factories it resolves in
+   * turn then run on that one. A factory that named none runs on this client instead, silently — a
+   * factory of another bootstrap among them, bound where it was defined.
    *
    * @example
    * ```ts
@@ -509,6 +516,9 @@ interface Pending {
   field: string;
   children: Embedded;
   inverse: string | undefined;
+  // Which call a failed inverse lookup steers to: a `has` layer names the inverse through an option,
+  // which a relation default reaches no form of.
+  advice?: InverseAdvice;
   order: number;
 }
 
@@ -656,7 +666,7 @@ async function embodied(
         "Attach the records with has() instead.",
     );
 
-  pending.push({ field, children: value, inverse: undefined, order: standingOrder });
+  pending.push({ field, children: value, inverse: undefined, advice: "relation default", order: standingOrder });
 
   return {};
 }
@@ -782,7 +792,7 @@ async function resolved(
 async function borne(wiring: Wiring, model: string, row: unknown, entry: Pending): Promise<void> {
   const { client } = wiring;
   const target = entry.children[brand];
-  const back = entry.inverse ?? inverseRelationField(client, model, entry.field);
+  const back = entry.inverse ?? inverseRelationField(client, model, entry.field, entry.advice);
   const connect = targetScalars(client, target, back, row as Written);
 
   await bearing(recycling(inheriting(entry.children, client), wiring), row).create({ [back]: { connect } });

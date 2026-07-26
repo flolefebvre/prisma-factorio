@@ -1,6 +1,6 @@
 import { allLocales } from "@faker-js/faker";
 import { afterEach, expect, test, vi } from "vitest";
-import type { FakerOptions } from "./faker.js";
+import type { FactorioOptions } from "./faker.js";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { Factory } from "./factory.js";
 import type { TestClient } from "./tests/client.js";
@@ -29,7 +29,7 @@ function namesFrom(f: Factorio<TestClient>): Factory<TestClient, "user", { name:
     .count(3);
 }
 
-async function seededNames(options: FakerOptions): Promise<(string | null)[]> {
+async function seededNames(options: FactorioOptions): Promise<(string | null)[]> {
   const { f } = await factorioHarness(options);
   const rows = await namesFrom(f).create();
 

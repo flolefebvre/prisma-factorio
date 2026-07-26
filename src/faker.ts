@@ -11,17 +11,17 @@ import type { Faker } from "@faker-js/faker";
 export type FakerInstance = Faker;
 
 /**
- * How the bootstrap configures faker.
+ * How a bootstrap is configured, the faker it hands out and the picks it replays alike.
  *
  * `locale` is one of the locale names `@faker-js/faker` exports, such as `"en"`, `"fr"` or
  * `"de_AT"`.
  *
  * @example
  * ```ts
- * const options: FakerOptions = { seed: 1234, locale: "fr" };
+ * const options: FactorioOptions = { seed: 1234, locale: "fr" };
  * ```
  */
-export interface FakerOptions {
+export interface FactorioOptions {
   /**
    * Pins every value a bootstrap draws at random: the output faker generates, and the rows a recycle
    * pool picks. Each is a stream of its own, so one seed replays both, and neither moves the other
@@ -62,7 +62,7 @@ export type FakerProvider = () => Promise<FakerInstance>;
  * faker.location.city(); // "Bordeaux"
  * ```
  */
-export function createFakerProvider(options: FakerOptions = {}): FakerProvider {
+export function createFakerProvider(options: FactorioOptions = {}): FakerProvider {
   let resolution: Promise<FakerInstance> | undefined;
 
   return () =>
@@ -74,7 +74,7 @@ export function createFakerProvider(options: FakerOptions = {}): FakerProvider {
 
 type FakerModule = typeof import("@faker-js/faker");
 
-function configure({ Faker: FakerClass, allLocales }: FakerModule, { seed, locale }: FakerOptions): FakerInstance {
+function configure({ Faker: FakerClass, allLocales }: FakerModule, { seed, locale }: FactorioOptions): FakerInstance {
   // Every locale definition but `en` is partial, so a category it leaves out falls through to `en`
   // and then to the language-neutral `base`.
   const fallback = [allLocales.en, allLocales.base];

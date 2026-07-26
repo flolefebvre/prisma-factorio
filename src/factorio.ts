@@ -1,4 +1,4 @@
-import { createFakerProvider, type FakerOptions } from "./faker.js";
+import { createFakerProvider, type FactorioOptions } from "./faker.js";
 import {
   createFactory,
   declaredStates,
@@ -52,7 +52,7 @@ function resolver<C extends object>(source: C | (() => C)): () => C {
  */
 export function initPrismaFactorio<C extends object>(
   clientOrThunk: C | (() => C),
-  options: FakerOptions = {},
+  options: FactorioOptions = {},
 ): Factorio<C> {
   const faker = createFakerProvider(options);
   // One picker per bootstrap, so every factory it defines draws its recycled rows from one stream.
