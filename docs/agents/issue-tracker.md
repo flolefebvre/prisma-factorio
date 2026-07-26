@@ -15,7 +15,16 @@ Infer the repo from `git remote -v` — `gh` does this automatically when run in
 
 ## Dependencies between issues
 
-Ordering between issues is encoded with GitHub's native "blocked by" relationships. `gh issue list --json` does not expose them — query them via GraphQL:
+Ordering between issues is encoded with GitHub's native "blocked by" relationships.
+
+Creating one goes through the REST API and takes the blocker's database id, not its number:
+
+```bash
+gh api -X POST repos/flolefebvre/prisma-factorio/issues/<blocked>/dependencies/blocked_by \
+  -F issue_id="$(gh api repos/flolefebvre/prisma-factorio/issues/<blocker> --jq .id)"
+```
+
+`gh issue list --json` does not expose the relationships — query them via GraphQL:
 
 ```bash
 gh api graphql -f query='
