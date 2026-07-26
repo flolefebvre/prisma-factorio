@@ -1,5 +1,6 @@
 import { expect, expectTypeOf, onTestFinished, test, vi, type MockedFunction } from "vitest";
 import { inverseRelationField } from "./datamodel.js";
+import type { FakerOptions } from "./faker.js";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
 import type { ModelName, Row } from "./prisma.js";
@@ -364,6 +365,15 @@ test("a state named has is rejected where the factory is defined", async () => {
   ).toThrow('The state "has" takes a name a factory reserves. Rename the state.');
 });
 
+test("a state named recycle is rejected where the factory is defined", async () => {
+  const { f } = await factorioHarness();
+
+  expect(() =>
+    // @ts-expect-error a state may not take the name the recycle method answers to
+    f.define("user", { definition: userDefinition, states: { recycle: { name: "Grace" } } }),
+  ).toThrow('The state "recycle" takes a name a factory reserves. Rename the state.');
+});
+
 test("a state named __proto__ becomes a method rather than a write to the prototype", async () => {
   const { f } = await factorioHarness();
   const users = f.define("user", { definition: userDefinition, states: { ["__proto__"]: { name: "Grace" } } });
@@ -504,7 +514,12 @@ test("a factory carries the symbols relation resolution reads it by, and spreadi
   const { users } = await factorioHarness();
   const spread = { ...users };
 
-  for (const name of ["prisma-factorio.factory", "prisma-factorio.rebind", "prisma-factorio.parent"]) {
+  for (const name of [
+    "prisma-factorio.factory",
+    "prisma-factorio.rebind",
+    "prisma-factorio.parent",
+    "prisma-factorio.recycle",
+  ]) {
     expect(Symbol.for(name) in users).toBe(true);
     expect(Symbol.for(name) in spread).toBe(false);
   }
@@ -949,15 +964,25 @@ async function authoredBy(prisma: TestClient, authorId: number): Promise<number[
   return rows.map((post) => post.id);
 }
 
-async function userCreateData(
+// Every `data` a run handed the user delegate, one entry per record of the batch. The chain the
+// callback hands back is read for its create alone, so a batched one stands here as readily as a
+// single record's.
+async function userWrites(
   harness: Harness,
-  attach: (users: Factory<TestClient, "user">) => Factory<TestClient, "user">,
-): Promise<Record<string, unknown>> {
+  attach: (users: Factory<TestClient, "user">) => { create: () => Promise<unknown> },
+): Promise<Record<string, unknown>[]> {
   const { client, written } = recording(harness.prisma, "user");
 
   await attach(harness.users.using(client)).create();
 
-  return written[0] ?? {};
+  return written;
+}
+
+async function userCreateData(
+  harness: Harness,
+  attach: (users: Factory<TestClient, "user">) => Factory<TestClient, "user">,
+): Promise<Record<string, unknown>> {
+  return (await userWrites(harness, attach))[0] ?? {};
 }
 
 test("has(rows) connects records that already exist rather than creating any", async () => {
@@ -1497,16 +1522,30 @@ test("a state pins an existing row into a leg of the join model rather than draw
   await expect(prisma.team.count()).resolves.toBe(1);
 });
 
+interface Joined {
+  harness: Harness;
+  membership: Row<TestClient, "membership">;
+}
+
+// A join-model record already written, which is where every route to connecting one starts: handed to
+// a `has` layer outright, or drawn from a pool.
+async function joined(): Promise<Joined> {
+  const harness = await factorioHarness();
+  const ada = await harness.users.create();
+
+  return { harness, membership: await harness.memberships.for(ada).create() };
+}
+
 // The join model's only unique constraint is its compound key, which Prisma exposes under the single
 // generated name `userId_teamId` and demands under that name; the flat scalars a row carries satisfy
 // no `WhereUniqueInput`. Tracked as issue #41, whose workaround is passing native relation input,
 // `{ connect: { userId_teamId: … } }`. The README paragraph naming #41 stands or falls with this test.
 test("connecting an existing join-model row fails on its compound key", async () => {
-  const { users, memberships } = await factorioHarness();
-  const ada = await users.create();
-  const membership = await memberships.for(ada).create();
+  const { harness, membership } = await joined();
 
-  await expect(users.has([membership], "memberships").create()).rejects.toThrow("Expected MembershipWhereUniqueInput");
+  await expect(harness.users.has([membership], "memberships").create()).rejects.toThrow(
+    "Expected MembershipWhereUniqueInput",
+  );
 });
 
 // The schema being enforced, not the library misbehaving: one user belongs to one team once.
@@ -1519,6 +1558,572 @@ test("two join-model records of the same pair collide on the compound key", asyn
     "Unique constraint failed on the fields: (`userId`, `teamId`)",
   );
 });
+
+test("recycle() hands back a factory of its own rather than the receiver", async () => {
+  const { users } = await factorioHarness();
+  const ada = await users.create();
+
+  expect(users.recycle("user", ada)).not.toBe(users);
+});
+
+// An empty pool stands for a model that was never recycled, so the call is legal and changes nothing
+// — the same reading `has` gives a list of no children.
+test("recycle() pooling no rows leaves a factory that creates exactly as it did", async () => {
+  const { prisma, users } = await factorioHarness();
+
+  const user = await users.recycle("user", []).create();
+
+  expect(user.name).toBe("Ada");
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+// The harness's own post factory names an author alone, and one pooled row filling two slots of one
+// model is what tells a pick from a record drawn fresh for each. Local to these tests: widening the
+// harness would move the row counts every other suite in this file asserts.
+async function editedPosts(options: FakerOptions = {}): Promise<Harness> {
+  const harness = await factorioHarness(options);
+  const { f, users } = harness;
+  const posts = f.define("post", { definition: ({ uid }) => ({ title: uid, author: users, editor: users }) });
+  const comments = f.define("comment", { definition: ({ uid }) => ({ body: uid, post: posts }) });
+
+  return { ...harness, posts, comments };
+}
+
+interface Pooling {
+  harness: Harness;
+  posts: Factory<TestClient, "post">;
+  comments: Factory<TestClient, "comment">;
+  ada: Row<TestClient, "user">;
+}
+
+// One user already written and a graph pooling it, which is where every precedence case starts.
+async function pooling(options: FakerOptions = {}): Promise<Pooling> {
+  const harness = await editedPosts(options);
+  const ada = await harness.users.create();
+
+  return {
+    harness,
+    posts: harness.posts.recycle("user", ada),
+    comments: harness.comments.recycle("user", ada),
+    ada,
+  };
+}
+
+async function postBehind({ prisma }: Harness, comment: Row<TestClient, "comment">): Promise<Row<TestClient, "post">> {
+  return prisma.post.findUniqueOrThrow({ where: { id: comment.postId } });
+}
+
+// The two user slots a post fills, trailed by every user row the graph left behind: a pick connects a
+// row already written, a create adds one.
+async function slotsAndUsers({ prisma }: Harness, post: Row<TestClient, "post">): Promise<(number | null)[]> {
+  return [post.authorId, post.editorId, await prisma.user.count()];
+}
+
+test("a pooled row fills every slot of its model the graph reaches, however deep, creating none", async () => {
+  const { harness, comments, ada } = await pooling();
+
+  const comment = await comments.create();
+
+  await expect(slotsAndUsers(harness, await postBehind(harness, comment))).resolves.toStrictEqual([ada.id, ada.id, 1]);
+});
+
+test("the same graph pooling nothing draws a record of its own per slot", async () => {
+  const harness = await editedPosts();
+
+  const comment = await harness.comments.create();
+  const [author, editor, written] = await slotsAndUsers(harness, await postBehind(harness, comment));
+
+  expect(author).not.toBe(editor);
+  expect(written).toBe(2);
+});
+
+// A caller pools rows it loaded itself, and an `include`d relation is no field to match a record on.
+test("a pooled row loaded with include connects on its scalars, the loaded relation left out", async () => {
+  const harness = await editedPosts();
+  const ada = await userWithPosts(harness);
+
+  const post = await harness.posts.recycle("user", ada).create();
+
+  await expect(slotsAndUsers(harness, post)).resolves.toStrictEqual([ada.id, ada.id, 1]);
+});
+
+test("recycle(model, []) leaves the graph creating the related records it always did", async () => {
+  const { prisma, posts } = await editedPosts();
+
+  await posts.recycle("user", []).create();
+
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+// The pool stands for the related records a graph reaches, which the record a create was called for
+// is not: a factory pooling rows of its own model creates all the same.
+test("the model a factory creates is never drawn from its own pool", async () => {
+  const { prisma, comments } = await factorioHarness();
+  const first = await comments.create();
+
+  const second = await comments.recycle("comment", first).create();
+
+  expect(second.id).not.toBe(first.id);
+  await expect(prisma.comment.count()).resolves.toBe(2);
+});
+
+// A slot the call named outright creates a record of its own — the second user row of the graph —
+// and the slot it left alone is drawn from the pool all the same.
+async function createdThenDrawn(
+  harness: Harness,
+  post: Row<TestClient, "post">,
+  pooled: Row<TestClient, "user">,
+): Promise<void> {
+  const [author, editor, written] = await slotsAndUsers(harness, post);
+
+  expect(author).not.toBe(pooled.id);
+  expect([editor, written]).toStrictEqual([pooled.id, 2]);
+}
+
+test("for(factory) beats the pool, which still fills the slots the call left alone", async () => {
+  const { harness, posts, ada } = await pooling();
+
+  const post = await posts.for(harness.users, "author").create();
+
+  await createdThenDrawn(harness, post, ada);
+});
+
+test("an override holding a factory beats the pool, which still fills the slots it left alone", async () => {
+  const { harness, posts, ada } = await pooling();
+
+  const post = await posts.create({ author: harness.users });
+
+  await createdThenDrawn(harness, post, ada);
+});
+
+interface NativeAuthored {
+  harness: Harness;
+  posts: Factory<TestClient, "post", Row<TestClient, "post">, { credited: unknown }>;
+  ada: Row<TestClient, "user">;
+}
+
+// A graph pooling one user over a definition whose author slot is native input creating a user of its
+// own: a state naming a factory of the pooled model replaces that input, so a second user row is what
+// tells a state that took from one that never ran.
+async function nativeAuthored(): Promise<NativeAuthored> {
+  const harness = await factorioHarness();
+  const { f, users } = harness;
+  const ada = await users.create();
+  const posts = f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: { create: { email: `${uid}@example.com` } }, editor: users }),
+    states: { credited: { author: users } },
+  });
+
+  return { harness, posts: posts.recycle("user", ada), ada };
+}
+
+test("a factory a declared state names loses to the pool, exactly as a definition default does", async () => {
+  const { harness, posts, ada } = await nativeAuthored();
+
+  const post = await posts.credited().create();
+
+  await expect(slotsAndUsers(harness, post)).resolves.toStrictEqual([ada.id, ada.id, 1]);
+});
+
+test("a factory an inline state names loses to the pool too", async () => {
+  const { harness, posts, ada } = await nativeAuthored();
+
+  const post = await posts.state({ author: harness.users }).create();
+
+  await expect(slotsAndUsers(harness, post)).resolves.toStrictEqual([ada.id, ada.id, 1]);
+});
+
+// Prisma's own relation input is no factory, and the pool stands in for factories alone: the author
+// this definition names is created where a factory in that slot would have been drawn.
+test("native relation input under a pool creates the record it names, the slots around it drawn", async () => {
+  const { harness, posts, ada } = await nativeAuthored();
+
+  const post = await posts.create();
+
+  await createdThenDrawn(harness, post, ada);
+});
+
+test("for(row) stands as it always did, a row being no record the pool could stand in for", async () => {
+  const { harness, posts, ada } = await pooling();
+  const grace = await harness.users.create({ name: "Grace" });
+
+  const post = await posts.for(grace, "author").create();
+
+  await expect(slotsAndUsers(harness, post)).resolves.toStrictEqual([grace.id, ada.id, 2]);
+});
+
+test("an override holding a row stands as it always did", async () => {
+  const { harness, posts, ada } = await pooling();
+  const grace = await harness.users.create({ name: "Grace" });
+
+  const post = await posts.create({ author: grace });
+
+  await expect(slotsAndUsers(harness, post)).resolves.toStrictEqual([grace.id, ada.id, 2]);
+});
+
+// Explicitness covers the slot it was named for and nothing under it: the one post the call names is
+// created, and the users that post reaches for are drawn.
+async function createdThenDrawnBelow(
+  harness: Harness,
+  comment: Row<TestClient, "comment">,
+  pooled: Row<TestClient, "user">,
+): Promise<void> {
+  const post = await postBehind(harness, comment);
+
+  await expect(slotsAndUsers(harness, post)).resolves.toStrictEqual([pooled.id, pooled.id, 1]);
+  await expect(harness.prisma.post.count()).resolves.toBe(1);
+}
+
+test("the pool reaches the graph below a slot the call named outright", async () => {
+  const { harness, comments, ada } = await pooling();
+
+  const comment = await comments.for(harness.posts, "post").create();
+
+  await createdThenDrawnBelow(harness, comment, ada);
+});
+
+test("the pool reaches the graph below an override naming a factory", async () => {
+  const { harness, comments, ada } = await pooling();
+
+  const comment = await comments.create({ post: harness.posts });
+
+  await createdThenDrawnBelow(harness, comment, ada);
+});
+
+test("a has() child factory draws its own relation defaults from the pool", async () => {
+  const harness = await editedPosts();
+  const { prisma, users, posts } = harness;
+  const ada = await users.create();
+
+  const author = await users.recycle("user", ada).has(posts, "posts").create();
+  const post = await prisma.post.findFirstOrThrow({ where: { authorId: author.id } });
+
+  await expect(slotsAndUsers(harness, post)).resolves.toStrictEqual([author.id, ada.id, 2]);
+});
+
+// Every slot the graph filled holds a row of the pool: an id the pool never carried — and a slot left
+// empty — stands out as an entry of its own.
+function strays(picks: readonly (number | null)[], ids: readonly number[]): (number | null)[] {
+  return picks.filter((id) => id === null || !ids.includes(id));
+}
+
+test("a list pool spreads over every row it holds, calls merged, and picks nothing else", async () => {
+  const { prisma, users, posts } = await editedPosts({ seed: 7 });
+  const pool = await users.count(3).create();
+  const ids = pool.map((user) => user.id);
+
+  const rows = await posts.count(6).recycle("user", pool.slice(0, 2)).recycle("user", pool.slice(2)).create();
+  const picks = rows.flatMap((post) => [post.authorId, post.editorId]);
+
+  expect(strays(picks, ids)).toStrictEqual([]);
+  expect(new Set(picks).size).toBe(ids.length);
+  await expect(prisma.user.count()).resolves.toBe(3);
+});
+
+test("a factory pooling rows of its own keeps them when the graph above it hands its pool down", async () => {
+  const harness = await editedPosts({ seed: 7 });
+  const { prisma, f, users } = harness;
+  const ada = await users.create();
+  const grace = await users.create({ name: "Grace" });
+  const posts = harness.posts.recycle("user", grace);
+  const comments = f.define("comment", { definition: ({ uid }) => ({ body: uid, post: posts }) });
+
+  const rows = await comments.count(6).recycle("user", ada).create();
+  const drawn = await Promise.all(rows.map((comment) => postBehind(harness, comment)));
+
+  expect(new Set(drawn.flatMap((post) => [post.authorId, post.editorId]))).toStrictEqual(new Set([ada.id, grace.id]));
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+interface Spread {
+  picks: (number | null)[];
+  ids: number[];
+  written: number;
+}
+
+async function spread(seed: number): Promise<Spread> {
+  const { prisma, users, posts } = await editedPosts({ seed });
+  const pool = await users.count(3).create();
+  const rows = await posts.count(4).recycle("user", pool).create();
+
+  return {
+    picks: rows.flatMap((post) => [post.authorId, post.editorId]),
+    ids: pool.map((user) => user.id),
+    written: await prisma.user.count(),
+  };
+}
+
+// Each run opens a database of its own, so the ids alone repeat whatever the graph does with them:
+// what the pool answers for is that every slot holds a pooled row and no user is written for one.
+test("one seed replays the same spread of picks, run for run", async () => {
+  const first = await spread(11);
+  const second = await spread(11);
+
+  expect(strays(first.picks, first.ids)).toStrictEqual([]);
+  expect(first.written).toBe(3);
+  expect(first.picks).toStrictEqual(second.picks);
+});
+
+test("another seed spreads the picks differently", async () => {
+  expect((await spread(11)).picks).not.toStrictEqual((await spread(12)).picks);
+});
+
+// A pool of one is a pool all the same: every slot connects that row, and no record of it is created.
+test("a pool of one row connects that row to every record of a batch", async () => {
+  const { harness, posts, ada } = await pooling();
+
+  const rows = await posts.count(2).create();
+
+  expect(rows.flatMap((post) => [post.authorId, post.editorId])).toStrictEqual([ada.id, ada.id, ada.id, ada.id]);
+  await expect(harness.prisma.user.count()).resolves.toBe(1);
+});
+
+// Nothing the graph writes joins the pool: the authors these records create never turn up in a later
+// pick, however many of them exist by the time the next slot is filled.
+test("rows the graph creates are never drawn later, the pool standing as it was handed over", async () => {
+  const { harness, posts, ada } = await pooling();
+
+  const rows = await posts.count(4).create({ author: harness.users });
+
+  expect(new Set(rows.map((post) => post.editorId))).toStrictEqual(new Set([ada.id]));
+  await expect(harness.prisma.user.count()).resolves.toBe(5);
+});
+
+interface Attaching {
+  harness: Harness;
+  authors: Factory<TestClient, "user">;
+  pool: Row<TestClient, "post">[];
+  ids: number[];
+}
+
+// Posts already written and a user factory recycling them, which is where every `has` case starts.
+// The harness's post factory brings an author of its own, so the users standing behind the pool are no
+// part of what these tests count.
+async function attaching(rows: number): Promise<Attaching> {
+  const harness = await factorioHarness({ seed: 7 });
+  const pool = await harness.posts.count(rows).create();
+
+  return { harness, authors: harness.users.recycle("post", pool), pool, ids: pool.map((post) => post.id) };
+}
+
+// A drawn child leaves nothing behind that a created one would not, so what tells the picks apart is
+// the connect list the parent's own create was handed: one entry per pick.
+function connectedIds(data: Record<string, unknown>, field: string): number[] {
+  const held = data[field] as { connect?: { id: number }[] } | undefined;
+
+  return (held?.connect ?? []).map((row) => row.id);
+}
+
+// A post factory at either arity, which is what `has` takes and what `count` hands back.
+type PostChildren = Factory<TestClient, "post", Row<TestClient, "post"> | Row<TestClient, "post">[]>;
+
+// The post ids each record of a parent batch drew, in the order it drew them.
+async function drawnIds({ harness, pool }: Attaching, children: PostChildren, parents?: number): Promise<number[][]> {
+  const writes = await userWrites(harness, (users) => {
+    const authors = users.recycle("post", pool).has(children, "posts");
+
+    return parents === undefined ? authors : authors.count(parents);
+  });
+
+  return writes.map((data) => connectedIds(data, "posts"));
+}
+
+test("has(factory) over a pooled model connects a pooled row rather than creating a record", async () => {
+  const { harness, authors, ids } = await attaching(1);
+
+  const author = await authors.has(harness.posts, "posts").create();
+
+  await expect(authoredBy(harness.prisma, author.id)).resolves.toStrictEqual(ids);
+  await expect(harness.prisma.post.count()).resolves.toBe(1);
+});
+
+// The picks a batch of children made over a pool of posts: every one of them a row the pool holds,
+// and the pool left exactly as many rows as it was handed.
+async function drawnOver(rows: number, children: number): Promise<number[]> {
+  const target = await attaching(rows);
+  const picks = (await drawnIds(target, target.harness.posts.count(children))).flat();
+
+  expect(strays(picks, target.ids)).toStrictEqual([]);
+  await expect(target.harness.prisma.post.count()).resolves.toBe(rows);
+
+  return picks;
+}
+
+// The batch size the child's own chain carries is what the pool answers for, record for record: a
+// layer collapsing it to one pick would connect a third of the children it was asked for.
+test("has(factory.count(3)) over a pooled model draws a row per record rather than one for the batch", async () => {
+  expect(await drawnOver(3, 3)).toHaveLength(3);
+});
+
+// Picks are drawn with replacement, so a pool holding fewer rows than the batch asks for is legal and
+// hands the same row out twice rather than running dry — there is no distinctness to rely on.
+test("a pool of two rows fills a batch of three, the rows it holds repeating", async () => {
+  const picks = await drawnOver(2, 3);
+
+  expect(picks).toHaveLength(3);
+  expect(new Set(picks).size).toBeLessThan(picks.length);
+});
+
+// The cadence every `has` layer keeps: children belong to one parent record, so a batch of parents
+// draws a batch of children each.
+test("a pooled has() child is drawn per parent record, the whole batch of them", async () => {
+  const target = await attaching(3);
+
+  const picks = await drawnIds(target, target.harness.posts.count(2), 2);
+
+  expect(picks.map((record) => record.length)).toStrictEqual([2, 2]);
+  await expect(target.harness.prisma.post.count()).resolves.toBe(3);
+});
+
+// A caller pools rows it loaded itself, and an `include`d relation is no field to match a record on.
+test("a pooled has() child loaded with include connects on its scalars, the loaded relation left out", async () => {
+  const harness = await factorioHarness({ seed: 7 });
+  const loaded = await postWithComments(harness);
+  const { comments, ...scalars } = loaded;
+
+  const data = await userCreateData(harness, (users) => users.recycle("post", loaded).has(harness.posts, "posts"));
+
+  expect(comments).toStrictEqual([]);
+  expect(data.posts).toStrictEqual({ connect: [scalars] });
+});
+
+// A chain batched to no records asks the pool for nothing, and a relation field with nothing to
+// connect stays unwritten — the same reading `has` gives a list of no children.
+test("has(factory.count(0)) over a pooled model draws nothing and leaves the relation field unwritten", async () => {
+  const { harness, pool } = await attaching(1);
+
+  const data = await userCreateData(harness, (users) =>
+    users.recycle("post", pool).has(harness.posts.count(0), "posts"),
+  );
+
+  expect(Object.keys(data)).toStrictEqual(["email", "name"]);
+  await expect(harness.prisma.post.count()).resolves.toBe(1);
+});
+
+// A drawn child stands for a record that exists already, so the factory naming it never runs — no
+// definition of its own, and no state either.
+test("a pooled has() child factory is never evaluated", async () => {
+  const { harness, authors, pool } = await attaching(1);
+  const evaluated: string[] = [];
+  const posts = harness.f.define("post", {
+    definition: ({ uid }) => {
+      evaluated.push(uid);
+      return { title: uid, author: harness.users };
+    },
+  });
+
+  const author = await authors.has(posts, "posts").create();
+
+  expect(evaluated).toStrictEqual([]);
+  await expect(authoredBy(harness.prisma, author.id)).resolves.toStrictEqual(pool.map((post) => post.id));
+});
+
+// Both ends of an implicit many-to-many hold many records, so a pooled child reaches it through the
+// same `has` layer a created one does, and the picks land in one join table row each.
+test("a pooled has() child joins the parent across an implicit many-to-many", async () => {
+  const { prisma, posts, tags } = await factorioHarness({ seed: 7 });
+  const tag = await tags.create();
+
+  const post = await posts.recycle("tag", tag).has(tags.count(2)).create();
+  const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
+
+  expect(joined.tags.map((row) => row.id)).toStrictEqual([tag.id]);
+  await expect(prisma.tag.count()).resolves.toBe(1);
+});
+
+// A drawn row lands in the parent's own create, which is a call site of its own: the tripwire above
+// reaches the same compound key through the rows a caller hands `has`, and neither route stands in
+// for the other. Both hold until #41 is fixed, and the README paragraph naming it rests on the pair.
+test("a pooled join-model row fails on its compound key too, drawn into the parent's own create", async () => {
+  const { harness, membership } = await joined();
+
+  await expect(harness.users.recycle("membership", membership).has(harness.memberships).create()).rejects.toThrow(
+    "Expected MembershipWhereUniqueInput",
+  );
+});
+
+// The three ways a graph reaches a record of another model, in one create: the author the definition
+// names, the editor a state names, and the tag a `has` layer brings. Every one of them is drawn.
+test("the pool fills a definition slot, a state slot and a has() child of one graph alike", async () => {
+  const { prisma, users, posts, tags } = await factorioHarness({ seed: 7 });
+  const ada = await users.create();
+  const tag = await tags.create();
+
+  const post = await posts.recycle("user", ada).recycle("tag", tag).state({ editor: users }).has(tags).create();
+  const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
+
+  expect([post.authorId, post.editorId]).toStrictEqual([ada.id, ada.id]);
+  expect(joined.tags.map((row) => row.id)).toStrictEqual([tag.id]);
+  await expect(prisma.user.count()).resolves.toBe(1);
+  await expect(prisma.tag.count()).resolves.toBe(1);
+});
+
+// What a rollback leaves standing: on the target, the rows written before the transaction opened and
+// nothing the graph created inside it; on the database the harness bootstrapped, nothing at all.
+async function leftBehind(harness: Harness, target: TestClient, standing: Graph): Promise<void> {
+  await expect(graphOf(target)).resolves.toStrictEqual(standing);
+  await expect(graphOf(harness.prisma)).resolves.toStrictEqual([0, 0, 0]);
+}
+
+// The pooled row is written to the target outside the transaction, which is what the graph connects
+// to and what stands there afterwards: a row the pool hands over is never the transaction's to drop.
+test("using(tx) covers a graph that recycles, and a rollback leaves nothing behind", async () => {
+  const harness = await editedPosts();
+  const target = await disposableClient();
+  const ada = await harness.users.using(target).create();
+
+  await rolledBack(target, (tx) => harness.comments.recycle("user", ada).using(tx).create(), [1, 1, 1]);
+
+  await leftBehind(harness, target, [1, 0, 0]);
+});
+
+// A drawn child joins the parent's own create rather than being created after it, so the client that
+// create runs on is the one its connect list is resolved against.
+test("using(tx) covers a has() layer drawing from the pool, and a rollback drops the parent", async () => {
+  const harness = await factorioHarness();
+  const target = await disposableClient();
+  const post = await harness.posts.using(target).create();
+
+  await rolledBack(
+    target,
+    (tx) => harness.users.recycle("post", post).has(harness.posts, "posts").using(tx).create(),
+    [2, 1, 0],
+  );
+
+  await leftBehind(harness, target, [1, 1, 0]);
+});
+
+// Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
+// the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
+export function recycleCheckedByTheCompiler(
+  users: Factory<TestClient, "user">,
+  posts: Factory<TestClient, "post">,
+  userRow: Row<TestClient, "user">,
+  stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
+): void {
+  // Held rather than written inline: a row loaded with `include` carries its relations alongside its
+  // scalars, and excess property checking reaches a fresh object literal only.
+  const included = { ...userRow, posts: [], edited: [] };
+
+  void users.recycle("user", userRow).create();
+  void users.recycle("user", [userRow]).create();
+  void users.recycle("user", included).create();
+  void posts.recycle("user", userRow).recycle("post", []).create();
+
+  expectTypeOf(users.recycle("user", userRow)).toEqualTypeOf<Factory<TestClient, "user">>();
+  expectTypeOf(users.count(2).recycle("user", userRow).create()).resolves.toEqualTypeOf<Row<TestClient, "user">[]>();
+  expectTypeOf(stateful.recycle("user", userRow).suspended()).toEqualTypeOf<typeof stateful>();
+  expectTypeOf(stateful.suspended().recycle("user", userRow)).toEqualTypeOf<typeof stateful>();
+
+  // @ts-expect-error a row missing a scalar the named model requires
+  void users.recycle("user", { id: 1 });
+  // @ts-expect-error a row of a model other than the one named
+  void users.recycle("post", userRow);
+  // @ts-expect-error a model the client does not carry
+  void users.recycle("author", userRow);
+  // @ts-expect-error a list holding a value that is no row of the named model
+  void users.recycle("user", [userRow, 42]);
+}
 
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
 // the gate the moment the type it names stops rejecting — or stops accepting — what it is given.

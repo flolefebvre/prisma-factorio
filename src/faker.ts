@@ -13,9 +13,8 @@ export type FakerInstance = Faker;
 /**
  * How the bootstrap configures faker.
  *
- * `seed` pins the values faker generates, so the same seed replays the same faker output — it does
- * not make a run reproducible, since a uid draws a fresh prefix in every process. `locale` is one of
- * the locale names `@faker-js/faker` exports, such as `"en"`, `"fr"` or `"de_AT"`.
+ * `locale` is one of the locale names `@faker-js/faker` exports, such as `"en"`, `"fr"` or
+ * `"de_AT"`.
  *
  * @example
  * ```ts
@@ -23,6 +22,17 @@ export type FakerInstance = Faker;
  * ```
  */
 export interface FakerOptions {
+  /**
+   * Pins every value a bootstrap draws at random: the output faker generates, and the rows a recycle
+   * pool picks. Each is a stream of its own, so one seed replays both, and neither moves the other
+   * along. It does not make a run reproducible on its own, since a uid draws a fresh prefix in every
+   * process.
+   *
+   * @example
+   * ```ts
+   * const f = initPrismaFactorio(prisma, { seed: 1234 });
+   * ```
+   */
   seed?: number | undefined;
   locale?: string | undefined;
 }

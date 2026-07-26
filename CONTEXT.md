@@ -49,5 +49,5 @@ A relation-valued attribute in a definition, a state or `create()` overrides, ho
 _Avoid_: nested factory, embedded relation
 
 **Recycle pool**:
-Per-model lists of existing rows carried by a factory chain; anywhere the graph would create a record of a pooled model, it connects a pool row instead. Merged across `.recycle()` calls, propagated to the whole graph, never self-populating.
+Per-model lists of existing rows carried by a factory chain; anywhere the graph would create a _related_ record of a pooled model, it connects a pool row instead — the records a factory itself creates are exempt, as is a parent the caller named through `for()` or overrides. Merged across `.recycle()` calls, propagated to the whole graph, never self-populating.
 _Avoid_: cache, registry
