@@ -8,6 +8,7 @@ import {
   type StateMap,
 } from "./factory.js";
 import type { ModelName, Row } from "./prisma.js";
+import { createPicker } from "./rng.js";
 
 /**
  * The entry point a bootstrap hands back, bound to one client and one faker.
@@ -37,7 +38,8 @@ function resolver<C extends object>(source: C | (() => C)): () => C {
  *
  * The client may be a thunk, which is called on the first `create` and never again: importing a
  * module that declares factories then costs nothing, and a test may replace the client beforehand.
- * `seed` and `locale` configure the one faker every definition of this bootstrap reads.
+ * `locale` configures the one faker every definition of this bootstrap reads, and `seed` pins both
+ * the values that faker generates and the rows a recycle pool picks.
  *
  * @example
  * ```ts
@@ -51,6 +53,8 @@ export function initPrismaFactorio<C extends object>(
   options: FakerOptions = {},
 ): Factorio<C> {
   const faker = createFakerProvider(options);
+  // One picker per bootstrap, so every factory it defines draws its recycled rows from one stream.
+  const pick = createPicker(options.seed);
   const client = resolver(clientOrThunk);
 
   const define: Factorio<C>["define"] = (model, config) =>
@@ -64,6 +68,8 @@ export function initPrismaFactorio<C extends object>(
       faker,
       batch: undefined,
       parent: undefined,
+      pool: {},
+      pick,
     });
 
   return { define };

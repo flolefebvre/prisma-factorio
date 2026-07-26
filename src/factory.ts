@@ -7,6 +7,7 @@ import {
   targetScalars,
 } from "./datamodel.js";
 import type { FakerInstance, FakerProvider } from "./faker.js";
+import { recycledPool, type Pool } from "./pool.js";
 import type {
   Attributes,
   ChildModel,
@@ -21,6 +22,7 @@ import type {
   RelationArgs,
   Row,
 } from "./prisma.js";
+import type { Picker } from "./rng.js";
 import { nextUid } from "./uid.js";
 
 /**
@@ -119,10 +121,11 @@ interface Reserved {
   state?: never;
   for?: never;
   has?: never;
+  recycle?: never;
   then?: never;
 }
 
-const reservedNames = ["create", "count", "using", "state", "for", "has", "then"];
+const reservedNames = ["create", "count", "using", "state", "for", "has", "recycle", "then"];
 
 /**
  * What a factory's declared `states` must satisfy: every value exact, and no name the factory
@@ -246,6 +249,24 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
     children: T,
     ...args: HasManyArgs<C, M, ChildModel<C, T>, HasOptions>
   ): Factory<C, M, R, S>;
+  /**
+   * Pools existing rows of one model, so that anywhere the graph would otherwise create a record of
+   * that model it connects a pooled row instead.
+   *
+   * The model is named outright, a row carrying nothing that says which model it belongs to. Rows
+   * merge across calls rather than replacing one another, so a factory configured with a pool and
+   * recycled again at a call site keeps its baseline rows, and every model keeps a list of its own.
+   * Pooling no rows is legal and leaves the model exactly as it stands.
+   *
+   * A row of the named model is what the argument takes, whatever else it carries: one loaded with
+   * `include` stands here as readily as one straight from a create.
+   *
+   * @example
+   * ```ts
+   * const comment = await comments.recycle("user", ada).create();
+   * ```
+   */
+  recycle<P extends ModelName<C>>(model: P, rows: Row<C, P> | readonly Row<C, P>[]): Factory<C, M, R, S>;
 }
 
 /**
@@ -307,6 +328,10 @@ interface FactoryChain<C, M extends ModelName<C>> {
   batch: number | undefined;
   // Set by the `has` layer creating this chain's records, and read by every layer of the merge.
   parent: unknown;
+  pool: Pool;
+  // One stream per bootstrap, so a seeded run replays every pick a graph makes, in the order it
+  // makes them.
+  pick: Picker;
 }
 
 function step(state: unknown): Step {
@@ -689,6 +714,9 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
         relationField: typeof first === "string" ? first : undefined,
         inverse: options?.inverse,
       });
+    },
+    recycle(model: ModelName<C>, rows: unknown): Factory<C, M, R, S> {
+      return createFactory({ ...chain, pool: recycledPool(chain.pool, String(model), rows) });
     },
   };
 

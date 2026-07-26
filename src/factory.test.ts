@@ -364,6 +364,15 @@ test("a state named has is rejected where the factory is defined", async () => {
   ).toThrow('The state "has" takes a name a factory reserves. Rename the state.');
 });
 
+test("a state named recycle is rejected where the factory is defined", async () => {
+  const { f } = await factorioHarness();
+
+  expect(() =>
+    // @ts-expect-error a state may not take the name the recycle method answers to
+    f.define("user", { definition: userDefinition, states: { recycle: { name: "Grace" } } }),
+  ).toThrow('The state "recycle" takes a name a factory reserves. Rename the state.');
+});
+
 test("a state named __proto__ becomes a method rather than a write to the prototype", async () => {
   const { f } = await factorioHarness();
   const users = f.define("user", { definition: userDefinition, states: { ["__proto__"]: { name: "Grace" } } });
@@ -1519,6 +1528,56 @@ test("two join-model records of the same pair collide on the compound key", asyn
     "Unique constraint failed on the fields: (`userId`, `teamId`)",
   );
 });
+
+test("recycle() hands back a factory of its own rather than the receiver", async () => {
+  const { users } = await factorioHarness();
+  const ada = await users.create();
+
+  expect(users.recycle("user", ada)).not.toBe(users);
+});
+
+// An empty pool stands for a model that was never recycled, so the call is legal and changes nothing
+// — the same reading `has` gives a list of no children.
+test("recycle() pooling no rows leaves a factory that creates exactly as it did", async () => {
+  const { prisma, users } = await factorioHarness();
+
+  const user = await users.recycle("user", []).create();
+
+  expect(user.name).toBe("Ada");
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+// Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
+// the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
+export function recycleCheckedByTheCompiler(
+  users: Factory<TestClient, "user">,
+  posts: Factory<TestClient, "post">,
+  userRow: Row<TestClient, "user">,
+  stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
+): void {
+  // Held rather than written inline: a row loaded with `include` carries its relations alongside its
+  // scalars, and excess property checking reaches a fresh object literal only.
+  const included = { ...userRow, posts: [], edited: [] };
+
+  void users.recycle("user", userRow).create();
+  void users.recycle("user", [userRow]).create();
+  void users.recycle("user", included).create();
+  void posts.recycle("user", userRow).recycle("post", []).create();
+
+  expectTypeOf(users.recycle("user", userRow)).toEqualTypeOf<Factory<TestClient, "user">>();
+  expectTypeOf(users.count(2).recycle("user", userRow).create()).resolves.toEqualTypeOf<Row<TestClient, "user">[]>();
+  expectTypeOf(stateful.recycle("user", userRow).suspended()).toEqualTypeOf<typeof stateful>();
+  expectTypeOf(stateful.suspended().recycle("user", userRow)).toEqualTypeOf<typeof stateful>();
+
+  // @ts-expect-error a row missing a scalar the named model requires
+  void users.recycle("user", { id: 1 });
+  // @ts-expect-error a row of a model other than the one named
+  void users.recycle("post", userRow);
+  // @ts-expect-error a model the client does not carry
+  void users.recycle("author", userRow);
+  // @ts-expect-error a list holding a value that is no row of the named model
+  void users.recycle("user", [userRow, 42]);
+}
 
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
 // the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
