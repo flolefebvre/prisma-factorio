@@ -109,7 +109,7 @@ const byAda = await posts.for(ada, "author").create();
 ```
 
 - **The relation field is checked against the pair of models.** It may be left out where the two share exactly one belongs-to relation, must be named where they share several, and no value satisfies it where they share none — a `for()` between two unrelated models is a compile error.
-- **Relation values are to-one.** A relation field holding many records is a compile error in a definition, in a state and in `create()` overrides alike. The has-many side is reached through [`has()`](#children) instead, which is a method on the chain rather than a value.
+- **A relation value stands for one record.** A factory in a relation field holding many records is a compile error — in a definition, in a state and in `create()` overrides alike. The has-many side is reached through [`has()`](#children) instead, which is a method on the chain rather than a value.
 - **`for()` returns a new factory, and states survive it in both chaining directions.** `posts.for(users, "author").drafted()` and `posts.drafted().for(users, "author")` both apply the state.
 
 A relation field also takes a parent directly — in a definition, in a state, or in `create()` overrides:
@@ -175,6 +175,70 @@ await posts.count(3).for(users, "author").create(); // 3 posts, 1 user — share
 
 Same fluent shape, opposite multiplicity.
 
+### Many-to-many
+
+There is no `hasAttached()`. Both shapes Prisma offers are reached with what the chain already carries: `has()` for the implicit form, and composition through the join model's own factory for the explicit one.
+
+**Implicit** — a list field on both sides, the join table hidden by Prisma:
+
+```prisma
+model Post {
+  id    Int    @id @default(autoincrement())
+  title String
+  tags  Tag[]
+}
+
+model Tag {
+  id    Int    @id @default(autoincrement())
+  label String
+  posts Post[]
+}
+```
+
+```ts
+const post = await posts.has(tags.count(3)).create(); // three tags, all joined to the post
+const tag = await tags.has(posts.count(2)).create(); // the same, read from the other end
+await posts.has(existingTags).create(); // rows attach as they stand, no tag created
+```
+
+- **`has()` reads a many-to-many from whichever end reads better.** The two sides are an ordinary relation pair here, and the hidden join table adds no model of its own.
+- **`for()` is a compile error at both ends, and that is correct.** Both sides hold many records, so the pair has no belongs-to side for `for()` to name — there is no sensible end to call it from.
+- **The cadence is the usual one.** `posts.count(3).has(tags.count(2))` gives 3 posts and 6 tags, two each.
+- **Pivot attributes are impossible on this shape** — Prisma's hidden join table carries no extra columns. Declare the relation explicitly when it has data of its own.
+
+**Explicit** — a join model you declare, carrying its own columns:
+
+```prisma
+model Membership {
+  user   User   @relation(fields: [userId], references: [id])
+  userId Int
+  team   Team   @relation(fields: [teamId], references: [id])
+  teamId Int
+  role   String
+
+  @@id([userId, teamId])
+}
+```
+
+`User` and `Team` share no relation field, only the hop through `Membership`, so the pattern is composition — the join model's factory stands between them:
+
+```ts
+const memberships = f.define("membership", {
+  definition: () => ({ role: "member", user: users, team: teams }),
+});
+
+const ada = await users.has(memberships.count(2).state({ role: "admin" }), "memberships").create();
+// one user, two memberships with role "admin", and a team for each
+```
+
+- **The definition names a parent for both legs, and that is the pattern rather than a workaround.** Both relation fields of a join model are required, so a definition leaving one out does not compile. `has()` and `for()` replace the leg they select before anything is evaluated, so the factory standing there is never run and no stray record appears — the call above leaves exactly one user row.
+- **Pivot attributes are ordinary typed columns**, so states reach them like any other attribute, as `.state({ role: "admin" })` does above.
+- **The relation field may be left out**, each pair sharing exactly one relation through the join model: `users.has(memberships.count(2))` says the same thing.
+- **`for()` works on the join model's own legs.** `memberships.count(2).for(ada)` gives one user two memberships, each bringing a team of its own.
+- **An existing row pins a leg.** `memberships.state({ team })` reuses that team rather than drawing a new one.
+- **Two records of the same pair collide** on the compound key. That is the schema being enforced, not a library bug.
+- **Connecting an existing join-model row does not work yet.** A model whose only unique constraint is compound is matched on Prisma's generated compound selector — `{ userId_teamId: { … } }` — which a flat row of scalars does not satisfy, so `has([membership])` fails ([#41](https://github.com/flolefebvre/prisma-factorio/issues/41)). Pass native relation input meanwhile.
+
 ## Good to know
 
 - **Every fluent call returns a new factory.** `users.count(3)` does not change `users`.
@@ -193,6 +257,6 @@ Same fluent shape, opposite multiplicity.
 
 v1 is in progress; this README tracks what actually works today.
 
-Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for` with relation defaults, and `has` for the children on the other side.
+Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for` with relation defaults, `has` for the children on the other side, and many-to-many in both shapes.
 
-Tracked next, in no promised order: many-to-many, `recycle`, and `afterCreating`.
+Tracked next, in no promised order: `recycle` and `afterCreating`.
