@@ -1451,6 +1451,75 @@ test("a many-to-many draws its children per parent record, the cadence every has
   await expect(prisma.tag.count()).resolves.toBe(6);
 });
 
+// An explicit many-to-many is composition rather than a method of its own: the datamodel holds no
+// relation between the two far models, so the join model's factory is what stands between them, and
+// its pivot columns are ordinary typed attributes a state reaches like any other.
+test("has(joinModel) composes an explicit many-to-many, the placeholder parent never evaluated", async () => {
+  const { prisma, users, memberships } = await factorioHarness();
+
+  const ada = await users.has(memberships.count(2).state({ role: "admin" }), "memberships").create();
+  const joined = await prisma.membership.findMany({ where: { userId: ada.id } });
+
+  expect(joined.map((membership) => membership.role)).toStrictEqual(["admin", "admin"]);
+  expect(new Set(joined.map((membership) => membership.teamId)).size).toBe(2);
+  await expect(prisma.team.count()).resolves.toBe(2);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("the join model's relation field may be left out, the pair sharing exactly one", async () => {
+  const { prisma, users, memberships } = await factorioHarness();
+
+  const ada = await users.has(memberships.count(2)).create();
+
+  await expect(prisma.membership.count({ where: { userId: ada.id } })).resolves.toBe(2);
+});
+
+test("for() names a leg of the join model, each record bringing the far side of its own", async () => {
+  const { prisma, users, memberships } = await factorioHarness();
+  const ada = await users.create();
+
+  await memberships.count(2).for(ada).create();
+
+  await expect(prisma.membership.count({ where: { userId: ada.id } })).resolves.toBe(2);
+  await expect(prisma.team.count()).resolves.toBe(2);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("a state pins an existing row into a leg of the join model rather than drawing a new one", async () => {
+  const { prisma, users, teams, memberships } = await factorioHarness();
+  const ada = await users.create();
+  const team = await teams.create();
+
+  const membership = await memberships.for(ada).state({ team }).create();
+
+  expect(membership.teamId).toBe(team.id);
+  await expect(prisma.team.count()).resolves.toBe(1);
+});
+
+// The join model's only unique constraint is its compound key, which Prisma exposes under the single
+// generated name `userId_teamId` and demands under that name; the flat scalars a row carries satisfy
+// no `WhereUniqueInput`. Tracked as issue #41, whose workaround is passing native relation input,
+// `{ connect: { userId_teamId: … } }`. This test fails the day #41 lands, which is when the README
+// paragraph naming it has to go.
+test("connecting an existing join-model row fails on its compound key", async () => {
+  const { users, memberships } = await factorioHarness();
+  const ada = await users.create();
+  const membership = await memberships.for(ada).create();
+
+  await expect(users.has([membership], "memberships").create()).rejects.toThrow("Expected MembershipWhereUniqueInput");
+});
+
+// The schema being enforced, not the library misbehaving: one user belongs to one team once.
+test("two join-model records of the same pair collide on the compound key", async () => {
+  const { users, teams, memberships } = await factorioHarness();
+  const ada = await users.create();
+  const team = await teams.create();
+
+  await expect(memberships.count(2).for(ada).state({ team }).create()).rejects.toThrow(
+    "Unique constraint failed on the fields: (`userId`, `teamId`)",
+  );
+});
+
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
 // the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
 export function relationsCheckedByTheCompiler(
@@ -1464,6 +1533,8 @@ export function relationsCheckedByTheCompiler(
   draftable: Factory<TestClient, "post", Row<TestClient, "post">, { drafted: unknown }>,
   tags: Factory<TestClient, "tag">,
   tagRow: Row<TestClient, "tag">,
+  teams: Factory<TestClient, "team">,
+  memberships: Factory<TestClient, "membership">,
 ): void {
   void posts.for(users, "author").create();
   void posts.for(userRow, "editor").create();
@@ -1546,4 +1617,18 @@ export function relationsCheckedByTheCompiler(
   void tags.for(posts);
   // @ts-expect-error a row names the same pair, and answers the same way
   void posts.for(tagRow);
+
+  void users.has(memberships, "memberships").create();
+  void users.has(memberships.count(2)).create();
+  void teams.has(memberships).create();
+  void memberships.for(users).create();
+  void memberships.for(userRow).create();
+  void memberships.for(teams).create();
+
+  // The datamodel holds no relation between the two far models of an explicit many-to-many, so the
+  // pair answers at neither arity and the join model's factory is the only way across.
+  // @ts-expect-error no has-many relation reaches a team from a user
+  void users.has(teams);
+  // @ts-expect-error no belongs-to relation reaches a team from a user either
+  void users.for(teams);
 }
