@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { recycledPool, type Pool } from "./pool.js";
+import { mergedPool, recycledPool, type Pool } from "./pool.js";
 
 const ada = { id: 1, email: "ada@example.com" };
 const grace = { id: 2, email: "grace@example.com" };
@@ -37,4 +37,17 @@ test("pooling leaves the pool it was handed untouched", () => {
   void recycledPool(baseline, "user", grace);
 
   expect(baseline).toStrictEqual({ user: [ada] });
+});
+
+test("merging two pools stacks up the rows they hold per model, model by model", () => {
+  expect(mergedPool({ user: [ada] }, { user: [grace], post: [draft] })).toStrictEqual({
+    user: [ada, grace],
+    post: [draft],
+  });
+});
+
+test("merging a pool holding nothing leaves the one it was handed as it stands", () => {
+  const baseline: Pool = { user: [ada] };
+
+  expect(mergedPool(baseline, {})).toBe(baseline);
 });

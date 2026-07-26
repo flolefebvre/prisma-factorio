@@ -30,3 +30,19 @@ export function recycledPool(pool: Pool, model: string, rows: unknown): Pool {
 
   return merged.length === 0 ? pool : { ...pool, [model]: merged };
 }
+
+/**
+ * Folds one pool into another, model by model, handing back a pool of its own.
+ *
+ * Rows accumulate exactly as they do across `recycle` calls, so a factory pooling rows of its own
+ * keeps them when a chain resolving it hands its pool down.
+ *
+ * @example
+ * ```ts
+ * mergedPool({ user: [ada] }, { user: [grace], post: [draft] });
+ * // { user: [ada, grace], post: [draft] }
+ * ```
+ */
+export function mergedPool(pool: Pool, incoming: Pool): Pool {
+  return Object.entries(incoming).reduce((held, [model, rows]) => recycledPool(held, model, rows), pool);
+}

@@ -7,7 +7,7 @@ import {
   targetScalars,
 } from "./datamodel.js";
 import type { FakerInstance, FakerProvider } from "./faker.js";
-import { recycledPool, type Pool } from "./pool.js";
+import { mergedPool, recycledPool, type Pool } from "./pool.js";
 import type {
   Attributes,
   ChildModel,
@@ -371,19 +371,40 @@ function given(attributes: Written | undefined): Written {
 const brand = Symbol.for("prisma-factorio.factory");
 const rebind = Symbol.for("prisma-factorio.rebind");
 const bearer = Symbol.for("prisma-factorio.parent");
+const recycler = Symbol.for("prisma-factorio.recycle");
+
+// Local to this module: the mark rides on the stand-in `shared` builds and is read where that
+// stand-in is resolved, both of which are this file.
+const chosen = Symbol("prisma-factorio.chosen");
 
 // Every operation Prisma's create input accepts inside a relation field, to-one and to-many alike.
 // A value naming only these is Prisma's own input, and reaches the client untouched.
 const relationOperations = ["connect", "create", "connectOrCreate", "createMany"];
 
+// The pool a chain hands down, which the factory receiving it merges into the one it carries itself.
+interface Recycler {
+  draw: (pool: Pool, pick: Picker) => Embedded;
+}
+
 // The brand holds the factory's model, which is the parent model a `for` call needs and the one
-// thing a value standing in a relation field cannot be asked for. The rebind and the bearer are
-// absent from the stand-in `shared` builds, which has taken its client already and bears no parent.
+// thing a value standing in a relation field cannot be asked for. The rebind, the bearer and the
+// recycler are absent from the stand-in `shared` builds, which has taken its client and its pool
+// already and bears no parent; `chosen` marks that stand-in and nothing else.
 interface Embedded {
   create: (overrides?: Written) => Promise<unknown>;
   [brand]: string;
   [rebind]?: (client: unknown) => Embedded;
   [bearer]?: (parent: unknown) => Embedded;
+  [recycler]?: Recycler;
+  [chosen]?: true;
+}
+
+// What resolving a relation takes beyond the value standing in it: the client the records are written
+// through, and the pool a record of a pooled model is drawn from in place of being created.
+interface Wiring {
+  client: unknown;
+  pool: Pool;
+  pick: Picker;
 }
 
 // A row carries whatever columns the model declares, `create` among them where the schema says so,
@@ -465,24 +486,52 @@ function bearing(children: Embedded, parent: unknown): Embedded {
   return children[bearer]?.(parent) ?? children;
 }
 
+// The pool a chain recycles reaches every factory it resolves, and through them the whole graph: a
+// slot the pool leaves alone still hands it down, so the records created for that slot draw from it.
+function recycling(embedded: Embedded, { pool, pick }: Wiring): Embedded {
+  return embedded[recycler]?.draw(pool, pick) ?? embedded;
+}
+
+// A factory whose model the pool names stands for a row already written rather than for a record to
+// create — unless the slot it stands in is the caller's own, which the pool never overrides. The pick
+// is per record and drawn with replacement, so two records may well connect the same row.
+function pooled(value: Embedded, { pool, pick }: Wiring, explicit: boolean): Record<string, unknown> | undefined {
+  if (explicit || value[chosen] === true) return undefined;
+
+  const rows = pool[value[brand]];
+
+  return rows === undefined ? undefined : (pick(rows) as Record<string, unknown>);
+}
+
+// Every scalar of the row goes into the `where`: the runtime datamodel marks no field unique, so no
+// subset of them is knowably the one Prisma would match on. Every extra field narrows the match,
+// which is what makes a stale row fail rather than reach the record it has become. A relation the
+// row carries is no field to match on at all — a row loaded with `include` carries one, and so may a
+// pooled row — so the where-clause is what the target model declares as scalars and nothing else.
+function matching(client: unknown, model: string, field: string, row: Record<string, unknown>): Written {
+  return { connect: targetScalars(client, model, field, row) };
+}
+
 async function connected(
-  client: unknown,
+  wiring: Wiring,
   model: string,
   field: string,
   value: Record<string, unknown>,
+  explicit = false,
 ): Promise<unknown> {
-  if (isFactory(value)) return { connect: await inheriting(value, client).create() };
+  if (isFactory(value)) {
+    const row = pooled(value, wiring, explicit);
+
+    return row === undefined
+      ? { connect: await recycling(inheriting(value, wiring.client), wiring).create() }
+      : matching(wiring.client, model, field, row);
+  }
 
   const keys = Object.keys(value);
 
-  // Every scalar of the row goes into the `where`: the runtime datamodel marks no field unique, so no
-  // subset of them is knowably the one Prisma would match on. Every extra field narrows the match,
-  // which is what makes a stale row fail rather than reach the record it has become. A relation the
-  // row carries is no field to match on at all — a row loaded with `include` carries one — so the
-  // where-clause is what the target model declares as scalars and nothing else.
   return keys.length > 0 && keys.every((key) => relationOperations.includes(key))
     ? value
-    : { connect: targetScalars(client, model, field, value) };
+    : matching(wiring.client, model, field, value);
 }
 
 // A single connect is what a to-one relation field takes and what a to-many one accepts alongside the
@@ -498,7 +547,7 @@ function connecting(base: Written, rows: unknown[]): Written {
 // The two forms part here: a row goes into the connect list the parent's own create carries, and a
 // factory goes into `pending`, which is created once that create has returned the parent row.
 async function attaching(
-  client: unknown,
+  wiring: Wiring,
   model: string,
   field: string,
   value: Attached,
@@ -512,16 +561,23 @@ async function attaching(
       continue;
     }
 
-    for (const row of listed(entry.children)) rows.push(targetScalars(client, model, field, row as Written));
+    for (const row of listed(entry.children)) rows.push(targetScalars(wiring.client, model, field, row as Written));
   }
 
+  // Overrides replace the relation field whole, children and all, so what a `has` layer gathered on
+  // top of is never the caller's own choice of parent.
   const held = plainObject(value.base);
-  const base = held === undefined ? {} : ((await connected(client, model, field, held)) as Written);
+  const base = held === undefined ? {} : ((await connected(wiring, model, field, held)) as Written);
 
   return connecting(base, rows);
 }
 
-async function resolved(client: unknown, model: string, data: Written): Promise<Resolved> {
+async function resolved(
+  wiring: Wiring,
+  model: string,
+  data: Written,
+  explicit: ReadonlySet<string>,
+): Promise<Resolved> {
   const embedded = Object.entries(data).flatMap(([key, value]) => {
     const object = plainObject(value);
     return object === undefined ? [] : [[key, object] as const];
@@ -529,7 +585,7 @@ async function resolved(client: unknown, model: string, data: Written): Promise<
 
   if (embedded.length === 0) return { data, pending: [] };
 
-  const relations = relationFieldsOf(client, model);
+  const relations = relationFieldsOf(wiring.client, model);
   const pending: Pending[] = [];
   const written: Written = { ...data };
 
@@ -537,11 +593,11 @@ async function resolved(client: unknown, model: string, data: Written): Promise<
     if (!relations.includes(key)) continue;
 
     if (!isAttached(value)) {
-      written[key] = await connected(client, model, key, value);
+      written[key] = await connected(wiring, model, key, value, explicit.has(key));
       continue;
     }
 
-    const input = await attaching(client, model, key, value, pending);
+    const input = await attaching(wiring, model, key, value, pending);
 
     // Children the parent's own create says nothing about — factories, and none at all — leave the
     // relation field unwritten rather than naming it and giving Prisma nothing to do.
@@ -555,34 +611,41 @@ async function resolved(client: unknown, model: string, data: Written): Promise<
 // factory, so every layer their own chain holds still applies. They reach back to that row on the
 // relation field pairing with the one they hang off it by, which the escape hatch names outright in
 // place of looking it up.
-async function borne(client: unknown, model: string, row: unknown, entry: Pending): Promise<void> {
+async function borne(wiring: Wiring, model: string, row: unknown, entry: Pending): Promise<void> {
+  const { client } = wiring;
   const target = entry.children[brand];
   const back = entry.inverse ?? inverseRelationField(client, model, entry.field);
   const connect = targetScalars(client, target, back, row as Written);
 
-  await bearing(inheriting(entry.children, client), row).create({ [back]: { connect } });
+  await bearing(recycling(inheriting(entry.children, client), wiring), row).create({ [back]: { connect } });
 }
 
 // A `for` call names one specific parent, so the parent factory runs at most once however many
 // records the batch holds, and the record it created is what every one of them connects to.
-function shared(parent: Record<string, unknown>, client: unknown): Record<string, unknown> {
+function shared(wiring: Wiring, parent: Record<string, unknown>): Record<string, unknown> {
   if (!isFactory(parent)) return parent;
 
-  const factory = inheriting(parent, client);
+  const factory = recycling(inheriting(parent, wiring.client), wiring);
   let row: Promise<unknown> | undefined;
 
   // This `create` takes no overrides, though the type it stands in for declares them: one row answers
-  // every record of the batch, so there is no single caller whose overrides it could carry.
-  return { create: (): Promise<unknown> => (row ??= factory.create()), [brand]: factory[brand] };
+  // every record of the batch, so there is no single caller whose overrides it could carry. The mark
+  // is what tells this parent from one a definition or a state names, the pool having to leave the
+  // caller's own choice alone while still reaching everything that choice creates below it.
+  return {
+    create: (): Promise<unknown> => (row ??= factory.create()),
+    [brand]: factory[brand],
+    [chosen]: true,
+  };
 }
 
 // The parent stays inert here rather than being created: a layer whose relation field a later layer
 // overwrites is dropped by the merge, and only what the merge leaves standing is ever evaluated.
-function relationStep(client: unknown, model: string, { parent, relationField }: Relation): Step {
+function relationStep(wiring: Wiring, model: string, { parent, relationField }: Relation): Step {
   const field = isFactory(parent)
-    ? resolveRelationField(client, model, parent[brand], relationField)
-    : resolveRowRelationField(client, model, parent, relationField);
-  const value = shared(parent, client);
+    ? resolveRelationField(wiring.client, model, parent[brand], relationField)
+    : resolveRowRelationField(wiring.client, model, parent, relationField);
+  const value = shared(wiring, parent);
 
   return (): Written => ({ [field]: value });
 }
@@ -610,7 +673,7 @@ function attachInverse(client: unknown, model: string, { children, inverse }: Ch
 
 // A layer naming no relation field leaves it exactly as the layers around it leave it; one naming a
 // field with nothing to connect writes an entry the parent's own create then finds empty.
-function attachStep(client: unknown, model: string, layer: Children, order: number): Step {
+function attachStep({ client }: Wiring, model: string, layer: Children, order: number): Step {
   const field = attachField(client, model, layer);
 
   if (field === undefined) return (): Written => ({});
@@ -620,10 +683,10 @@ function attachStep(client: unknown, model: string, layer: Children, order: numb
   return ({ attrs }): Written => ({ [field]: accumulating(attrs[field], entry) });
 }
 
-function layerStep(client: unknown, model: string, layer: Layer, order: number): Step {
+function layerStep(wiring: Wiring, model: string, layer: Layer, order: number): Step {
   if (typeof layer === "function") return layer;
 
-  return "children" in layer ? attachStep(client, model, layer, order) : relationStep(client, model, layer);
+  return "children" in layer ? attachStep(wiring, model, layer, order) : relationStep(wiring, model, layer);
 }
 
 async function write<C, M extends ModelName<C>>(
@@ -634,9 +697,13 @@ async function write<C, M extends ModelName<C>>(
   const faker = await chain.faker();
   const client = chain.client();
   const model = String(chain.model);
+  const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick };
   const delegate = client[chain.model] as CreateDelegate;
   const applied = given(overrides);
-  const steps = chain.applied.map((layer, order) => layerStep(client, model, layer, order));
+  // A relation field the call names outright is the caller's own choice of parent, which the pool
+  // leaves standing; a key valued `undefined` names nothing, `given` having dropped it.
+  const explicit = new Set(Object.keys(applied));
+  const steps = chain.applied.map((layer, order) => layerStep(wiring, model, layer, order));
   const rows: unknown[] = [];
 
   for (let index = 0; index < (chain.batch ?? 1); index += 1) {
@@ -645,12 +712,12 @@ async function write<C, M extends ModelName<C>>(
 
     for (const state of steps) attrs = { ...attrs, ...given(state({ ...context, attrs })) };
 
-    const { data, pending } = await resolved(client, model, { ...attrs, ...applied });
+    const { data, pending } = await resolved(wiring, model, { ...attrs, ...applied }, explicit);
     const row = await delegate.create({ data });
 
     // Depth first, layers in the order they were called: every child of one record exists before the
     // next record of the batch is created.
-    for (const entry of pending) await borne(client, model, row, entry);
+    for (const entry of pending) await borne(wiring, model, row, entry);
 
     rows.push(row);
   }
@@ -673,6 +740,10 @@ async function write<C, M extends ModelName<C>>(
  * It carries `Symbol.for("prisma-factorio.parent")` the same way, valued with a call that takes a row
  * and hands back this factory creating its records for it. A `has` layer calls it once per parent
  * record, which is what puts that record in reach of the children's own state closures.
+ *
+ * It carries `Symbol.for("prisma-factorio.recycle")` the same way, valued with an object whose `draw`
+ * takes a pool and a picker and hands back this factory drawing from them, its own pooled rows kept.
+ * Resolving a relation calls it, which is what spreads one `recycle` over a graph.
  *
  * @example
  * ```ts
@@ -728,9 +799,15 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
   const inherit = (client: unknown): Factory<C, M, R, S> =>
     chain.explicit ? factory : createFactory({ ...chain, client: () => client as Pick<C, M> });
   const bear = (parent: unknown): Factory<C, M, R, S> => createFactory({ ...chain, parent });
+  // The rows a chain pools stack up rather than replace the ones this factory pools itself, the same
+  // reading two `recycle` calls on one chain take; the picker is the resolving graph's, so one stream
+  // covers every pick the graph makes, in the order it makes them.
+  const draw = (pool: Pool, pick: Picker): Factory<C, M, R, S> =>
+    createFactory({ ...chain, pool: mergedPool(chain.pool, pool), pick });
 
   Object.defineProperty(factory, brand, { value: String(chain.model) });
   Object.defineProperty(factory, rebind, { value: inherit });
+  Object.defineProperty(factory, recycler, { value: { draw } });
 
   return Object.defineProperty(factory, bearer, { value: bear });
 }
