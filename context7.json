@@ -3,7 +3,7 @@
   "url": "https://context7.com/flolefebvre/prisma-factorio",
   "public_key": "pk_4Czm4B19o3pEf9xBjNGnP",
   "projectTitle": "@flefebvre/prisma-factorio",
-  "description": "Laravel-style model factories for Prisma: tests and seeds declare the records they need through a fluent, fully typed API, inferred from the generated Prisma client. No codegen, no schema parsing, no build step.",
+  "description": "Laravel-style model factories for Prisma: tests and seeds declare the records they need through a fluent API, typed off your generated client. No generator, no build step, no schema parsing.",
   "branch": "main",
   "folders": [],
   "excludeFolders": [".github", "docs/adr", "docs/agents", "dist", "node_modules", "prisma", "scripts", "src"],
