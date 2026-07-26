@@ -303,6 +303,24 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * ```
    */
   recycle<P extends ModelName<C>>(model: P, rows: Row<C, P> | readonly Row<C, P>[]): Factory<C, M, R, S>;
+  /**
+   * Registers a side effect to run once every record this factory creates stands complete.
+   *
+   * Calls accumulate rather than replace one another, and a callback the config declared runs ahead of
+   * every callback registered here. They run one at a time, in that order, each awaited before the
+   * next begins, and a batch runs the whole list per record — so `count(0)` runs none. A callback runs
+   * where a record was created and nowhere else: a row a recycle pool stood in with was connected
+   * rather than created, and nothing fires for it.
+   *
+   * The record reaches the callback with its `has` children already written, and the callbacks of a
+   * parent this factory resolved have already run by then, so the graph the callback reads is whole.
+   *
+   * @example
+   * ```ts
+   * await users.afterCreating(async (user, { client }) => client.audit.create({ data: { user: user.id } }));
+   * ```
+   */
+  afterCreating(callback: AfterCreating<C, M>): Factory<C, M, R, S>;
 }
 
 /**
@@ -868,6 +886,9 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
     },
     recycle(model: ModelName<C>, rows: unknown): Factory<C, M, R, S> {
       return createFactory({ ...chain, pool: recycledPool(chain.pool, String(model), rows) });
+    },
+    afterCreating(callback: AfterCreating<C, M>): Factory<C, M, R, S> {
+      return createFactory({ ...chain, callbacks: [...chain.callbacks, callback] });
     },
   };
 

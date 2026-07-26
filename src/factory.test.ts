@@ -2140,6 +2140,80 @@ test("count(0) creates no record and fires no callback", async () => {
   expect(seen).toStrictEqual([]);
 });
 
+// A callback records the name it was registered under, which is what every ordering below is read
+// off. It takes no arguments, so one serves a factory of any model.
+function logging(log: string[], name: string): () => void {
+  return () => {
+    log.push(name);
+  };
+}
+
+// Two entries per callback rather than one: started together, the log would read "first in",
+// "second in", so only awaiting each before the next begins leaves the pairs unbroken.
+function yielding(log: string[], name: string): () => Promise<void> {
+  return async () => {
+    log.push(`${name} in`);
+    await Promise.resolve();
+    log.push(`${name} out`);
+  };
+}
+
+test("a fluent afterCreating fires with the created row", async () => {
+  const { users } = await factorioHarness();
+  const seen: Row<TestClient, "user">[] = [];
+
+  const ada = await users
+    .afterCreating((user) => {
+      seen.push(user);
+    })
+    .create();
+
+  expect(seen).toStrictEqual([ada]);
+});
+
+test("a config-declared callback runs before the fluent ones, which run in registration order", async () => {
+  const { f } = await factorioHarness();
+  const log: string[] = [];
+  const users = f.define("user", { definition: userDefinition, afterCreating: logging(log, "config") });
+
+  await users.afterCreating(logging(log, "first")).afterCreating(logging(log, "second")).create();
+
+  expect(log).toStrictEqual(["config", "first", "second"]);
+});
+
+test("each callback finishes before the next one starts", async () => {
+  const { users } = await factorioHarness();
+  const log: string[] = [];
+
+  await users.afterCreating(yielding(log, "first")).afterCreating(yielding(log, "second")).create();
+
+  expect(log).toStrictEqual(["first in", "first out", "second in", "second out"]);
+});
+
+test("afterCreating leaves the factory it was called on untouched", async () => {
+  const { users } = await factorioHarness();
+  const log: string[] = [];
+  const notified = users.afterCreating(logging(log, "once"));
+
+  await users.create();
+  await notified.create();
+
+  expect(log).toStrictEqual(["once"]);
+});
+
+test("afterCreating keeps the batch and the states, whichever order the chain was written in", async () => {
+  const { f } = await factorioHarness();
+  const log: string[] = [];
+  const users = statefulUsers(f);
+
+  const one = await users.afterCreating(logging(log, "before")).suspended().create();
+  const many = await users.count(2).afterCreating(logging(log, "after")).create();
+
+  expect(one.name).toBeNull();
+  expect(many).toHaveLength(2);
+  expect(log).toStrictEqual(["before", "after", "after"]);
+});
+
 // Bootstrapped on one database and redirected to another: the post reaches the second only because
 // the callback wrote through the client handed to it rather than through the one it could close over.
 test("a callback writes through the client the chain writes through", async () => {
@@ -2301,4 +2375,34 @@ export function relationsCheckedByTheCompiler(
   void users.has(teams);
   // @ts-expect-error no belongs-to relation reaches a team from a user either
   void users.for(teams);
+}
+
+// Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
+// the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
+export function callbacksCheckedByTheCompiler(
+  f: Factorio<TestClient>,
+  users: Factory<TestClient, "user">,
+  stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
+): void {
+  const noted = (): void => undefined;
+
+  void users.afterCreating(noted).create();
+  // Whatever a callback hands back is awaited and discarded, so the concise form of an arrow — whose
+  // return type is the call's own — stands here as readily as a block body returning nothing.
+  void users.afterCreating(async (user, { client }) => client.post.count({ where: { authorId: user.id } })).create();
+  void f.define("user", { definition: userDefinition, afterCreating: noted });
+
+  expectTypeOf(users.afterCreating(noted)).toEqualTypeOf<Factory<TestClient, "user">>();
+  expectTypeOf(users.count(2).afterCreating(noted).create()).resolves.toEqualTypeOf<Row<TestClient, "user">[]>();
+  expectTypeOf(stateful.afterCreating(noted).suspended()).toEqualTypeOf<typeof stateful>();
+  expectTypeOf(stateful.suspended().afterCreating(noted)).toEqualTypeOf<typeof stateful>();
+
+  // @ts-expect-error the row is the factory's own model, so a column another model declares is not on it
+  void users.afterCreating((user) => user.slug);
+  // @ts-expect-error the context carries the client and nothing else
+  void users.afterCreating((user, { pool }) => pool);
+  // @ts-expect-error a value that is no callback at all
+  void users.afterCreating(42);
+  // @ts-expect-error the config key takes one callback rather than a list of them
+  void f.define("user", { definition: userDefinition, afterCreating: [noted] });
 }
