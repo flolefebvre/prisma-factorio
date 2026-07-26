@@ -128,7 +128,24 @@ export function resolveRelationField(client: unknown, model: string, target: str
   return only;
 }
 
-const inverseOption = 'Pass the inverse relation field as the "inverse" option of has(). ';
+/**
+ * The call a failed inverse lookup steers to for naming the relation field outright.
+ *
+ * A `has` layer takes the name as an option; a factory standing in a relation field holding many
+ * records reaches no options at all, and is pointed at `has` instead.
+ *
+ * @example
+ * ```ts
+ * inverseRelationField(prisma, "post", "comments", "relation default");
+ * ```
+ */
+export type InverseAdvice = "has" | "relation default";
+
+const advised: Record<InverseAdvice, string> = {
+  has: 'Pass the inverse relation field as the "inverse" option of has(). ',
+  "relation default":
+    "A relation default takes no options: attach the children with has(children, field, { inverse }) instead. ",
+};
 
 function fieldListing(client: unknown, model: string): string {
   const names = relationFieldsOf(client, model);
@@ -166,14 +183,22 @@ export function namedRelationField(client: unknown, model: string, relationField
  * a relation the schema names and one it leaves unnamed answer alike. A model relating to itself
  * carries both sides, where the field asked about is never its own inverse. Metadata pairing that
  * field with anything other than exactly one relation field throws, listing the relation fields the
- * target model holds, which the runtime cannot narrow down to the ones a given call accepts.
+ * target model holds, which the runtime cannot narrow down to the ones a given call accepts. Those
+ * throws steer to the `inverse` option of `has`, which `advice` redirects for a caller reaching no
+ * options.
  *
  * @example
  * ```ts
  * inverseRelationField(prisma, "user", "posts"); // "author"
  * ```
  */
-export function inverseRelationField(client: unknown, model: string, relationField: string): string {
+export function inverseRelationField(
+  client: unknown,
+  model: string,
+  relationField: string,
+  advice: InverseAdvice = "has",
+): string {
+  const inverseOption = advised[advice];
   const field = declaredFields(client, model).find((candidate) => candidate.name === relationField);
 
   if (field === undefined)

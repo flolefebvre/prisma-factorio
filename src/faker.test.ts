@@ -1,8 +1,8 @@
 import { allLocales } from "@faker-js/faker";
 import { afterEach, expect, test, vi } from "vitest";
-import { createFakerProvider, type FakerOptions, type FakerProvider } from "./faker.js";
+import { createFakerProvider, type FactorioOptions, type FakerProvider } from "./faker.js";
 
-async function sample(options?: FakerOptions): Promise<string[]> {
+async function sample(options?: FactorioOptions): Promise<string[]> {
   const faker = await createFakerProvider(options)();
   return [faker.person.firstName(), faker.internet.email(), faker.location.city()];
 }

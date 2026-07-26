@@ -8,6 +8,17 @@ test("the package root exports the bootstrap and nothing else at runtime", () =>
   expect(Object.keys(api)).toStrictEqual(["initPrismaFactorio"]);
 });
 
+// A suite spelling one bootstrap configuration and handing it to several bootstraps holds it in a
+// variable of its own, which is nameable only through the type the root exports.
+test("bootstrap options written against the published type reach the bootstrap", async () => {
+  const prisma = await disposableClient();
+  const options: api.FactorioOptions = { seed: 1234, locale: "en" };
+
+  const user = await api.initPrismaFactorio(prisma, options).define("user", { definition: userDefinition }).create();
+
+  expect(user.name).toBe("Ada");
+});
+
 // A state written against the published types has to reach both the places a state is applied:
 // `satisfies` pins its shape without widening it, which is what keeps the field check alive.
 test("a state written against the published types reaches the config and the call site alike", async () => {
