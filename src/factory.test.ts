@@ -964,15 +964,25 @@ async function authoredBy(prisma: TestClient, authorId: number): Promise<number[
   return rows.map((post) => post.id);
 }
 
-async function userCreateData(
+// Every `data` a run handed the user delegate, one entry per record of the batch. The chain the
+// callback hands back is read for its create alone, so a batched one stands here as readily as a
+// single record's.
+async function userWrites(
   harness: Harness,
-  attach: (users: Factory<TestClient, "user">) => Factory<TestClient, "user">,
-): Promise<Record<string, unknown>> {
+  attach: (users: Factory<TestClient, "user">) => { create: () => Promise<unknown> },
+): Promise<Record<string, unknown>[]> {
   const { client, written } = recording(harness.prisma, "user");
 
   await attach(harness.users.using(client)).create();
 
-  return written[0] ?? {};
+  return written;
+}
+
+async function userCreateData(
+  harness: Harness,
+  attach: (users: Factory<TestClient, "user">) => Factory<TestClient, "user">,
+): Promise<Record<string, unknown>> {
+  return (await userWrites(harness, attach))[0] ?? {};
 }
 
 test("has(rows) connects records that already exist rather than creating any", async () => {
@@ -1863,6 +1873,164 @@ test("rows the graph creates are never drawn later, the pool standing as it was 
 
   expect(new Set(rows.map((post) => post.editorId))).toStrictEqual(new Set([ada.id]));
   await expect(harness.prisma.user.count()).resolves.toBe(5);
+});
+
+interface Attaching {
+  harness: Harness;
+  authors: Factory<TestClient, "user">;
+  pool: Row<TestClient, "post">[];
+  ids: number[];
+}
+
+// Posts already written and a user factory recycling them, which is where every `has` case starts.
+// The harness's post factory brings an author of its own, so the users standing behind the pool are no
+// part of what these tests count.
+async function attaching(rows: number): Promise<Attaching> {
+  const harness = await factorioHarness({ seed: 7 });
+  const pool = await harness.posts.count(rows).create();
+
+  return { harness, authors: harness.users.recycle("post", pool), pool, ids: pool.map((post) => post.id) };
+}
+
+// A drawn child leaves nothing behind that a created one would not, so what tells the picks apart is
+// the connect list the parent's own create was handed: one entry per pick.
+function connectedIds(data: Record<string, unknown>, field: string): number[] {
+  const held = data[field] as { connect?: { id: number }[] } | undefined;
+
+  return (held?.connect ?? []).map((row) => row.id);
+}
+
+// A post factory at either arity, which is what `has` takes and what `count` hands back.
+type PostChildren = Factory<TestClient, "post", Row<TestClient, "post"> | Row<TestClient, "post">[]>;
+
+// The post ids each record of a parent batch drew, in the order it drew them.
+async function drawnIds({ harness, pool }: Attaching, children: PostChildren, parents?: number): Promise<number[][]> {
+  const writes = await userWrites(harness, (users) => {
+    const authors = users.recycle("post", pool).has(children, "posts");
+
+    return parents === undefined ? authors : authors.count(parents);
+  });
+
+  return writes.map((data) => connectedIds(data, "posts"));
+}
+
+test("has(factory) over a pooled model connects a pooled row rather than creating a record", async () => {
+  const { harness, authors, ids } = await attaching(1);
+
+  const author = await authors.has(harness.posts, "posts").create();
+
+  await expect(authoredBy(harness.prisma, author.id)).resolves.toStrictEqual(ids);
+  await expect(harness.prisma.post.count()).resolves.toBe(1);
+});
+
+// The picks a batch of children made over a pool of posts: every one of them a row the pool holds,
+// and the pool left exactly as many rows as it was handed.
+async function drawnOver(rows: number, children: number): Promise<number[]> {
+  const target = await attaching(rows);
+  const picks = (await drawnIds(target, target.harness.posts.count(children))).flat();
+
+  expect(strays(picks, target.ids)).toStrictEqual([]);
+  await expect(target.harness.prisma.post.count()).resolves.toBe(rows);
+
+  return picks;
+}
+
+// The batch size the child's own chain carries is what the pool answers for, record for record: a
+// layer collapsing it to one pick would connect a third of the children it was asked for.
+test("has(factory.count(3)) over a pooled model draws a row per record rather than one for the batch", async () => {
+  expect(await drawnOver(3, 3)).toHaveLength(3);
+});
+
+// Picks are drawn with replacement, so a pool holding fewer rows than the batch asks for is legal and
+// hands the same row out twice rather than running dry — there is no distinctness to rely on.
+test("a pool of two rows fills a batch of three, the rows it holds repeating", async () => {
+  const picks = await drawnOver(2, 3);
+
+  expect(picks).toHaveLength(3);
+  expect(new Set(picks).size).toBeLessThan(picks.length);
+});
+
+// The cadence every `has` layer keeps: children belong to one parent record, so a batch of parents
+// draws a batch of children each.
+test("a pooled has() child is drawn per parent record, the whole batch of them", async () => {
+  const target = await attaching(3);
+
+  const picks = await drawnIds(target, target.harness.posts.count(2), 2);
+
+  expect(picks.map((record) => record.length)).toStrictEqual([2, 2]);
+  await expect(target.harness.prisma.post.count()).resolves.toBe(3);
+});
+
+// A caller pools rows it loaded itself, and an `include`d relation is no field to match a record on.
+test("a pooled has() child loaded with include connects on its scalars, the loaded relation left out", async () => {
+  const harness = await factorioHarness({ seed: 7 });
+  const loaded = await postWithComments(harness);
+  const { comments, ...scalars } = loaded;
+
+  const data = await userCreateData(harness, (users) => users.recycle("post", loaded).has(harness.posts, "posts"));
+
+  expect(comments).toStrictEqual([]);
+  expect(data.posts).toStrictEqual({ connect: [scalars] });
+});
+
+// A chain batched to no records asks the pool for nothing, and a relation field with nothing to
+// connect stays unwritten — the same reading `has` gives a list of no children.
+test("has(factory.count(0)) over a pooled model draws nothing and leaves the relation field unwritten", async () => {
+  const { harness, pool } = await attaching(1);
+
+  const data = await userCreateData(harness, (users) =>
+    users.recycle("post", pool).has(harness.posts.count(0), "posts"),
+  );
+
+  expect(Object.keys(data)).toStrictEqual(["email", "name"]);
+  await expect(harness.prisma.post.count()).resolves.toBe(1);
+});
+
+// A drawn child stands for a record that exists already, so the factory naming it never runs — no
+// definition of its own, and no state either.
+test("a pooled has() child factory is never evaluated", async () => {
+  const { harness, authors, pool } = await attaching(1);
+  const evaluated: string[] = [];
+  const posts = harness.f.define("post", {
+    definition: ({ uid }) => {
+      evaluated.push(uid);
+      return { title: uid, author: harness.users };
+    },
+  });
+
+  const author = await authors.has(posts, "posts").create();
+
+  expect(evaluated).toStrictEqual([]);
+  await expect(authoredBy(harness.prisma, author.id)).resolves.toStrictEqual(pool.map((post) => post.id));
+});
+
+// Both ends of an implicit many-to-many hold many records, so a pooled child reaches it through the
+// same `has` layer a created one does, and the picks land in one join table row each.
+test("a pooled has() child joins the parent across an implicit many-to-many", async () => {
+  const { prisma, posts, tags } = await factorioHarness({ seed: 7 });
+  const tag = await tags.create();
+
+  const post = await posts.recycle("tag", tag).has(tags.count(2)).create();
+  const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
+
+  expect(joined.tags.map((row) => row.id)).toStrictEqual([tag.id]);
+  await expect(prisma.tag.count()).resolves.toBe(1);
+});
+
+// The three ways a graph reaches a record of another model, in one create: the author the definition
+// names, the editor a state names, and the tag a `has` layer brings. Every one of them is drawn.
+test("the pool fills a definition slot, a state slot and a has() child of one graph alike", async () => {
+  const { prisma, users, posts, tags } = await factorioHarness({ seed: 7 });
+  const ada = await users.create();
+  const tag = await tags.create();
+
+  const post = await posts.recycle("user", ada).recycle("tag", tag).state({ editor: users }).has(tags).create();
+  const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
+
+  expect([post.authorId, post.editorId]).toStrictEqual([ada.id, ada.id]);
+  expect(joined.tags.map((row) => row.id)).toStrictEqual([tag.id]);
+  await expect(prisma.user.count()).resolves.toBe(1);
+  await expect(prisma.tag.count()).resolves.toBe(1);
 });
 
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails

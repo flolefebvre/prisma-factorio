@@ -381,9 +381,12 @@ const chosen = Symbol("prisma-factorio.chosen");
 // A value naming only these is Prisma's own input, and reaches the client untouched.
 const relationOperations = ["connect", "create", "connectOrCreate", "createMany"];
 
-// The pool a chain hands down, which the factory receiving it merges into the one it carries itself.
+// The pool a chain hands down, which the factory receiving it merges into the one it carries itself,
+// and the number of records that chain creates — which is how many rows stand in for them where the
+// pool names their model. `undefined` is the one record an unbatched chain creates.
 interface Recycler {
   draw: (pool: Pool, pick: Picker) => Embedded;
+  batch: number | undefined;
 }
 
 // The brand holds the factory's model, which is the parent model a `for` call needs and the one
@@ -547,6 +550,25 @@ function connecting(base: Written, rows: unknown[]): Written {
   return { ...base, connect: [...(held === undefined ? [] : listed(held)), ...rows] };
 }
 
+// A child factory whose model the pool names stands for rows already written rather than for records
+// to create: one pick per record its own chain would have created, drawn with replacement, so two of
+// them may well be the same row. A `has` layer names the relation field its children hang off and
+// never a record standing in a slot, so its children are never the caller's own choice of parent. A
+// chain batched to no records draws nothing, and goes on as the child factory that creates nothing.
+function drawn(children: Embedded, wiring: Wiring): Record<string, unknown>[] | undefined {
+  const picks: Record<string, unknown>[] = [];
+
+  for (let index = 0; index < (children[recycler]?.batch ?? 1); index += 1) {
+    const row = pooled(children, wiring, false);
+
+    if (row === undefined) return undefined;
+
+    picks.push(row);
+  }
+
+  return picks.length === 0 ? undefined : picks;
+}
+
 // The two forms part here: a row goes into the connect list the parent's own create carries, and a
 // factory goes into `pending`, which is created once that create has returned the parent row.
 async function attaching(
@@ -560,7 +582,14 @@ async function attaching(
 
   for (const entry of value.entries) {
     if (isFactory(entry.children)) {
-      pending.push({ field, children: entry.children, inverse: entry.inverse, order: entry.order });
+      const picks = drawn(entry.children, wiring);
+
+      if (picks === undefined) {
+        pending.push({ field, children: entry.children, inverse: entry.inverse, order: entry.order });
+        continue;
+      }
+
+      for (const row of picks) rows.push(targetScalars(wiring.client, model, field, row));
       continue;
     }
 
@@ -746,7 +775,9 @@ async function write<C, M extends ModelName<C>>(
  *
  * It carries `Symbol.for("prisma-factorio.recycle")` the same way, valued with an object whose `draw`
  * takes a pool and a picker and hands back this factory drawing from them, its own pooled rows kept.
- * Resolving a relation calls it, which is what spreads one `recycle` over a graph.
+ * Resolving a relation calls it, which is what spreads one `recycle` over a graph. The same object
+ * reports this chain's batch size as `batch`, which is how many rows a `has` layer draws in place of
+ * the records it would have created.
  *
  * @example
  * ```ts
@@ -814,7 +845,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
 
   Object.defineProperty(factory, brand, { value: String(chain.model) });
   Object.defineProperty(factory, rebind, { value: inherit });
-  Object.defineProperty(factory, recycler, { value: { draw } });
+  Object.defineProperty(factory, recycler, { value: { draw, batch: chain.batch } });
 
   return Object.defineProperty(factory, bearer, { value: bear });
 }
