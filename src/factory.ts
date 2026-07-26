@@ -185,9 +185,10 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * Redirects the records this factory creates to a client of its own, an interactive transaction's
    * among them.
    *
-   * Every parent factory a create resolves runs on that client too, however many models the chain of
-   * relation defaults reaches through, so one call covers the whole graph. A parent factory that
-   * named a client of its own keeps it, and its own parents then run on that one.
+   * Every parent factory a create resolves runs on that client too, as does every child factory a
+   * `has` layer creates records through, however many models the graph reaches, so one call covers it
+   * whole. A factory that named a client of its own keeps it, and the factories it resolves in turn
+   * then run on that one.
    *
    * @example
    * ```ts
@@ -250,7 +251,8 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
  * returns a new factory, leaving the receiver untouched.
  *
  * Attributes merge in one order: the definition, then the states in the order they were applied,
- * then the overrides `create` was given. Last write wins per key; a key valued `undefined` is
+ * then the overrides `create` was given. Last write wins per key, save for the relation field a `has`
+ * layer adds to rather than replaces — see {@link FactoryMethods.has}; a key valued `undefined` is
  * skipped at every layer, so the layer before it stands; a `null` is written.
  *
  * `count` takes a non-negative whole number and throws a `RangeError` on anything else; `count(0)`
@@ -674,11 +676,17 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
       return derive({ parent: parent as Record<string, unknown>, relationField });
     },
     has(children: object, ...args: unknown[]): Factory<C, M, R, S> {
-      const [first, second] = args;
-      const named = typeof first === "string";
-      const options = (named ? second : first) as HasOptions | undefined;
+      const [first] = args;
+      // Read off the tail rather than off a position: a relation field the model pair leaves skippable
+      // may still be passed, valued `undefined`, with the options behind it.
+      const tail: unknown = args.at(-1);
+      const options = (typeof tail === "object" ? tail : undefined) as HasOptions | null | undefined;
 
-      return derive({ children, relationField: named ? first : undefined, inverse: options?.inverse });
+      return derive({
+        children,
+        relationField: typeof first === "string" ? first : undefined,
+        inverse: options?.inverse,
+      });
     },
   };
 

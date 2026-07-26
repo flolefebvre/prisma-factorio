@@ -1,4 +1,4 @@
-import { expect, expectTypeOf, onTestFinished, test, vi } from "vitest";
+import { expect, expectTypeOf, onTestFinished, test, vi, type MockedFunction } from "vitest";
 import { inverseRelationField } from "./datamodel.js";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
@@ -1332,11 +1332,11 @@ test("a has() factory standing as a for() parent creates its children on that cl
   );
 });
 
-// Mocked to throw rather than merely counted: the pass says the lookup was never reached, which is
-// what the escape hatch is for on a client whose metadata cannot answer it.
-test("the inverse option names the child's relation field, the lookup never reached", async () => {
-  const { prisma, posts, users } = await factorioHarness();
+// Mocked to throw rather than merely counted: a pass says the lookup was never reached, which is what
+// the escape hatch is for on a client whose metadata cannot answer it.
+function lookupThatThrows(): MockedFunction<typeof inverseRelationField> {
   const lookup = vi.mocked(inverseRelationField);
+
   lookup.mockClear();
   lookup.mockImplementation(() => {
     throw new TypeError("the inverse was looked up");
@@ -1345,10 +1345,42 @@ test("the inverse option names the child's relation field, the lookup never reac
     lookup.mockRestore();
   });
 
+  return lookup;
+}
+
+test("the inverse option names the child's relation field, the lookup never reached", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const lookup = lookupThatThrows();
+
   const user = await users.has(posts, "posts", { inverse: "author" }).create();
 
   await expect(authoredBy(prisma, user.id)).resolves.toHaveLength(1);
   expect(lookup).not.toHaveBeenCalled();
+});
+
+// The post/comment pair shares exactly one has-many relation, which is the pair whose type leaves the
+// relation field skippable and so the only one reaching these two arities at all.
+async function commentedWithoutTheLookup(attach: (harness: Harness) => Factory<TestClient, "post">): Promise<void> {
+  const harness = await factorioHarness();
+  const lookup = lookupThatThrows();
+
+  const post = await attach(harness).create();
+
+  await expect(harness.prisma.comment.count({ where: { postId: post.id } })).resolves.toBe(1);
+  expect(lookup).not.toHaveBeenCalled();
+}
+
+test("the options stand alone where the relation field may be left out, the lookup never reached", async () => {
+  await commentedWithoutTheLookup(({ comments, posts }) => posts.has(comments, { inverse: "post" }));
+});
+
+// The cast is what `exactOptionalPropertyTypes` costs: this package compiles under it, so the slot a
+// skippable relation field leaves takes no explicit `undefined` here. A caller compiling without it —
+// the default — or compiling nothing at all reaches this call as written.
+test("a relation field passed as undefined leaves the options at the tail, the lookup never reached", async () => {
+  await commentedWithoutTheLookup(({ comments, posts }) =>
+    posts.has(comments, undefined as unknown as "comments", { inverse: "post" }),
+  );
 });
 
 // The three messages the lookup itself throws all point at this option, so a name mistyped in it has
