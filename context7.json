@@ -1,7 +1,7 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
   "url": "https://context7.com/flolefebvre/prisma-factorio",
-  "public_key": "pk_REPLACE_WITH_THE_KEY_FROM_THE_CLAIM_MODAL",
+  "public_key": "pk_4Czm4B19o3pEf9xBjNGnP",
   "projectTitle": "@flefebvre/prisma-factorio",
   "description": "Laravel-style model factories for Prisma: tests and seeds declare the records they need through a fluent, fully typed API, inferred from the generated Prisma client. No codegen, no schema parsing, no build step.",
   "branch": "main",
