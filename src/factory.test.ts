@@ -1333,6 +1333,31 @@ test("a parent factory naming a client of its own is created through it, not the
   );
 });
 
+// Two bootstraps over one client: an in-memory SQLite database belongs to one connection, so a second
+// client would be a second, empty database and the post could connect no user across it. What tells
+// the two apart is the client each record is written through, which the recorded delegate reports —
+// the recorded one for a factory the resolving chain rebound, the bare one for a factory that kept its
+// own. The user is counted either way, so a run writing nothing at all fails both directions.
+async function acrossBootstraps(
+  bind: (users: Factory<TestClient, "user">, client: TestClient) => Factory<TestClient, "user">,
+): Promise<[recorded: number, created: number]> {
+  const { prisma, posts } = await factorioHarness();
+  const elsewhere = initPrismaFactorio(prisma).define("user", { definition: userDefinition });
+  const { client, written } = recording(prisma, "user");
+
+  await posts.for(bind(elsewhere, prisma), "author").using(client).create();
+
+  return [written.length, await prisma.user.count()];
+}
+
+test("a parent factory of another bootstrap that named no client is rebound to the resolving one", async () => {
+  await expect(acrossBootstraps((users) => users)).resolves.toStrictEqual([1, 1]);
+});
+
+test("a parent factory of another bootstrap keeps the client its own using() named", async () => {
+  await expect(acrossBootstraps((users, client) => users.using(client))).resolves.toStrictEqual([0, 1]);
+});
+
 interface Attachable {
   harness: Harness;
   first: Row<TestClient, "post">;
