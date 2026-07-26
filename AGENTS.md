@@ -45,7 +45,7 @@ pnpm duplicates     jscpd copy-paste detection
 ```
 
 Each script echoes a `--<name> OK--` marker on success.
-A fresh clone runs `pnpm generate` before a bare `pnpm test` or `pnpm typecheck`; both need the generated test client, and only `pnpm gates` supplies it on its own.
+A fresh clone runs `pnpm install` and `pnpm generate` before a bare `pnpm test` or `pnpm typecheck`; both need the generated test client, and only `pnpm gates` supplies it on its own.
 Run `pnpm format` after making changes so the diff stays limited to what you actually touched.
 
 **Before considering a change done, it must pass the gate:** `pnpm gates` — generate, typecheck, lint, format check, duplicates, test, build.
