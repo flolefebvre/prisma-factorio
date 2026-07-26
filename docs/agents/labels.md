@@ -12,6 +12,12 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
+## Deferral
+
+| Label in our tracker | Meaning                                                                  |
+| -------------------- | ------------------------------------------------------------------------ |
+| `someday-maybe`      | Deferred indefinitely — still wanted, but nothing owns it; not `wontfix` |
+
 ## Type labels
 
 Separate from the triage state machine — these mark what an issue _is_, not where it sits in triage.
