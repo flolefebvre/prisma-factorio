@@ -60,7 +60,7 @@ function relationFields(client: unknown, model: string): DataModelField[] {
  *
  * @example
  * ```ts
- * relationFieldsOf(prisma, "post"); // ["author", "editor", "comments"]
+ * relationFieldsOf(prisma, "post"); // ["author", "editor", "comments", "tags"]
  * ```
  */
 export function relationFieldsOf(client: unknown, model: string): string[] {

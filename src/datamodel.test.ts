@@ -63,8 +63,8 @@ test("the relation fields of a model that point at a target are read off the gen
 test("every relation field a model declares is read off the client, and none of its scalars", async () => {
   const prisma = await disposableClient();
 
-  expect(relationFieldsOf(prisma, "post")).toEqual(["author", "editor", "comments"]);
-  expect(relationFieldsOf(prisma, "user")).toEqual(["posts", "edited"]);
+  expect(relationFieldsOf(prisma, "post")).toEqual(["author", "editor", "comments", "tags"]);
+  expect(relationFieldsOf(prisma, "user")).toEqual(["posts", "edited", "memberships"]);
   expect(relationFieldsOf(prisma, "comment")).toEqual(["post"]);
   expect(relationFieldsOf(prisma, "psot")).toEqual([]);
 });
@@ -148,7 +148,7 @@ test("a name the model declares as no relation field is rejected, naming it and 
 
   for (const name of ["illustrated", "email"]) {
     expect(() => namedRelationField(prisma, "user", name)).toThrow(
-      `The model "user" has no relation field "${name}". Relation fields on "user": "posts", "edited".`,
+      `The model "user" has no relation field "${name}". Relation fields on "user": "posts", "edited", "memberships".`,
     );
   }
 });
@@ -195,7 +195,7 @@ test("a row fitting several target models of the child is rejected, naming the c
 
   expect(() => resolveRowRelationField(prisma, "post", { id: 1 })).toThrow(
     'The row fits no single model the relation fields of "post" point at. ' +
-      'Pass the relation field explicitly. Relation fields on "post": "author", "editor", "comments".',
+      'Pass the relation field explicitly. Relation fields on "post": "author", "editor", "comments", "tags".',
   );
 });
 
@@ -234,7 +234,7 @@ test("a field the model does not declare is rejected, naming the relation fields
   const prisma = await disposableClient();
 
   expect(() => inverseRelationField(prisma, "user", "psots")).toThrow(
-    'The model "user" declares no field "psots". Relation fields on "user": "posts", "edited".',
+    'The model "user" declares no field "psots". Relation fields on "user": "posts", "edited", "memberships".',
   );
 });
 
@@ -242,7 +242,7 @@ test("a field the model declares as something other than a relation is rejected"
   const prisma = await disposableClient();
 
   expect(() => inverseRelationField(prisma, "user", "email")).toThrow(
-    'The field "email" on the model "user" is not a relation field. Relation fields on "user": "posts", "edited".',
+    'The field "email" on the model "user" is not a relation field. Relation fields on "user": "posts", "edited", "memberships".',
   );
 });
 

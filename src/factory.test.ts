@@ -2,7 +2,7 @@ import { expect, expectTypeOf, onTestFinished, test, vi, type MockedFunction } f
 import { inverseRelationField } from "./datamodel.js";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
-import type { Row } from "./prisma.js";
+import type { ModelName, Row } from "./prisma.js";
 import { disposableClient, factorioHarness, userDefinition, type Harness } from "./tests/factorio.js";
 import type { TestClient } from "./tests/client.js";
 
@@ -1005,7 +1005,7 @@ test("has([]) rejects a relation field the model does not declare, naming it and
   const { users } = await factorioHarness();
 
   await expect(users.has([], "illustrated" as unknown as "posts").create()).rejects.toThrow(
-    'The model "user" has no relation field "illustrated". Relation fields on "user": "posts", "edited".',
+    'The model "user" has no relation field "illustrated". Relation fields on "user": "posts", "edited", "memberships".',
   );
 });
 
@@ -1210,11 +1210,17 @@ test("a child factory's own has() reaches the level below it", async () => {
   await expect(prisma.user.count()).resolves.toBe(1);
 });
 
+// `parent` spans every model the client carries, and the join model declares no `id` of its own, so
+// a closure reading one narrows before it reaches the column.
+function parentId(parent: Row<TestClient, ModelName<TestClient>> | undefined): number | undefined {
+  return parent !== undefined && "id" in parent ? parent.id : undefined;
+}
+
 test("a child state closure reads the created parent row through parent", async () => {
   const { prisma, f, users } = await factorioHarness();
   const credited = f.define("post", {
     definition: ({ uid }) => ({ title: uid, author: users }),
-    states: { credited: ({ parent }) => ({ title: `by ${String(parent?.id)}` }) },
+    states: { credited: ({ parent }) => ({ title: `by ${String(parentId(parent))}` }) },
   });
 
   const user = await users.has(credited.credited(), "posts").create();
@@ -1231,7 +1237,7 @@ test("a child factory reused after a has() chain reads no parent of its own", as
     definition: ({ uid }) => ({ title: uid, author: users }),
     states: {
       recorded: ({ parent }) => {
-        seen.push(parent?.id);
+        seen.push(parentId(parent));
         return {};
       },
     },
@@ -1252,7 +1258,7 @@ test("a grandchild reads the record just above it through parent, not the top of
   const { prisma, f, posts, users } = await factorioHarness();
   const credited = f.define("comment", {
     definition: ({ uid }) => ({ body: uid, post: posts }),
-    states: { credited: ({ parent }) => ({ body: `for ${String(parent?.id)}` }) },
+    states: { credited: ({ parent }) => ({ body: `for ${String(parentId(parent))}` }) },
   });
   await users.create();
 

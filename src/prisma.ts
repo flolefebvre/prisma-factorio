@@ -39,7 +39,7 @@ type Unwrap<T> = T extends readonly (infer E)[] ? E : T;
  *
  * @example
  * ```ts
- * type Relations = RelationKey<PrismaClient, "post">; // "author" | "editor" | "comments"
+ * type Relations = RelationKey<PrismaClient, "post">; // "author" | "editor" | "comments" | "tags"
  * ```
  */
 export type RelationKey<C, M extends ModelName<C>> = keyof Objects<C, M> & string;

@@ -7,8 +7,8 @@ import { createTestClient, disposeTestClient, type TestClient } from "./client.j
 /**
  * A bootstrap over a throwaway database, with one factory per model already declared on it.
  *
- * `posts` and `comments` carry a relation default, so creating either walks the chain of factories
- * behind it: a comment brings a post, which brings a user.
+ * `posts`, `comments` and `memberships` carry a relation default, so creating any of them walks the
+ * chain of factories behind it: a comment brings a post, which brings a user.
  *
  * @example
  * ```ts
@@ -21,6 +21,9 @@ export interface Harness {
   users: Factory<TestClient, "user">;
   posts: Factory<TestClient, "post">;
   comments: Factory<TestClient, "comment">;
+  tags: Factory<TestClient, "tag">;
+  teams: Factory<TestClient, "team">;
+  memberships: Factory<TestClient, "membership">;
 }
 
 /**
@@ -64,6 +67,14 @@ export async function factorioHarness(options: FakerOptions = {}): Promise<Harne
   const users = f.define("user", { definition: userDefinition });
   const posts = f.define("post", { definition: ({ uid }) => ({ title: uid, author: users }) });
   const comments = f.define("comment", { definition: ({ uid }) => ({ body: uid, post: posts }) });
+  const tags = f.define("tag", { definition: ({ uid }) => ({ label: uid }) });
+  const teams = f.define("team", { definition: ({ uid }) => ({ slug: uid }) });
+  // Both legs of a join model are required, so its definition names a parent for each. A `has()` or a
+  // `for()` layer replaces the leg it selects before anything is evaluated, leaving the factory named
+  // here uncreated.
+  const memberships = f.define("membership", {
+    definition: () => ({ role: "member", user: users, team: teams }),
+  });
 
-  return { prisma, f, users, posts, comments };
+  return { prisma, f, users, posts, comments, tags, teams, memberships };
 }
