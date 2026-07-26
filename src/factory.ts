@@ -1,5 +1,6 @@
 import {
   inverseRelationField,
+  namedRelationField,
   relationFieldsOf,
   resolveRelationField,
   resolveRowRelationField,
@@ -370,6 +371,9 @@ const attached = Symbol("prisma-factorio.attached");
 interface Attachment {
   children: object;
   inverse: string | undefined;
+  // The position of the `has` call among the layers, which is what the children are created in: the
+  // keys of the merge fall in the order the layers first named them, one field at a time.
+  order: number;
 }
 
 interface Attached {
@@ -384,6 +388,7 @@ interface Pending {
   field: string;
   children: Embedded;
   inverse: string | undefined;
+  order: number;
 }
 
 interface Resolved {
@@ -474,7 +479,7 @@ async function attaching(
 
   for (const entry of value.entries) {
     if (isFactory(entry.children)) {
-      pending.push({ field, children: entry.children, inverse: entry.inverse });
+      pending.push({ field, children: entry.children, inverse: entry.inverse, order: entry.order });
       continue;
     }
 
@@ -514,7 +519,7 @@ async function resolved(client: unknown, model: string, data: Written): Promise<
     written[key] = Object.keys(input).length === 0 ? undefined : input;
   }
 
-  return { data: given(written), pending };
+  return { data: given(written), pending: pending.sort((one, next) => one.order - next.order) };
 }
 
 // The children a `has` layer left pending are created once the parent row exists, through their own
@@ -537,6 +542,8 @@ function shared(parent: Record<string, unknown>, client: unknown): Record<string
   const factory = inheriting(parent, client);
   let row: Promise<unknown> | undefined;
 
+  // This `create` takes no overrides, though the type it stands in for declares them: one row answers
+  // every record of the batch, so there is no single caller whose overrides it could carry.
   return { create: (): Promise<unknown> => (row ??= factory.create()), [brand]: factory[brand] };
 }
 
@@ -551,30 +558,43 @@ function relationStep(client: unknown, model: string, { parent, relationField }:
   return (): Written => ({ [field]: value });
 }
 
+// A list holding no row stands for no model, which is what a named field is checked without and what
+// an omitted one cannot be resolved from at all.
 function attachField(client: unknown, model: string, { children, relationField }: Children): string | undefined {
   if (isFactory(children)) return resolveRelationField(client, model, children[brand], relationField);
 
   const [first] = listed(children) as (Record<string, unknown> | undefined)[];
 
-  return first === undefined ? undefined : resolveRowRelationField(client, model, first, relationField);
+  if (first !== undefined) return resolveRowRelationField(client, model, first, relationField);
+
+  return relationField === undefined ? undefined : namedRelationField(client, model, relationField);
 }
 
-// A layer holding no child at all names no relation field: there is nothing to connect and nothing to
-// create, so the field is left exactly as the layers around it leave it.
-function attachStep(client: unknown, model: string, layer: Children): Step {
+// The name the escape hatch carries is checked against the relation fields the child model points
+// back with, never through the pairing metadata, which is the one lookup it exists to route around.
+// Only a child factory ever reaches back, so the form connecting rows has no name to check.
+function attachInverse(client: unknown, model: string, { children, inverse }: Children): string | undefined {
+  if (inverse === undefined || !isFactory(children)) return inverse;
+
+  return resolveRelationField(client, children[brand], model, inverse);
+}
+
+// A layer naming no relation field leaves it exactly as the layers around it leave it; one naming a
+// field with nothing to connect writes an entry the parent's own create then finds empty.
+function attachStep(client: unknown, model: string, layer: Children, order: number): Step {
   const field = attachField(client, model, layer);
 
   if (field === undefined) return (): Written => ({});
 
-  const entry: Attachment = { children: layer.children, inverse: layer.inverse };
+  const entry: Attachment = { children: layer.children, inverse: attachInverse(client, model, layer), order };
 
   return ({ attrs }): Written => ({ [field]: accumulating(attrs[field], entry) });
 }
 
-function layerStep(client: unknown, model: string, layer: Layer): Step {
+function layerStep(client: unknown, model: string, layer: Layer, order: number): Step {
   if (typeof layer === "function") return layer;
 
-  return "children" in layer ? attachStep(client, model, layer) : relationStep(client, model, layer);
+  return "children" in layer ? attachStep(client, model, layer, order) : relationStep(client, model, layer);
 }
 
 async function write<C, M extends ModelName<C>>(
@@ -587,7 +607,7 @@ async function write<C, M extends ModelName<C>>(
   const model = String(chain.model);
   const delegate = client[chain.model] as CreateDelegate;
   const applied = given(overrides);
-  const steps = chain.applied.map((layer) => layerStep(client, model, layer));
+  const steps = chain.applied.map((layer, order) => layerStep(client, model, layer, order));
   const rows: unknown[] = [];
 
   for (let index = 0; index < (chain.batch ?? 1); index += 1) {

@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   inverseRelationField,
+  namedRelationField,
   relationFieldsOf,
   relationFieldsTo,
   resolveRelationField,
@@ -131,6 +132,25 @@ test("an explicit relation field pointing at another model reports the missing r
   expect(() => resolveRelationField(prisma, "comment", "user", "post")).toThrow(
     'The model "comment" has no relation field pointing at "user". Declare the relation in the Prisma schema.',
   );
+});
+
+test("a name the model declares as a relation field resolves to itself", async () => {
+  const prisma = await disposableClient();
+
+  expect(namedRelationField(prisma, "user", "edited")).toBe("edited");
+});
+
+// The model at the far end is what tells a relation field from a scalar apart from the caller, and a
+// call reaching here has none to name, so both misses are reported as the one thing they have in
+// common: the model declares no relation field under that name.
+test("a name the model declares as no relation field is rejected, naming it and the fields it holds", async () => {
+  const prisma = await disposableClient();
+
+  for (const name of ["illustrated", "email"]) {
+    expect(() => namedRelationField(prisma, "user", name)).toThrow(
+      `The model "user" has no relation field "${name}". Relation fields on "user": "posts", "edited".`,
+    );
+  }
 });
 
 test("a row resolves the relation field through the one target model its own fields fit", async () => {

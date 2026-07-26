@@ -136,6 +136,28 @@ function fieldListing(client: unknown, model: string): string {
 }
 
 /**
+ * The relation field a model declares under a name, checked against the fields it holds.
+ *
+ * The model is named by its delegate key. This is the whole of what a caller naming no model at the
+ * far end can be held to — a name the model declares as a scalar and one it declares not at all are
+ * reported alike — so a call carrying a target model resolves through {@link resolveRelationField}
+ * instead, which narrows the candidates to that pair.
+ *
+ * @example
+ * ```ts
+ * namedRelationField(prisma, "user", "posts"); // "posts"
+ * ```
+ */
+export function namedRelationField(client: unknown, model: string, relationField: string): string {
+  if (!relationFieldsOf(client, model).includes(relationField))
+    throw new TypeError(
+      `The model "${model}" has no relation field "${relationField}". ${fieldListing(client, model)}`,
+    );
+
+  return relationField;
+}
+
+/**
  * The relation field a model reaches back through the relation another one of its own points along.
  *
  * The model is named by its delegate key, the relation field by the name it carries on that model.

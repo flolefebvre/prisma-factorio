@@ -848,16 +848,27 @@ test("for() hands create the relation field as connect and never a foreign key c
   expect(written[0]?.editor).toStrictEqual({ connect: ada });
 });
 
+// Every model a graph under test reaches, counted in one go: a level created through the wrong client
+// is a level this misses on `tx` and finds on the client the harness bootstrapped.
+type Graph = [users: number, posts: number, comments: number];
+
+async function graphOf(client: Transaction): Promise<Graph> {
+  return Promise.all([client.user.count(), client.post.count(), client.comment.count()]);
+}
+
 // The graph is expected inside the transaction and gone once it rolls back, which the counts on
 // `tx` and the counts the caller makes afterwards pin from both sides.
-async function rolledBack(target: TestClient, run: (tx: Transaction) => Promise<unknown>): Promise<void> {
+async function rolledBack(
+  target: TestClient,
+  run: (tx: Transaction) => Promise<unknown>,
+  inside: Graph = [1, 1, 0],
+): Promise<void> {
   const rollback = new Error("rollback");
 
   const outcome: unknown = await target
     .$transaction(async (tx) => {
       await run(tx);
-      await expect(tx.user.count()).resolves.toBe(1);
-      await expect(tx.post.count()).resolves.toBe(1);
+      await expect(graphOf(tx)).resolves.toStrictEqual(inside);
       throw rollback;
     })
     .catch((error: unknown) => error);
@@ -867,16 +878,17 @@ async function rolledBack(target: TestClient, run: (tx: Transaction) => Promise<
 
 // The harness bootstraps on a database of its own, so a parent created through the bootstrap client
 // rather than through `tx` survives the rollback and is counted there.
-async function withoutOrphans(create: (harness: Harness, tx: Transaction) => Promise<unknown>): Promise<void> {
+async function withoutOrphans(
+  create: (harness: Harness, tx: Transaction) => Promise<unknown>,
+  inside?: Graph,
+): Promise<void> {
   const harness = await factorioHarness();
   const target = await disposableClient();
 
-  await rolledBack(target, (tx) => create(harness, tx));
+  await rolledBack(target, (tx) => create(harness, tx), inside);
 
-  await expect(target.user.count()).resolves.toBe(0);
-  await expect(target.post.count()).resolves.toBe(0);
-  await expect(harness.prisma.user.count()).resolves.toBe(0);
-  await expect(harness.prisma.post.count()).resolves.toBe(0);
+  await expect(graphOf(target)).resolves.toStrictEqual([0, 0, 0]);
+  await expect(graphOf(harness.prisma)).resolves.toStrictEqual([0, 0, 0]);
 }
 
 test("for() creates the parent through the client using() named, so a rollback drops it too", async () => {
@@ -888,7 +900,7 @@ test("a relation default in a definition is created through the client using() n
 });
 
 test("a relation default reaching through several models runs every level on that client", async () => {
-  await withoutOrphans(({ comments }, tx) => comments.using(tx).create());
+  await withoutOrphans(({ comments }, tx) => comments.using(tx).create(), [1, 1, 1]);
 });
 
 // The recorded delegate hangs off `tx`, so the records the named client writes land in the
@@ -984,6 +996,16 @@ test("has() rejects a relation field the model pair does not share, naming it an
   await expect(harness.users.has([first], "illustrated" as unknown as "posts").create()).rejects.toThrow(
     'The model "user" has no relation field "illustrated" pointing at "post". ' +
       'Relation fields on "user" pointing at "post": "posts", "edited".',
+  );
+});
+
+// An empty list stands for no model, so the pair the non-empty forms name is out of reach and the
+// field is checked against the ones the model declares alone.
+test("has([]) rejects a relation field the model does not declare, naming it and the candidates", async () => {
+  const { users } = await factorioHarness();
+
+  await expect(users.has([], "illustrated" as unknown as "posts").create()).rejects.toThrow(
+    'The model "user" has no relation field "illustrated". Relation fields on "user": "posts", "edited".',
   );
 });
 
@@ -1133,6 +1155,26 @@ test("the children of one record are created before the next record, layers in t
   expect(order).toStrictEqual(["post", "a", "b", "post", "a", "b"]);
 });
 
+// The state names one of the two relation fields, so the key the layer after it adds is the second
+// one the parent's own attributes carry: what the children are created in is call order, not the
+// order the keys of that merge happen to fall in.
+test("two has() layers on different relation fields create their children in the order called", async () => {
+  const { f, users } = await factorioHarness();
+  const order: string[] = [];
+  const tagged = (tag: string): Factory<TestClient, "post"> =>
+    f.define("post", {
+      definition: ({ uid }) => {
+        order.push(tag);
+        return { title: uid, author: users };
+      },
+    });
+
+  const held = users.state({ posts: { connect: [] } });
+  await held.has(tagged("edited"), "edited").has(tagged("posts"), "posts").create();
+
+  expect(order).toStrictEqual(["edited", "posts"]);
+});
+
 test("has(factory) batched to no records at all creates the parent and no child", async () => {
   const { prisma, posts, users } = await factorioHarness();
 
@@ -1180,6 +1222,59 @@ test("a child state closure reads the created parent row through parent", async 
   await expect(prisma.post.findMany()).resolves.toMatchObject([{ title: `by ${String(user.id)}` }]);
 });
 
+// The row is handed over by deriving a chain of its own, so the factory the caller holds is the one
+// they declared: a record it goes on to create for no one reads the record of a run already over.
+test("a child factory reused after a has() chain reads no parent of its own", async () => {
+  const { prisma, f, users } = await factorioHarness();
+  const seen: (number | undefined)[] = [];
+  const credited = f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: users }),
+    states: {
+      recorded: ({ parent }) => {
+        seen.push(parent?.id);
+        return {};
+      },
+    },
+  });
+
+  // One factory across both calls, naming the client it runs on: a fresh factory would carry a chain
+  // of its own with nothing to go stale, and one the run rebinds would be shielded by that rebinding.
+  const recorded = credited.recorded().using(prisma);
+  await users.has(recorded, "posts").create();
+  await recorded.create();
+
+  expect(seen).toStrictEqual([expect.any(Number), undefined]);
+});
+
+// A user and a post are created first, so the two rows the graph then draws carry different ids and
+// the one the grandchild names is the record above it rather than the record it shares an id with.
+test("a grandchild reads the record just above it through parent, not the top of the chain", async () => {
+  const { prisma, f, posts, users } = await factorioHarness();
+  const credited = f.define("comment", {
+    definition: ({ uid }) => ({ body: uid, post: posts }),
+    states: { credited: ({ parent }) => ({ body: `for ${String(parent?.id)}` }) },
+  });
+  await users.create();
+
+  const user = await users.has(posts.has(credited.credited(), "comments"), "posts").create();
+  const [post] = await prisma.post.findMany({ where: { authorId: user.id } });
+
+  expect(post?.id).not.toBe(user.id);
+  await expect(prisma.comment.findMany()).resolves.toMatchObject([{ body: `for ${String(post?.id)}` }]);
+});
+
+test("two create() calls on one has() chain build the same graph each time", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const authored = users.has(posts.count(2), "posts");
+
+  const first = await authored.create();
+  const second = await authored.create();
+
+  await expect(authoredBy(prisma, first.id)).resolves.toHaveLength(2);
+  await expect(authoredBy(prisma, second.id)).resolves.toHaveLength(2);
+  await expect(prisma.post.count()).resolves.toBe(4);
+});
+
 test("a layer replacing the relation field drops the child factory, which is never evaluated", async () => {
   const target = await attachable();
 
@@ -1209,6 +1304,34 @@ test("a child factory naming a client of its own is created through it, not the 
   );
 });
 
+// A child factory is handed its parent row and its client both, and the two are read off the same
+// chain: a level taking one of them from the wrong place still creates the record, on the client the
+// factory was declared under, where nothing rolls it back.
+test("a nested has() creates the level below the children on that client too", async () => {
+  await withoutOrphans(
+    ({ comments, posts, users }, tx) => users.has(posts.has(comments, "comments"), "posts").using(tx).create(),
+    [1, 1, 1],
+  );
+});
+
+test("a has() graph reached through a relation default creates its children on that client", async () => {
+  await withoutOrphans(
+    ({ f, posts, users }, tx) =>
+      f
+        .define("post", { definition: ({ uid }) => ({ title: uid, author: users.has(posts, "posts") }) })
+        .using(tx)
+        .create(),
+    [1, 2, 0],
+  );
+});
+
+test("a has() factory standing as a for() parent creates its children on that client", async () => {
+  await withoutOrphans(
+    ({ posts, users }, tx) => posts.for(users.has(posts, "posts"), "author").using(tx).create(),
+    [1, 2, 0],
+  );
+});
+
 // Mocked to throw rather than merely counted: the pass says the lookup was never reached, which is
 // what the escape hatch is for on a client whose metadata cannot answer it.
 test("the inverse option names the child's relation field, the lookup never reached", async () => {
@@ -1226,6 +1349,26 @@ test("the inverse option names the child's relation field, the lookup never reac
 
   await expect(authoredBy(prisma, user.id)).resolves.toHaveLength(1);
   expect(lookup).not.toHaveBeenCalled();
+});
+
+// The three messages the lookup itself throws all point at this option, so a name mistyped in it has
+// to answer as a library error rather than as a Prisma invocation the caller cannot place.
+test("the inverse option rejects a name that is no relation field of the child pointing at the parent", async () => {
+  const { posts, users } = await factorioHarness();
+
+  for (const inverse of ["writer", "title"]) {
+    await expect(users.has(posts, "posts", { inverse }).create()).rejects.toThrow(
+      `The model "post" has no relation field "${inverse}" pointing at "user". ` +
+        'Relation fields on "post" pointing at "user": "author", "editor".',
+    );
+  }
+});
+
+test("the inverse option is checked before the parent record is written", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+
+  await expect(users.has(posts, "posts", { inverse: "writer" }).create()).rejects.toThrow(TypeError);
+  await expect(prisma.user.count()).resolves.toBe(0);
 });
 
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
