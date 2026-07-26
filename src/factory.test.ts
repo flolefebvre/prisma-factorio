@@ -2223,6 +2223,146 @@ test("afterCreating keeps the batch and the states, whichever order the chain wa
   expect(log).toStrictEqual(["before", "after", "after"]);
 });
 
+function loggingUsers(f: Factorio<TestClient>, log: string[], name: string): Factory<TestClient, "user"> {
+  return f.define("user", { definition: userDefinition, afterCreating: logging(log, name) });
+}
+
+// A row already standing, which is what a pool hands over: written straight through the client, so no
+// factory ran for it and the log is empty before the graph under test does anything.
+async function standingUser(prisma: TestClient): Promise<Row<TestClient, "user">> {
+  return prisma.user.create({ data: { email: "standing@example.com", name: "Ada" } });
+}
+
+test("a parent's callback sees its has() children already written", async () => {
+  const { f, posts } = await factorioHarness();
+  const counted: number[] = [];
+  const users = f.define("user", {
+    definition: userDefinition,
+    afterCreating: async (user, { client }) => {
+      counted.push(await client.post.count({ where: { authorId: user.id } }));
+    },
+  });
+
+  await users.has(posts.count(2), "posts").create();
+
+  expect(counted).toStrictEqual([2]);
+});
+
+// The whole shape in one graph: a parent the definition embeds, two children a `has` layer creates,
+// and the record between them. The record's own entry counts its children, so the log pins that the
+// record was written before them as well as where its callbacks fall.
+test("a graph fires the parent's callbacks, then each child's own, then the record's last", async () => {
+  const { f, posts: standing } = await factorioHarness();
+  const log: string[] = [];
+  const users = loggingUsers(f, log, "parent");
+  const comments = f.define("comment", {
+    definition: ({ uid }) => ({ body: uid, post: standing }),
+    afterCreating: logging(log, "child"),
+  });
+  const posts = f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: users }),
+    afterCreating: async (post, { client }) => {
+      log.push(`record sees ${String(await client.comment.count({ where: { postId: post.id } }))} children`);
+    },
+  });
+
+  await posts.has(comments.count(2), "comments").create();
+
+  expect(log).toStrictEqual(["parent", "child", "child", "record sees 2 children"]);
+});
+
+// One parent answers the whole batch, so its own create runs once and so do the callbacks behind it.
+test("a for() parent's callbacks fire once per create() call rather than once per record", async () => {
+  const { f, posts } = await factorioHarness();
+  const log: string[] = [];
+  const users = loggingUsers(f, log, "user");
+
+  const written = await posts.count(3).for(users, "author").create();
+
+  expect(written).toHaveLength(3);
+  expect(log).toStrictEqual(["user"]);
+});
+
+// The second create runs the same graph with no pool: it fires once, which is what shows the first
+// create fired none rather than the callback never having been registered.
+test("a row drawn from the pool into an embedded slot fires no callback", async () => {
+  const { prisma, f } = await factorioHarness();
+  const log: string[] = [];
+  const users = loggingUsers(f, log, "user");
+  const posts = f.define("post", { definition: ({ uid }) => ({ title: uid, author: users }) });
+  const ada = await standingUser(prisma);
+
+  await posts.recycle("user", ada).create();
+  await posts.create();
+
+  expect(log).toStrictEqual(["user"]);
+});
+
+// The standing post is created through the factory, so the one entry on the log is its own: the two
+// records the `has` layer would have created were drawn from the pool instead and fired nothing.
+test("a has() child factory drawn from the pool fires no callback", async () => {
+  const { f, users } = await factorioHarness();
+  const log: string[] = [];
+  const posts = f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: users }),
+    afterCreating: logging(log, "post"),
+  });
+  const standing = await posts.create();
+
+  await users.recycle("post", standing).has(posts.count(2), "posts").create();
+
+  expect(log).toStrictEqual(["post"]);
+});
+
+// `for()` names the caller's own parent, which the pool never stands in for, so that record is created
+// like any other and the callbacks behind it run.
+test("a for() parent under a pool of its model is still created, and still fires", async () => {
+  const { prisma, f, posts } = await factorioHarness();
+  const log: string[] = [];
+  const users = loggingUsers(f, log, "user");
+  const ada = await standingUser(prisma);
+
+  await posts.recycle("user", ada).for(users, "author").create();
+
+  expect(log).toStrictEqual(["user"]);
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+test("a throwing callback rejects create(), leaving the record it followed committed", async () => {
+  const { prisma, f } = await factorioHarness();
+  const failed = new Error("the callback failed");
+  const users = f.define("user", {
+    definition: userDefinition,
+    afterCreating: () => {
+      throw failed;
+    },
+  });
+
+  await expect(users.create()).rejects.toBe(failed);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+// The same throw under a transaction the caller opened: nothing catches it, so the transaction the
+// whole graph was written through rolls back and the committed record of the test above is gone too.
+test("a throwing callback under using(tx) leaves the whole graph rolled back", async () => {
+  const harness = await factorioHarness();
+  const target = await disposableClient();
+  const failed = new Error("the callback failed");
+  const users = harness.f.define("user", {
+    definition: userDefinition,
+    afterCreating: () => {
+      throw failed;
+    },
+  });
+
+  const outcome: unknown = await target
+    .$transaction((tx) => users.has(harness.posts.count(2), "posts").using(tx).create())
+    .catch((error: unknown) => error);
+
+  expect(outcome).toBe(failed);
+  await leftBehind(harness, target, [0, 0, 0]);
+});
+
 // Bootstrapped on one database and redirected to another: the post reaches the second only because
 // the callback wrote through the client handed to it rather than through the one it could close over.
 test("a callback writes through the client the chain writes through", async () => {
