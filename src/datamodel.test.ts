@@ -52,7 +52,7 @@ function selfRelating(...names: string[]): unknown {
 }
 
 // The query the arity is read off reaches a database, which a stand-in client answers in its place:
-// `user` holds the relation field under test, `postFactory`, and `Post` the fields its target declares.
+// `user` holds the relation field under test, `posts`, and `Post` the fields its target declares.
 function probing(findFirst: (args: unknown) => Promise<unknown>, target: Field[] = []): unknown {
   const client = clientWith({
     User: [{ name: "posts", kind: "object", type: "Post", relationName: "authored" }],
@@ -241,7 +241,7 @@ test("an explicit relation field the model does not declare is rejected, naming 
   expect(() => resolveRowRelationField(prisma, "post", userShape, "illustrator")).toThrow(unsharedField);
 });
 
-// `commentFactory` and `post` are paired by a label Prisma generates rather than one the schema names, so
+// `comments` and `post` are paired by a label Prisma generates rather than one the schema names, so
 // the pairing is read the same way whether or not `@relation` carries a name.
 test("the inverse of a relation field is the field the target model pairs it with", async () => {
   const prisma = await disposableClient();

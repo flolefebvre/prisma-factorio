@@ -125,10 +125,10 @@ test("every record in a batch reads the same faker", async () => {
 test("count returns a new factory rather than changing the one it was called on", async () => {
   const { prisma, userFactory } = await factorioHarness();
 
-  const batch = userFactory.count(3);
+  const batchFactory = userFactory.count(3);
   await userFactory.create();
 
-  expect(batch).not.toBe(userFactory);
+  expect(batchFactory).not.toBe(userFactory);
   await expect(prisma.user.count()).resolves.toBe(1);
 });
 
@@ -265,10 +265,10 @@ test("a state method returns a new factory rather than changing the one it was c
   const { prismaFactorio } = await factorioHarness();
   const userFactory = statefulUsers(prismaFactorio);
 
-  const suspended = userFactory.suspended();
+  const suspendedFactory = userFactory.suspended();
   const user = await userFactory.create();
 
-  expect(suspended).not.toBe(userFactory);
+  expect(suspendedFactory).not.toBe(userFactory);
   expect(user.name).toBe("Ada");
 });
 
@@ -494,10 +494,10 @@ test("an inline state and a declared state apply in the order they were called",
 test("state returns a new factory rather than changing the one it was called on", async () => {
   const { userFactory } = await factorioHarness();
 
-  const renamed = userFactory.state({ name: "Grace" });
+  const renamedFactory = userFactory.state({ name: "Grace" });
   const user = await userFactory.create();
 
-  expect(renamed).not.toBe(userFactory);
+  expect(renamedFactory).not.toBe(userFactory);
   expect(user.name).toBe("Ada");
 });
 
@@ -1031,11 +1031,11 @@ test("a has() layer adds to the children a to-many default left standing, the de
 
 // The other order of the same pair: every layer that is not a `has` call replaces the relation field
 // whole, the children gathered on it dropped along with it and never evaluated.
-test("a to-many default after has() replaces the field, the children it had gathered never evaluated", async () => {
+test("a to-many default after has() replaces the field, the children it had gatheredFactory never evaluated", async () => {
   const { harness, order, tagged } = await folded();
 
-  const gathered = harness.postFactory.has(tagged("dropped"), "comments");
-  const post = await gathered.state({ comments: tagged("kept") }).create();
+  const gatheredFactory = harness.postFactory.has(tagged("dropped"), "comments");
+  const post = await gatheredFactory.state({ comments: tagged("kept") }).create();
 
   expect(order).toStrictEqual(["kept"]);
   await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toHaveLength(1);
@@ -1045,18 +1045,23 @@ test("a to-many default after has() replaces the field, the children it had gath
 
 // A value standing in a relation field was named by no `has` call, so it carries the order of no layer:
 // every one of them falls ahead of every layer, whichever field it stands in, and what orders two of
-// them is where their keys fall in the merge. The definition names `tagFactory` ahead of `commentFactory`, which the
+// them is where their keys fall in the merge. The definition names `tags` ahead of `comments`, which the
 // model declares the other way round, so schema order would read the pair backwards.
 test("to-many defaults create their children in key order, ahead of the children has() adds", async () => {
   const { harness, order, tagged } = await folded();
-  const labelled = harness.prismaFactorio.define("tag", {
+  const labelledFactory = harness.prismaFactorio.define("tag", {
     definition: ({ uid }) => {
       order.push("tag");
       return { label: uid };
     },
   });
   const draftFactory = harness.prismaFactorio.define("post", {
-    definition: ({ uid }) => ({ title: uid, author: harness.userFactory, tags: labelled, comments: tagged("comment") }),
+    definition: ({ uid }) => ({
+      title: uid,
+      author: harness.userFactory,
+      tags: labelledFactory,
+      comments: tagged("comment"),
+    }),
   });
 
   await draftFactory.has(tagged("added"), "comments").create();
@@ -1149,9 +1154,11 @@ test("for(row) loaded with include resolves the relation field when the name is 
 test("a row loaded with include stands in a relation default, in a definition and in overrides", async () => {
   const harness = await factorioHarness();
   const loaded = await userWithPosts(harness);
-  const authored = harness.prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: loaded }) });
+  const authoredFactory = harness.prismaFactorio.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: loaded }),
+  });
 
-  const fromDefinition = await authored.create();
+  const fromDefinition = await authoredFactory.create();
   const fromOverrides = await harness.postFactory.create({ author: loaded });
 
   expect([fromDefinition.authorId, fromOverrides.authorId]).toStrictEqual([loaded.id, loaded.id]);
@@ -1222,10 +1229,10 @@ test("count(3).for(factory) creates one parent the whole batch connects to", asy
 
 test("each create() call draws a parent of its own, so two calls connect to two records", async () => {
   const { prisma, postFactory, userFactory } = await factorioHarness();
-  const authored = postFactory.for(userFactory, "author");
+  const authoredFactory = postFactory.for(userFactory, "author");
 
-  await authored.create();
-  await authored.create();
+  await authoredFactory.create();
+  await authoredFactory.create();
 
   await expect(prisma.user.count()).resolves.toBe(2);
 });
@@ -1247,10 +1254,10 @@ test("for returns a new factory rather than changing the one it was called on", 
   const { prisma, postFactory, userFactory } = await factorioHarness();
   const ada = await userFactory.create();
 
-  const authored = postFactory.for(ada, "author");
+  const authoredFactory = postFactory.for(ada, "author");
   await postFactory.create();
 
-  expect(authored).not.toBe(postFactory);
+  expect(authoredFactory).not.toBe(postFactory);
   await expect(prisma.user.count()).resolves.toBe(2);
 });
 
@@ -1330,7 +1337,7 @@ async function rolledBack(
   expect(outcome).toBe(rollback);
 }
 
-// The harness bootstraps on a database of its own, so a parent created through the source client
+// The harness bootstraps on a database of its own, so a parent created through the harness client
 // rather than through `tx` survives the rollback and is counted there.
 async function withoutOrphans(
   create: (harness: Harness, tx: Transaction) => Promise<unknown>,
@@ -1399,19 +1406,19 @@ async function acrossBootstraps(
   bind: (userFactory: Factory<TestClient, "user">, client: TestClient) => Factory<TestClient, "user">,
 ): Promise<[recorded: number, created: number]> {
   const { prisma, postFactory } = await factorioHarness();
-  const elsewhere = initPrismaFactorio(prisma).define("user", { definition: userDefinition });
+  const elsewhereFactory = initPrismaFactorio(prisma).define("user", { definition: userDefinition });
   const { client, written } = recording(prisma, "user");
 
-  await postFactory.for(bind(elsewhere, prisma), "author").using(client).create();
+  await postFactory.for(bind(elsewhereFactory, prisma), "author").using(client).create();
 
   return [written.length, await prisma.user.count()];
 }
 
-test("a parent factory of another source that named no client is rebound to the resolving one", async () => {
+test("a parent factory of another bootstrap that named no client is rebound to the resolving one", async () => {
   await expect(acrossBootstraps((userFactory) => userFactory)).resolves.toStrictEqual([1, 1]);
 });
 
-test("a parent factory of another source keeps the client its own using() named", async () => {
+test("a parent factory of another bootstrap keeps the client its own using() named", async () => {
   await expect(acrossBootstraps((userFactory, client) => userFactory.using(client))).resolves.toStrictEqual([0, 1]);
 });
 
@@ -1566,8 +1573,8 @@ test("two has() calls naming different relation fields both apply", async () => 
 test("has() adds to the relation field a state before it left standing", async () => {
   const { harness, first, second } = await attachable();
 
-  const held = harness.userFactory.state({ posts: { connect: [{ id: first.id }] } });
-  const user = await held.has([second], "posts").create();
+  const heldFactory = harness.userFactory.state({ posts: { connect: [{ id: first.id }] } });
+  const user = await heldFactory.has([second], "posts").create();
 
   await expect(authoredBy(harness.prisma, user.id)).resolves.toStrictEqual([first.id, second.id]);
 });
@@ -1578,23 +1585,23 @@ async function replacedByAState(
   { harness, second }: Attachable,
   children: readonly Row<TestClient, "post">[] | Factory<TestClient, "post">,
 ): Promise<number[]> {
-  const gathered = harness.userFactory.has(children, "posts");
-  const user = await gathered.state({ posts: { connect: [{ id: second.id }] } }).create();
+  const gatheredFactory = harness.userFactory.has(children, "posts");
+  const user = await gatheredFactory.state({ posts: { connect: [{ id: second.id }] } }).create();
 
   return authoredBy(harness.prisma, user.id);
 }
 
-test("a state after has() replaces the relation field, the children it had gathered dropped", async () => {
+test("a state after has() replaces the relation field, the children it had gatheredFactory dropped", async () => {
   const target = await attachable();
 
   await expect(replacedByAState(target, [target.first])).resolves.toStrictEqual([target.second.id]);
 });
 
-test("create(overrides) replaces the relation field has() filled, the children it had gathered dropped", async () => {
+test("create(overrides) replaces the relation field has() filled, the children it had gatheredFactory dropped", async () => {
   const { harness, first, second } = await attachable();
 
-  const gathered = harness.userFactory.has([first], "posts");
-  const user = await gathered.create({ posts: { connect: [{ id: second.id }] } });
+  const gatheredFactory = harness.userFactory.has([first], "posts");
+  const user = await gatheredFactory.create({ posts: { connect: [{ id: second.id }] } });
 
   await expect(authoredBy(harness.prisma, user.id)).resolves.toStrictEqual([second.id]);
 });
@@ -1602,10 +1609,10 @@ test("create(overrides) replaces the relation field has() filled, the children i
 test("has returns a new factory rather than changing the one it was called on", async () => {
   const { harness, first } = await attachable();
 
-  const authored = harness.userFactory.has([first], "posts");
+  const authoredFactory = harness.userFactory.has([first], "posts");
   const user = await harness.userFactory.create();
 
-  expect(authored).not.toBe(harness.userFactory);
+  expect(authoredFactory).not.toBe(harness.userFactory);
   await expect(authoredBy(harness.prisma, user.id)).resolves.toStrictEqual([]);
 });
 
@@ -1642,11 +1649,11 @@ test("the children of one record are created before the next record, layers in t
       },
     });
 
-  const parents = postFactory.state(() => {
+  const parentFactory = postFactory.state(() => {
     order.push("post");
     return {};
   });
-  await parents.count(2).has(tagged("a"), "comments").has(tagged("b"), "comments").create();
+  await parentFactory.count(2).has(tagged("a"), "comments").has(tagged("b"), "comments").create();
 
   expect(order).toStrictEqual(["post", "a", "b", "post", "a", "b"]);
 });
@@ -1665,8 +1672,8 @@ test("two has() layers on different relation fields create their children in the
       },
     });
 
-  const held = userFactory.state({ posts: { connect: [] } });
-  await held.has(tagged("edited"), "edited").has(tagged("posts"), "posts").create();
+  const heldFactory = userFactory.state({ posts: { connect: [] } });
+  await heldFactory.has(tagged("edited"), "edited").has(tagged("posts"), "posts").create();
 
   expect(order).toStrictEqual(["edited", "posts"]);
 });
@@ -1741,9 +1748,9 @@ test("a child factory reused after a has() chain reads no parent of its own", as
 
   // One factory across both calls, naming the client it runs on: a fresh factory would carry a chain
   // of its own with nothing to go stale, and one the run rebinds would be shielded by that rebinding.
-  const recorded = creditedFactory.recorded().using(prisma);
-  await userFactory.has(recorded, "posts").create();
-  await recorded.create();
+  const recordedFactory = creditedFactory.recorded().using(prisma);
+  await userFactory.has(recordedFactory, "posts").create();
+  await recordedFactory.create();
 
   expect(seen).toStrictEqual([expect.any(Number), undefined]);
 });
@@ -1767,10 +1774,10 @@ test("a grandchild reads the record just above it through parent, not the top of
 
 test("two create() calls on one has() chain build the same graph each time", async () => {
   const { prisma, postFactory, userFactory } = await factorioHarness();
-  const authored = userFactory.has(postFactory.count(2), "posts");
+  const authoredFactory = userFactory.has(postFactory.count(2), "posts");
 
-  const first = await authored.create();
-  const second = await authored.create();
+  const first = await authoredFactory.create();
+  const second = await authoredFactory.create();
 
   await expect(authoredBy(prisma, first.id)).resolves.toHaveLength(2);
   await expect(authoredBy(prisma, second.id)).resolves.toHaveLength(2);
@@ -2467,7 +2474,7 @@ test("a pool of one row connects that row to every record of a batch", async () 
   await expect(harness.prisma.user.count()).resolves.toBe(1);
 });
 
-// Nothing the graph writes joins the pool: the authorFactory these records create never turn up in a later
+// Nothing the graph writes joins the pool: the authors these records create never turn up in a later
 // pick, however many of them exist by the time the next slot is filled.
 test("rows the graph creates are never drawn later, the pool standing as it was handed over", async () => {
   const { harness, postFactory, ada } = await pooling();
@@ -2672,7 +2679,7 @@ test("a pooled join-model row fails on its compound key too, drawn into the pare
   ).rejects.toThrow("Expected MembershipWhereUniqueInput");
 });
 
-// What the post's own create was handed under `commentFactory`, one entry per record of the batch, alongside
+// What the post's own create was handed under `comments`, one entry per record of the batch, alongside
 // what the post holds once the graph is done, every comment standing by then and the row the pool was
 // handed. A drawn child leaves nothing behind that a created one would not, and a pool of one hands
 // that row out every time, so the connect list is what tells one pick from two where the database tells
@@ -2981,10 +2988,10 @@ test("each callback finishes before the next one starts", async () => {
 test("afterCreating leaves the factory it was called on untouched", async () => {
   const { userFactory } = await factorioHarness();
   const log: string[] = [];
-  const notified = userFactory.afterCreating(logging(log, "once"));
+  const notifiedFactory = userFactory.afterCreating(logging(log, "once"));
 
   await userFactory.create();
-  await notified.create();
+  await notifiedFactory.create();
 
   expect(log).toStrictEqual(["once"]);
 });

@@ -69,6 +69,7 @@ One dialect, in documentation and in code alike.
 - The Factorio a bootstrap hands back is named `prismaFactorio` — `const prismaFactorio = initPrismaFactorio(…)`.
 - A variable holding a `Factory` ends in `Factory`, whether it is named for its model or for its flavour: `userFactory`, `postFactory`, `guestFactory`, `creditedFactory`. Name the model too where one stem would otherwise serve two of them in the same file — `creditedPostFactory`.
 - Everything else takes a bare noun, rows especially: `ada`, `authors`, `drafts`. The suffix is what says "factory", so its absence says "data".
+- The suffix earns its place by telling a factory from data of the same noun, so it is dropped where it cannot: a binding already named `factory`, and one holding either a factory or rows — `children` — which the suffix would misdescribe half the time.
 
 This governs the repository — its README, its JSDoc examples and its tests. It is not imposed on consumers, who name their own variables.
 

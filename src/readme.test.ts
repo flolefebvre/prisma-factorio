@@ -230,10 +230,11 @@ export async function recycleSection(
   userFactory: Factory<TestClient, "user">,
   ada: Row<TestClient, "user">,
   grace: Row<TestClient, "user">,
-  loaded: Row<TestClient, "user"> & { postFactory: Row<TestClient, "post">[] },
+  loaded: Row<TestClient, "user"> & { posts: Row<TestClient, "post">[] },
   existingPosts: Row<TestClient, "post">[],
   onePost: Row<TestClient, "post">,
 ): Promise<void> {
+  /* jscpd:ignore-start — a transcription of the document restates what the suite declares; that is this file's purpose, not duplication to refactor away. */
   const postFactory = prismaFactorio.define("post", {
     definition: ({ uid }) => ({ title: uid, author: userFactory, editor: userFactory }),
   });
@@ -241,6 +242,7 @@ export async function recycleSection(
   const commentFactory = prismaFactorio.define("comment", {
     definition: ({ uid }) => ({ body: uid, post: postFactory }),
   });
+  /* jscpd:ignore-end */
 
   const comment = await commentFactory.recycle("user", ada).create();
   expectTypeOf(comment).toEqualTypeOf<Row<TestClient, "comment">>();
@@ -361,11 +363,11 @@ export function createInputIsNotPrismas(prisma: TestClient): void {
   void prisma.user.create({ data: created });
 }
 
-// README "Transactional tests", the `postFactory.test.ts` block — run rather than merely compiled, the
+// README "Transactional tests", the `posts.test.ts` block — run rather than merely compiled, the
 // recipe being the one the section tells a reader to copy. The sentinel is what commits nothing.
 class Rollback extends Error {}
 
-test("an author reaches the postFactory written for them", async () => {
+test("an author reaches the posts written for them", async () => {
   const { prisma, postFactory, userFactory } = await factorioHarness();
 
   await expect(

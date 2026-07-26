@@ -5,8 +5,8 @@ Laravel-style model factories for Prisma: tests and seeds declare the records th
 ## Language
 
 **Factorio**:
-The client-bound entry point `initPrismaFactorio` hands back, carrying the one faker and the one recycle stream every factory it defines draws from. Bootstrapping is the act that produces it; the Factorio is the object produced.
-_Avoid_: bootstrap (names the act), container, registry, root
+The client-bound entry point `initPrismaFactorio` hands back, carrying the one faker and the one recycle stream every factory it defines draws from. Bootstrapping is the act that produces it, and prose may call the object the bootstrap where the act is not in question; `prismaFactorio` is what names it in code.
+_Avoid_: container, registry, root
 
 **Factory**:
 An immutable, fluent builder bound to one Prisma model that produces records from a definition plus applied transformations.
