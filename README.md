@@ -89,7 +89,7 @@ const vips = await users.count(3).vip().create();
 const once = await users.state({ name: "Ada Lovelace" }).create();
 ```
 
-- A state is either a plain partial of the model's attributes or a closure returning one. A closure receives everything a definition gets, plus `attrs` — the attributes evaluated so far, the definition first and then the states already applied — and `parent`, which stays `undefined` until `has` populates it ([#30](https://github.com/flolefebvre/prisma-factorio/issues/30)).
+- A state is either a plain partial of the model's attributes or a closure returning one. A closure receives everything a definition gets, plus `attrs` — the attributes evaluated so far, the definition first and then the states already applied — and `parent`, the record this one is created for — the row a `has()` layer created just before reaching this factory, and `undefined` for a factory created on its own.
 - **Every `states` key becomes a typed method.** `users.suspended()` autocompletes and `users.suspnded()` is a compile error, as is a state naming a field the model does not have or giving one the wrong type. This is the compile-checked replacement for Laravel's magic state methods.
 - `.state(partialOrClosure)` applies a one-off transformation at the call site, typed exactly like a declared state.
 - **Order of application:** the definition, then the states in the order they were applied, then `create(overrides)`. Last write wins per key; a key valued `undefined` is skipped at every layer, so the layer before it stands; a `null` is written.
@@ -109,7 +109,7 @@ const byAda = await posts.for(ada, "author").create();
 ```
 
 - **The relation field is checked against the pair of models.** It may be left out where the two share exactly one belongs-to relation, must be named where they share several, and no value satisfies it where they share none — a `for()` between two unrelated models is a compile error.
-- **To-one relations only.** A relation field holding many records is a compile error; that side arrives with `has`.
+- **Relation values are to-one.** A relation field holding many records is a compile error in a definition, in a state and in `create()` overrides alike. The has-many side is reached through [`has()`](#children) instead, which is a method on the chain rather than a value.
 - **`for()` returns a new factory, and states survive it in both chaining directions.** `posts.for(users, "author").drafted()` and `posts.drafted().for(users, "author")` both apply the state.
 
 A relation field also takes a parent directly — in a definition, in a state, or in `create()` overrides:
@@ -149,6 +149,32 @@ A shared parent lasts exactly one `create()` call: calling `create()` twice draw
 
 **No orphans.** A parent whose relation key a later layer overwrites is never created at all — the losing factory is never evaluated.
 
+### Children
+
+`has()` fills a relation field holding many records, alongside every record the factory creates — a child factory, whose records are created for each parent record through that model's own `create`, or rows that already exist, connected as they stand and never re-created:
+
+```ts
+const author = await users.has(posts.count(3), "posts").create();
+```
+
+`create()` returns the **user**; the three posts are created after it, each reaching back to that user, and are not returned.
+
+- **The relation field is checked against the pair of models**, exactly as `for()` checks it: it may be left out where the two share exactly one has-many relation, must be named where they share several, and no value satisfies it where they share none.
+- **A child reads the record it was created for.** `parent` in a child's state closure is the created parent row — real `id`, database defaults included. Its type spans every model the client carries, so narrow it before reading a field only some of them declare.
+- **`has()` adds, every other layer replaces.** Two calls on one relation field both apply, and a `has()` after a state adds to what that state left standing. A state or a `create()` override naming that field replaces it whole — a child factory so replaced creates nothing.
+- **Ordering is depth-first.** Every child of one record is created before the next record of a batch, layer by layer in the order the calls were made.
+- **`has(factory.count(0))` and `has([])` are legal**, and create the parent with nothing attached.
+- **`inverse` names the relation field the child reaches its parent back through** — `users.has(posts, "posts", { inverse: "author" })` — for a relation whose two sides the client's metadata cannot pair down to one. It bypasses that lookup and nothing else.
+
+**Batch cadence.** Children are created per parent record, where a `for()` parent is evaluated once per `create()` call:
+
+```ts
+await users.count(3).has(posts.count(2), "posts").create(); // 3 users, 6 posts — 2 each
+await posts.count(3).for(users, "author").create(); // 3 posts, 1 user — shared
+```
+
+Same fluent shape, opposite multiplicity.
+
 ## Good to know
 
 - **Every fluent call returns a new factory.** `users.count(3)` does not change `users`.
@@ -167,6 +193,6 @@ A shared parent lasts exactly one `create()` call: calling `create()` twice draw
 
 v1 is in progress; this README tracks what actually works today.
 
-Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, and `for` with relation defaults.
+Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for` with relation defaults, and `has` for the children on the other side.
 
-Tracked next, in no promised order: `has` relations, many-to-many, `recycle`, and `afterCreating`.
+Tracked next, in no promised order: many-to-many, `recycle`, and `afterCreating`.

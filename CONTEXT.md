@@ -37,8 +37,12 @@ Prisma's `@relation("…")` pairing key (`relationName` in the runtime datamodel
 _Avoid_: relationName (in API surfaces)
 
 **Parent**:
-The record a factory attaches the records it creates to, named by `for()` or by a relation default. Not `StateContext.parent`, which stays unpopulated until `has` lands.
+The record a factory attaches the records it creates to, named by `for()`, by a relation default, or by the `has()` call it hangs from. A child reads it as the created row through `StateContext.parent`.
 _Avoid_: owner, target, related record
+
+**Child**:
+A record on the many side of a relation field, attached to one parent by `has()` — created per parent record by a factory of its own, or connected as an existing row.
+_Avoid_: descendant, dependent, sub-record
 
 **Relation default**:
 A relation-valued attribute in a definition, a state or `create()` overrides, holding a factory, an existing row, or native Prisma relation input.
