@@ -13,10 +13,19 @@ test("the package root exports the bootstrap and nothing else at runtime", () =>
 test("bootstrap options written against the published type reach the bootstrap", async () => {
   const prisma = await disposableClient();
   const options: api.FactorioOptions = { seed: 1234, locale: "en" };
+  const names = async (): Promise<(string | null)[]> => {
+    const rows = await api
+      .initPrismaFactorio(prisma, options)
+      .define("user", {
+        definition: ({ faker, uid }) => ({ email: `${uid}@example.com`, name: faker.person.fullName() }),
+      })
+      .count(3)
+      .create();
 
-  const user = await api.initPrismaFactorio(prisma, options).define("user", { definition: userDefinition }).create();
+    return rows.map((row) => row.name);
+  };
 
-  expect(user.name).toBe("Ada");
+  expect(await names()).toStrictEqual(await names());
 });
 
 // A state written against the published types has to reach both the places a state is applied:

@@ -2498,7 +2498,9 @@ test("a pooled has() child is drawn per parent record, the whole batch of them",
 // A connect into a relation field backed by a required foreign key re-homes the child, rewriting the
 // column the pooled copy still carries: the next parent record drawing that row matches it on scalars
 // the database no longer holds. Tracked as issue #47, which leaves a pooled row of such a relation good
-// for one parent record. The README paragraph naming #47 stands or falls with this test.
+// for one parent record. The README paragraph naming #47 stands or falls with this test. The cadence
+// tests run over the implicit many-to-many alone, so this route wants a positive cadence test again
+// once #47 is fixed.
 test("a pooled has() child fails the second parent record, its foreign key rewritten by the first", async () => {
   const { harness, authors } = await attaching(1);
 

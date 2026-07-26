@@ -226,8 +226,9 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * Every parent factory a create resolves runs on that client too, as does every child factory a
    * `has` layer creates records through, however many models the graph reaches, so one call covers it
    * whole. What is handed down is the client itself rather than the one delegate this signature names,
-   * so it has to carry a delegate for every model the graph reaches: a stand-in built for this model
-   * alone type-checks here and then throws the moment the graph reaches a second one.
+   * so it has to be a generated client, or a derivative of one keeping its relation metadata — which an
+   * interactive transaction's does. A hand-built object of delegates keeps none, so it type-checks here
+   * and then throws the moment the graph reaches a second model, however many delegates it carries.
    *
    * A factory that named a client of its own through `using` keeps it, and the factories it resolves in
    * turn then run on that one. A factory that named none runs on this client instead, silently — a
