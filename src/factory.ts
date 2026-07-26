@@ -296,8 +296,9 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * inline — is drawn from. That precedence covers the slot named and nothing under it, so the pool
    * still fills the graph beneath such a parent. Nothing the graph creates ever joins the pool.
    *
-   * A `has` layer whose children are a factory of a pooled model connects drawn rows in place of
-   * creating records, one pick per record that chain would have created, drawn with replacement.
+   * A factory of a pooled model connects drawn rows in place of creating records — one pick per record
+   * that chain would have created, drawn with replacement — whether it arrives as the children of a
+   * `has` layer or stands in a relation field holding many records.
    *
    * A row of the named model is what the argument takes, whatever else it carries: pooled rows
    * connect on the target model's scalars, so one loaded with `include` stands here as readily as one
@@ -624,7 +625,9 @@ const standingOrder = -1;
 // A factory standing in a relation field holding many records is a `has` layer written as an attribute:
 // its records hang off a row that does not exist yet, so they wait in `pending` rather than being
 // created and connected, which would leave whatever their own foreign keys brought behind. A field
-// holding a single record is the side the record has to exist first for, and is created here.
+// holding a single record is the side the record has to exist first for, and is created here. The
+// arity is asked ahead of the pool: a single connect is a shape both arities take, so a slot drawn
+// before its arity is known would collapse a whole batch of children to one row.
 async function embodied(
   wiring: Wiring,
   model: string,
@@ -633,12 +636,17 @@ async function embodied(
   pending: Pending[],
   explicit: boolean,
 ): Promise<Written> {
-  const row = pooled(value, wiring, explicit);
+  if (!(await holdsManyRecords(wiring.client, model, field))) {
+    const row = pooled(value, wiring, explicit);
 
-  if (row !== undefined) return matching(wiring.client, model, field, row);
+    return row === undefined
+      ? { connect: await recycling(inheriting(value, wiring.client), wiring).create() }
+      : matching(wiring.client, model, field, row);
+  }
 
-  if (!(await holdsManyRecords(wiring.client, model, field)))
-    return { connect: await recycling(inheriting(value, wiring.client), wiring).create() };
+  const picks = drawn(value, wiring, explicit);
+
+  if (picks !== undefined) return matchingAll(wiring.client, model, field, picks);
 
   // The stand-in a `for` call leaves takes no overrides, so it has nothing to reach back through the
   // inverse relation with: pending children of it would hang off no parent at all.
@@ -678,16 +686,15 @@ function connecting(base: Written, rows: unknown[]): Written {
   return { ...base, connect: [...(held === undefined ? [] : listed(held)), ...rows] };
 }
 
-// A child factory whose model the pool names stands for rows already written rather than for records
-// to create: one pick per record its own chain would have created, drawn with replacement, so two of
-// them may well be the same row. A `has` layer names the relation field its children hang off and
-// never a record standing in a slot, so its children are never the caller's own choice of parent. A
-// chain batched to no records draws nothing, and goes on as the child factory that creates nothing.
-function drawn(children: Embedded, wiring: Wiring): Record<string, unknown>[] | undefined {
+// A factory whose model the pool names stands for rows already written rather than for records to
+// create: one pick per record its own chain would have created, drawn with replacement, so two of them
+// may well be the same row. A chain batched to no records draws nothing, and goes on as the factory
+// that creates nothing.
+function drawn(children: Embedded, wiring: Wiring, explicit: boolean): Record<string, unknown>[] | undefined {
   const picks: Record<string, unknown>[] = [];
 
   for (let index = 0; index < (children[recycler]?.batch ?? 1); index += 1) {
-    const row = pooled(children, wiring, false);
+    const row = pooled(children, wiring, explicit);
 
     if (row === undefined) return undefined;
 
@@ -698,7 +705,10 @@ function drawn(children: Embedded, wiring: Wiring): Record<string, unknown>[] | 
 }
 
 // The two forms part here: a row goes into the connect list the parent's own create carries, and a
-// factory goes into `pending`, which is created once that create has returned the parent row.
+// factory goes into `pending`, which is created once that create has returned the parent row. Nothing
+// a `has` layer holds is the caller's own choice of parent: the layer names the relation field its
+// children hang off and never a record standing in a slot, and an override replaces the relation field
+// whole, children and all, so what the layer gathered on top of was named by no override either.
 async function attaching(
   wiring: Wiring,
   model: string,
@@ -710,7 +720,7 @@ async function attaching(
 
   for (const entry of value.entries) {
     if (isFactory(entry.children)) {
-      const picks = drawn(entry.children, wiring);
+      const picks = drawn(entry.children, wiring, false);
 
       if (picks === undefined) {
         pending.push({ field, children: entry.children, inverse: entry.inverse, order: entry.order });
@@ -724,8 +734,6 @@ async function attaching(
     for (const row of listed(entry.children)) rows.push(targetScalars(wiring.client, model, field, row as Written));
   }
 
-  // Overrides replace the relation field whole, children and all, so what a `has` layer gathered on
-  // top of is never the caller's own choice of parent.
   const held = standing(value.base);
   const base = held === undefined ? {} : await connected(wiring, model, field, held, pending);
 
@@ -911,8 +919,8 @@ async function write<C, M extends ModelName<C>>(
  * It carries `Symbol.for("prisma-factorio.recycle")` the same way, valued with an object whose `draw`
  * takes a pool and a picker and hands back this factory drawing from them, its own pooled rows kept.
  * Resolving a relation calls it, which is what spreads one `recycle` over a graph. The same object
- * reports this chain's batch size as `batch`, which is how many rows a `has` layer draws in place of
- * the records it would have created.
+ * reports this chain's batch size as `batch`, which is how many rows a `has` layer — or a relation
+ * field holding many records — draws in place of the records it would have created.
  *
  * @example
  * ```ts
