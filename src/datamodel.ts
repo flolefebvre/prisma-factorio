@@ -11,7 +11,8 @@ interface DataModelModel {
 
 // `_runtimeDataModel` is the client's only runtime source of relation metadata: the generated
 // `Prisma` namespace no longer exports `dmmf`, and a delegate's `fields` lists scalars alone. It is
-// absent from the generated `.d.ts`, so reading it needs a shape declared here.
+// absent from the generated `.d.ts`, so reading it needs a shape declared here. It marks no field as
+// holding many records, which is what {@link holdsManyRecords} puts to the query API instead.
 interface WithRuntimeDataModel {
   _runtimeDataModel?: { models: Record<string, DataModelModel> };
 }
@@ -304,4 +305,114 @@ export function resolveRowRelationField(
   const target = targetOf(client, model, relationField) ?? fittingTarget(client, model, row);
 
   return resolveRelationField(client, model, target, relationField);
+}
+
+interface Delegate {
+  findFirst: (args: unknown) => Promise<unknown>;
+}
+
+function delegateOf(client: unknown, model: string): Delegate {
+  const delegate = (client as Record<string, Delegate | null | undefined>)[model];
+
+  if (delegate === undefined || delegate === null)
+    throw new TypeError(
+      `The client carries no delegate for the model "${model}". Pass a generated Prisma client, not its relation metadata alone.`,
+    );
+
+  // A delegate carrying every method its caller ever needed still answers no arity: the query it is
+  // read off is one a hand-rolled double reaches only once a relation default stands in a field.
+  if (typeof delegate.findFirst !== "function")
+    throw new TypeError(
+      `The delegate for the model "${model}" answers no findFirst, which a relation field's arity is read through. ` +
+        "A client used with a relation default must answer findFirst on every model it carries.",
+    );
+
+  return delegate;
+}
+
+// Prisma names its error classes on the instance, which tells a query the client refused to send
+// from one the database refused to answer without reading either message.
+function isValidationError(error: unknown): boolean {
+  return error instanceof Error && error.name === "PrismaClientValidationError";
+}
+
+// The keys a filter on a relation field holding many records takes, of which the probe names one the
+// target model declares no field under: a field holding a single record takes that model's own
+// where-input too, where a key naming one of its fields validates and answers nothing.
+const manyFilters = ["some", "every", "none"];
+
+function probeFilter(client: unknown, model: string, relationField: string): string {
+  const tag = tagOf(client, model, relationField);
+  const declared = tag === undefined ? [] : declaredNames(modelsOf(client), tag);
+  const [free] = manyFilters.filter((key) => !declared.includes(key));
+
+  // A model declaring a field under every one of them leaves no key a field holding a single record
+  // refuses, so any of them would validate there and report that field as holding many.
+  if (free === undefined)
+    throw new TypeError(
+      `The model at the far end of the relation field "${relationField}" on "${model}" declares a field under each of ` +
+        `${quoted(manyFilters)}, which leaves the arity no filter key to be read off. ` +
+        "Rename one of them in the Prisma schema.",
+    );
+
+  return free;
+}
+
+async function probeHoldsMany(client: unknown, model: string, relationField: string): Promise<boolean> {
+  const filter = probeFilter(client, model, relationField);
+
+  try {
+    await delegateOf(client, model).findFirst({ where: { [relationField]: { [filter]: {} } } });
+  } catch (error) {
+    if (!isValidationError(error)) throw error;
+
+    return false;
+  }
+
+  return true;
+}
+
+const arities = new WeakMap<object, Map<string, Promise<boolean>>>();
+
+function answersOf(client: object): Map<string, Promise<boolean>> {
+  const answers = arities.get(client) ?? new Map<string, Promise<boolean>>();
+
+  arities.set(client, answers);
+
+  return answers;
+}
+
+/**
+ * Whether a relation field of a model holds many records rather than a single one.
+ *
+ * The model is named by its delegate key, the relation field by the name it carries on that model. A
+ * name the model declares as no relation field throws, as it does for {@link namedRelationField}.
+ * The runtime datamodel marks no arity, so the answer is put to the query API and held for the client
+ * it was asked of: a field holding many records costs one `SELECT … LIMIT 1` the first time, and a
+ * transaction client asks once of its own. A query the database refuses is rethrown rather than
+ * standing for an answer, and is held on to no more than the refusal itself.
+ *
+ * @example
+ * ```ts
+ * await holdsManyRecords(prisma, "post", "comments"); // true
+ * ```
+ */
+export async function holdsManyRecords(client: unknown, model: string, relationField: string): Promise<boolean> {
+  const field = namedRelationField(client, model, relationField);
+  const answers = answersOf(client as object);
+  const key = `${model}.${field}`;
+  const held = answers.get(key);
+
+  if (held !== undefined) return held;
+
+  // A query the database refused carries no arity to hold on to, so it is dropped rather than
+  // answering every later ask with the same refusal.
+  const probing = probeHoldsMany(client, model, field).catch((error: unknown) => {
+    answers.delete(key);
+    throw error;
+  });
+
+  answers.set(key, probing);
+
+  return probing;
 }

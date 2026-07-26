@@ -202,20 +202,33 @@ export type HasManyArgs<C, M extends ModelName<C>, MC extends ModelName<C>, Opti
   Options
 >;
 
-// A relation field whose arity is not the one asked for keeps Prisma's own input.
+// Read at one arity, the way {@link RelationsTo} reads one: a relation field whose arity is not the
+// one asked for keeps Prisma's own input.
 type RelationValue<C, M extends ModelName<C>, K, List extends boolean = false> =
-  K extends RelationKey<C, M> ? (IsList<C, M, K> extends List ? Parent<C, TargetModel<C, M, K>> : never) : never;
+  K extends RelationKey<C, M>
+    ? IsList<C, M, K> extends List
+      ? List extends true
+        ? Child<C, TargetModel<C, M, K>>
+        : Parent<C, TargetModel<C, M, K>>
+      : never
+    : never;
 
 // Distributed over the mutually exclusive branches Prisma's create input holds, each of which pads
 // the keys the other owns with `?: never`: a padded key is left alone, so naming a raw foreign key
-// and its relation field at once stays an error.
+// and its relation field at once stays an error. Both arities are read because a relation field
+// answers at the one it holds and `never` at the other, so the union carries a single arm per key.
 type WidenRelations<T, C, M extends ModelName<C>> = T extends object
-  ? { [K in keyof T]: [Exclude<T[K], undefined>] extends [never] ? T[K] : T[K] | RelationValue<C, M, K> }
+  ? {
+      [K in keyof T]: [Exclude<T[K], undefined>] extends [never]
+        ? T[K]
+        : T[K] | RelationValue<C, M, K> | RelationValue<C, M, K, true>;
+    }
   : T;
 
 /**
  * The `data` a model's `create` accepts, nested relation input included, with every relation field
- * holding one record also taking a factory of the model it points at, or a row of that model.
+ * also taking a factory of the model it points at or a row of that model — and, where the field
+ * holds many records, a batched factory or an array of rows as well.
  *
  * @example
  * ```ts

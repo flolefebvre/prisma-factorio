@@ -89,7 +89,7 @@ const vips = await users.count(3).vip().create();
 const once = await users.state({ name: "Ada Lovelace" }).create();
 ```
 
-- A state is either a plain partial of the model's attributes or a closure returning one. A closure receives everything a definition gets, plus `attrs` — the attributes evaluated so far, the definition first and then the states already applied — and `parent`, the record this one is created for — the row a `has()` layer created just before reaching this factory, and `undefined` for a factory created on its own.
+- A state is either a plain partial of the model's attributes or a closure returning one. A closure receives everything a definition gets, plus `attrs` — the attributes evaluated so far, the definition first and then the states already applied — and `parent`, the record this one is created for — the row created just before reaching this factory, which a `has()` layer brings and a factory standing in a relation field holding many records brings too, and `undefined` for a factory neither brought.
 - **Every `states` key becomes a typed method.** `users.suspended()` autocompletes and `users.suspnded()` is a compile error, as is a state naming a field the model does not have or giving one the wrong type. This is the compile-checked replacement for Laravel's magic state methods.
 - `.state(partialOrClosure)` applies a one-off transformation at the call site, typed exactly like a declared state.
 - **Order of application:** the definition, then the states in the order they were applied, then `create(overrides)`. Last write wins per key, save for the relation field a [`has()`](#children) layer adds to rather than replaces; a key valued `undefined` is skipped at every layer, so the layer before it stands; a `null` is written.
@@ -109,7 +109,7 @@ const byAda = await posts.for(ada, "author").create();
 ```
 
 - **The relation field is checked against the pair of models.** It may be left out where the two share exactly one belongs-to relation, must be named where they share several, and no value satisfies it where they share none — a `for()` between two unrelated models is a compile error.
-- **A relation value stands for one record.** A factory in a relation field holding many records is a compile error — in a definition, in a state and in `create()` overrides alike. The has-many side is reached through [`has()`](#children) instead, which is a method on the chain rather than a value.
+- **A relation value matches the arity of the field it stands in.** A field holding a single record takes a value standing for one record; a field holding many records takes a factory, a row or a list of rows, and reads what stands there as children — in a definition, in a state and in `create()` overrides alike. That is [`has()`](#children)'s own mechanism reached as a value rather than as a method, and it sets the field where `has()` adds to it.
 - **`for()` returns a new factory, and states survive it in both chaining directions.** `posts.for(users, "author").drafted()` and `posts.drafted().for(users, "author")` both apply the state.
 
 A relation field also takes a parent directly — in a definition, in a state, or in `create()` overrides:
@@ -127,7 +127,7 @@ export const posts = f.define("post", {
 await posts.create({ author: ada });
 ```
 
-Such a value is a factory, an existing row, or Prisma's own relation input — `{ connect: … }` and `{ create: … }` reach the client untouched.
+Such a value is a factory, an existing row, or Prisma's own relation input — `{ connect: … }` and `{ create: … }` reach the client untouched. A field holding many records takes a batched factory and a list of rows besides.
 
 **Ordering.** `for()` is a chain layer at the position it was called: an inline state that sets the relation field. So a relation default embedded in the definition loses to every layer above it, `for()` and states resolve against each other **by call order**, and the overrides `create()` was given beat both.
 
@@ -148,6 +148,22 @@ await posts.count(3).create(); // 3 posts, 3 users — the definition's own `aut
 A shared parent lasts exactly one `create()` call: calling `create()` twice draws two parents.
 
 **No orphans.** A parent whose relation key a later layer overwrites is never created at all — the losing factory is never evaluated.
+
+**A field holding many records takes a value too**, and what stands there is children rather than a parent:
+
+```ts
+const author = await users.create({ posts: posts.count(2) });
+// one user, two posts, each reaching back to it
+
+const draft = await posts.create();
+const reposted = await users.create({ posts: [draft] });
+// the existing post attached to a second user, no post created
+```
+
+- **The children are created once the parent row exists**, one set per record of the batch, exactly as [`has()`](#children) creates them: each reads that row through `parent`, is written through the client the chain names, and fires its own callbacks ahead of the parent's.
+- **The value sets the field, where `has()` adds to it.** A definition, a state or an override naming the field replaces what stands there whole — children a `has()` layer gathered included, and a factory so replaced is never evaluated — while a `has()` call made after it adds on top.
+- **Values are created ahead of `has()` layers**: the relation fields first, in the order the merged attributes hold them, then the `has()` calls in the order they were made.
+- **A batch of no children writes nothing.** `{ posts: [] }` and `{ posts: posts.count(0) }` leave the relation field unwritten, exactly as `has([])` does.
 
 ### Children
 
@@ -237,7 +253,7 @@ const ada = await users.has(memberships.count(2).state({ role: "admin" }), "memb
 - **`for()` works on the join model's own legs.** `memberships.count(2).for(ada)` gives one user two memberships, each bringing a team of its own.
 - **An existing row pins a leg.** `memberships.state({ team })` reuses that team rather than drawing a new one.
 - **Two records of the same pair collide** on the compound key. That is the schema being enforced, not a library bug.
-- **Connecting an existing join-model row does not work yet.** A model whose only unique constraint is compound is matched on Prisma's generated compound selector — `{ userId_teamId: { … } }` — which a flat row of scalars does not satisfy, so `has([membership])` fails ([#41](https://github.com/flolefebvre/prisma-factorio/issues/41)). Pass native relation input meanwhile.
+- **Connecting an existing join-model row does not work yet.** A model whose only unique constraint is compound is matched on Prisma's generated compound selector — `{ userId_teamId: { … } }` — which a flat row of scalars does not satisfy, so every route a row reaches a relation field by fails alike: `has([membership])`, a row or a list of them standing in the field itself, and a row drawn from a [recycle](#recycle) pool ([#41](https://github.com/flolefebvre/prisma-factorio/issues/41)). Pass native relation input meanwhile.
 
 ### Recycle
 
@@ -257,13 +273,13 @@ const comment = await comments.recycle("user", ada).create();
 `create()` returns the **comment**; the post behind it holds `ada` in both `author` and `editor`, two levels down, and no user is created. The same graph without `recycle()` draws two distinct users.
 
 - **The pool covers the whole graph.** It reaches factories embedded in a definition or a state, `has()` children, and the graph under a `for()` parent, recursively — one call at the top reaches every level below it. It never self-populates: a record the graph creates is never adopted, so every pick comes from the rows you handed over. Nor does it stand in for the record you asked for — `comments.recycle("comment", one)` still creates a comment.
-- **`for()` and `create()` overrides beat the pool; a state does not.** A parent the call names outright is the caller's own choice and creates its own record, and a row named there was never something the pool could stand in for. A factory reaching a slot through the definition **or through a state** — declared in the config or inline `.state()` — loses to the pool: a state is not explicit, whichever way it was written. Explicitness protects the immediate slot and nothing under it, so the pool still fills the sub-graph beneath a `for()` parent or an override factory.
+- **`for()` and `create()` overrides beat the pool; a state does not.** What the call names outright — a parent, or the children of a relation field — is the caller's own choice and creates records of its own, and a row named there was never something the pool could stand in for. A factory reaching a slot through the definition **or through a state** — declared in the config or inline `.state()` — loses to the pool: a state is not explicit, whichever way it was written. Explicitness protects the immediate slot and nothing under it, so the pool still fills the sub-graph beneath a `for()` parent or an override factory.
 - **Picks are per record, drawn with replacement**, from the library's own PRNG rather than from faker. A pool of two rows under `count(3)` is legal and hands the same row out twice — **there is no distinctness guarantee**, so do not rely on one. Across an implicit many-to-many, repeated picks collapse into a single join row.
 - **Successive calls merge per model.** `recycle("user", a).recycle("user", b)` pools both, so a factory configured with a pool keeps its baseline rows when a call site adds more, and every model keeps a list of its own. A pool can be extended by an inner `recycle()` but never confined to a sub-graph: rows handed down from above reach the whole graph.
 - **`seed` pins the picks as well as faker's values**, so one seed replays the same spread run for run. The picks belong to the graph that resolves them rather than to the bootstrap that defined the factory, so a factory reached from another bootstrap's graph draws from that graph's stream — the exception `initPrismaFactorio` documents.
-- **A pooled row of a model whose only unique constraint is compound cannot be connected yet** ([#41](https://github.com/flolefebvre/prisma-factorio/issues/41)). It is matched on Prisma's generated compound selector, which a flat row of scalars does not satisfy, so a pooled `Membership` fails exactly as `has([membership])` does. Pass native relation input — `{ connect: { userId_teamId: { … } } }` — meanwhile.
+- **A pooled row of a model whose only unique constraint is compound cannot be connected yet** ([#41](https://github.com/flolefebvre/prisma-factorio/issues/41)). It is matched on Prisma's generated compound selector, which a flat row of scalars does not satisfy, so a pooled `Membership` fails exactly as one the caller hands over does, wherever it stands. Pass native relation input — `{ connect: { userId_teamId: { … } } }` — meanwhile.
 
-**Children.** A `has()` child factory of a pooled model is never created: the layer connects drawn rows in the parent's own create, and that factory's definition, states and callbacks never run.
+**Children.** A child factory of a pooled model is never created, whether a `has()` layer brings it or it stands in the relation field: the drawn rows are connected in the parent's own create, and that factory's definition, states and callbacks never run.
 
 ```ts
 const author = await users.recycle("post", existingPosts).has(posts.count(3), "posts").create();
@@ -293,7 +309,7 @@ const ada = await users
 ```
 
 - **The callback receives the created row and the client the chain writes through.** The row carries its generated `id` and every database default; the client is the one `.using(tx)` named where a call named one, so a write the callback makes lands in the caller's transaction alongside the record. There is deliberately no global client to fall back on. Whatever the callback returns is awaited, then discarded.
-- **The graph is complete when it fires.** A record's `has()` children are written before its callbacks run, and the callbacks of the parents it resolved have already run — so a graph fires parent side first, then the record itself, then each child's own callbacks, and the record's own last.
+- **The graph is complete when it fires.** A record's children are written before its callbacks run, whether a `has()` layer or a relation default brought them, and the callbacks of the parents it resolved have already run — so a graph fires parent side first, then the record itself, then each child's own callbacks, and the record's own last.
 - **Config first, then chain order, one at a time.** A callback the config declared runs ahead of every callback the chain added, chain callbacks run in the order they were registered, and each is awaited before the next begins. `.afterCreating()` accumulates rather than replaces.
 - **Once per record.** `count(3)` runs the whole list three times, each with its own row; `count(0)` runs it none. A `for()` parent is created once per `create()` call, so its callbacks run once however large the batch it answers.
 - **A row the recycle pool stood in with fires nothing** — it was connected, never created.
@@ -310,15 +326,14 @@ const ada = await users
 - **No `make()` or `raw()`.** `create()` is the single verb — a factory always writes to the database. This is a deliberate deviation from Laravel.
 - **An explicit `id` and a belongs-to relation field cannot meet.** Prisma's _checked_ create input carries no `id`, so naming one forces the record into the _unchecked_ branch, which drops every relation field whose foreign key the model itself holds and demands those raw columns instead — the one thing [ADR 0002](docs/adr/0002-relation-wiring.md) forbids this library writing. `posts.create({ id: 7 })` and `posts.create({ id: 7, authorId: 1 })` compile; `posts.create({ id: 7, author: { connect: { id: 1 } } })` is a compile error; and an `id` arriving through overrides while the relation comes from the definition type-checks, then fails at runtime with a Prisma validation error naming `id`. There is no workaround — this is Prisma's input shape meeting ADR 0002, not a gap here.
 - **Connecting an existing row matches on the row's scalar fields.** A row parent's scalars are splatted into the `connect` where-clause — a relation the row was loaded with, as `include` hands back, is left out — because the runtime datamodel marks no field unique and no subset of a row is knowably the one Prisma would match on. Every field therefore narrows the match, so a row read _before_ the record changed fails loudly with Prisma's `P2025` rather than silently connecting to whatever the record has since become.
+- **Reading a relation field's arity costs one query, once.** Prisma 7 publishes no arity at runtime, so the first time a factory or a list of rows stands in a given relation field the library puts the question to the query API instead. A field holding a single record answers for nothing — Prisma refuses the probe's filter before it reaches the database — and one holding many costs a single `SELECT … LIMIT 1`. The answer is held per field and per client, so the rest of the graph asks nothing, and a `.using(tx)` client asks once of its own.
 - **A column named after a relation operation shadows the row.** A parent row whose only key is a column literally named `connect`, `create`, `connectOrCreate` or `createMany` is read as native relation input rather than as a row, so pass native `{ connect: { … } }` explicitly for a model declaring one.
-- **`.using(client)` covers the whole graph.** It redirects not just this factory's records but every parent factory its creates resolve and every child factory a `has()` layer creates records through, however deep the graph goes — so one `.using(tx)` puts a whole factory graph in a single interactive transaction, and a rollback leaves nothing behind. A factory that named a client of its own keeps it, and the factories it resolves in turn then run on that one. The library still opens no transaction itself, exactly as [ADR 0002](docs/adr/0002-relation-wiring.md) says.
+- **`.using(client)` covers the whole graph.** It redirects not just this factory's records but every parent factory its creates resolve and every child factory a `has()` layer or a relation default creates records through, however deep the graph goes — so one `.using(tx)` puts a whole factory graph in a single interactive transaction, and a rollback leaves nothing behind. A factory that named a client of its own keeps it, and the factories it resolves in turn then run on that one. The library still opens no transaction itself, exactly as [ADR 0002](docs/adr/0002-relation-wiring.md) says.
 - **A throwing callback is not caught.** `create()` rejects with the error the callback threw. Bare, the record the callback followed is already committed and stays standing — the rejection undoes nothing; under `.using(tx)`, the same throw leaves your transaction callback and the whole graph rolls back. That is [ADR 0002](docs/adr/0002-relation-wiring.md)'s "atomicity is the caller's" composing as designed, not a special case.
-- **`CreateInput` is no longer a Prisma alias.** This package exports it, and this release changed what it means: a relation key now additionally accepts a `Factory` or a row, so a value typed `CreateInput<Client, "model">` is no longer assignable to Prisma's own `create` `data` argument. If you imported it as a stand-in for Prisma's input type, it has stopped being one.
+- **`CreateInput` is no longer a Prisma alias.** This package exports it, and this release changed what it means: a relation key now additionally accepts a `Factory`, a row, or a list of rows, so a value typed `CreateInput<Client, "model">` is no longer assignable to Prisma's own `create` `data` argument. If you imported it as a stand-in for Prisma's input type, it has stopped being one.
 
 ## Status
 
 v1 is in progress; this README tracks what actually works today.
 
-Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for` with relation defaults, `has` for the children on the other side, many-to-many in both shapes, `recycle` for reusing rows the graph would otherwise create, and `afterCreating` callbacks in the config and on the chain.
-
-Tracked next: relation defaults on has-many fields.
+Available now: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for`, relation defaults on a field of either arity, `has` for the children on the other side, many-to-many in both shapes, `recycle` for reusing rows the graph would otherwise create, and `afterCreating` callbacks in the config and on the chain.

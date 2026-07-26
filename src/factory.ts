@@ -1,4 +1,5 @@
 import {
+  holdsManyRecords,
   inverseRelationField,
   namedRelationField,
   relationFieldsOf,
@@ -59,9 +60,10 @@ export interface EvaluationContext {
 export interface StateContext<C, M extends ModelName<C>> extends EvaluationContext {
   attrs: PartialAttributes<C, M>;
   /**
-   * The record this one is created for: the row a `has` layer created just before reaching this
-   * factory, its generated id and every database default carried. A record no `has` layer brought
-   * has none, which is what the `undefined` stands for.
+   * The record this one is created for: the row created just before reaching this factory, its
+   * generated id and every database default carried. A `has` layer brings one, and so does a factory
+   * standing in a relation field that holds many records. A record neither brought has none, which is
+   * what the `undefined` stands for.
    *
    * The type spans every model the client carries, since the model at the far end of a relation is
    * not knowable from this one, so a field only some of them declare is reached by narrowing first.
@@ -294,8 +296,9 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * inline — is drawn from. That precedence covers the slot named and nothing under it, so the pool
    * still fills the graph beneath such a parent. Nothing the graph creates ever joins the pool.
    *
-   * A `has` layer whose children are a factory of a pooled model connects drawn rows in place of
-   * creating records, one pick per record that chain would have created, drawn with replacement.
+   * A factory of a pooled model connects drawn rows in place of creating records — one pick per record
+   * that chain would have created, drawn with replacement — whether it arrives as the children of a
+   * `has` layer or stands in a relation field holding many records.
    *
    * A row of the named model is what the argument takes, whatever else it carries: pooled rows
    * connect on the target model's scalars, so one loaded with `include` stands here as readily as one
@@ -488,8 +491,9 @@ const attached = Symbol("prisma-factorio.attached");
 interface Attachment {
   children: object;
   inverse: string | undefined;
-  // The position of the `has` call among the layers, which is what the children are created in: the
-  // keys of the merge fall in the order the layers first named them, one field at a time.
+  // The position of the `has` call among the layers, which is the order its children are created in:
+  // the layers of every relation field fall together in call order, behind the children a relation
+  // field's own value left standing.
   order: number;
 }
 
@@ -531,9 +535,15 @@ function accumulating(held: unknown, entry: Attachment): Attached {
   };
 }
 
-// A row and Prisma's own relation input are both plain objects; a value carrying a prototype of its
-// own — a date, a byte array, a scalar list — is neither, and stands for itself.
-function plainObject(value: unknown): Record<string, unknown> | undefined {
+// What may stand in a relation field: a row, a list of rows, a factory and Prisma's own relation input
+// alike. A value carrying a prototype of its own — a date, a byte array — is none of them and stands
+// for itself. A scalar list carries a list's own prototype, so what tells the two apart is the key the
+// value falls under rather than the value itself.
+type Standing = Record<string, unknown> | unknown[];
+
+function standing(value: unknown): Standing | undefined {
+  if (Array.isArray(value)) return value as unknown[];
+
   if (typeof value !== "object" || value === null) return undefined;
 
   const prototype: unknown = Object.getPrototypeOf(value);
@@ -582,14 +592,51 @@ function matching(client: unknown, model: string, field: string, row: Record<str
   return { connect: targetScalars(client, model, field, row) };
 }
 
-async function connected(
+// A list connects as a list, which is what a relation field holding many records takes: a list found
+// standing in a field that holds a single record keeps the value it was handed rather than reaching
+// here, `resolved` turning it back on the arity. A single row connects on its own, the one shape both
+// arities take. A list holding no row connects nothing at all, leaving the field to the layers around it.
+function matchingAll(client: unknown, model: string, field: string, rows: readonly unknown[]): Written {
+  return rows.length === 0 ? {} : { connect: rows.map((row) => targetScalars(client, model, field, row as Written)) };
+}
+
+// A value a relation field has no reading for: a list standing in a field that holds a single record,
+// which keeps the value it was handed so that Prisma's own validation refuses it rather than the field
+// going unwritten. A list is not the only value the arity is asked for — a factory standing in a field
+// asks it too — and neither ask is dear: the answer is held per client, and a field holding a single
+// record never reaches the database, Prisma refusing the probe filter where it stands.
+async function unread(client: unknown, model: string, field: string, value: Standing): Promise<boolean> {
+  return Array.isArray(value) && !(await holdsManyRecords(client, model, field));
+}
+
+// Prisma's own input, told from a row by the keys it carries: every one of them names an operation,
+// where a row names the columns of a model.
+function native(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value);
+
+  return keys.length > 0 && keys.every((key) => relationOperations.includes(key));
+}
+
+// The position a value standing in a relation field is created at, which is ahead of every `has` layer:
+// no call named it, so it carries the order of none, and it ties with the values standing in the other
+// relation fields, which a stable sort leaves in the order the keys of the merge fall.
+const standingOrder = -1;
+
+// A factory standing in a relation field holding many records is a `has` layer written as an attribute:
+// its records hang off a row that does not exist yet, so they wait in `pending` rather than being
+// created and connected, which would leave whatever their own foreign keys brought behind. A field
+// holding a single record is the side the record has to exist first for, and is created here. The
+// arity is asked ahead of the pool: a single connect is a shape both arities take, so a slot drawn
+// before its arity is known would collapse a whole batch of children to one row.
+async function embodied(
   wiring: Wiring,
   model: string,
   field: string,
-  value: Record<string, unknown>,
-  explicit = false,
-): Promise<unknown> {
-  if (isFactory(value)) {
+  value: Embedded,
+  pending: Pending[],
+  explicit: boolean,
+): Promise<Written> {
+  if (!(await holdsManyRecords(wiring.client, model, field))) {
     const row = pooled(value, wiring, explicit);
 
     return row === undefined
@@ -597,11 +644,36 @@ async function connected(
       : matching(wiring.client, model, field, row);
   }
 
-  const keys = Object.keys(value);
+  const picks = drawn(value, wiring, explicit);
 
-  return keys.length > 0 && keys.every((key) => relationOperations.includes(key))
-    ? value
-    : matching(wiring.client, model, field, value);
+  if (picks !== undefined) return matchingAll(wiring.client, model, field, picks);
+
+  // The stand-in a `for` call leaves takes no overrides, so it has nothing to reach back through the
+  // inverse relation with: pending children of it would hang off no parent at all.
+  if (value[chosen] === true)
+    throw new TypeError(
+      `The relation field "${field}" on the model "${model}" holds many records, which for() has no reading for. ` +
+        "Attach the records with has() instead.",
+    );
+
+  pending.push({ field, children: value, inverse: undefined, order: standingOrder });
+
+  return {};
+}
+
+async function connected(
+  wiring: Wiring,
+  model: string,
+  field: string,
+  value: Standing,
+  pending: Pending[],
+  explicit = false,
+): Promise<Written> {
+  if (Array.isArray(value)) return matchingAll(wiring.client, model, field, value);
+
+  if (isFactory(value)) return embodied(wiring, model, field, value, pending, explicit);
+
+  return native(value) ? value : matching(wiring.client, model, field, value);
 }
 
 // A single connect is what a to-one relation field takes and what a to-many one accepts alongside the
@@ -614,16 +686,15 @@ function connecting(base: Written, rows: unknown[]): Written {
   return { ...base, connect: [...(held === undefined ? [] : listed(held)), ...rows] };
 }
 
-// A child factory whose model the pool names stands for rows already written rather than for records
-// to create: one pick per record its own chain would have created, drawn with replacement, so two of
-// them may well be the same row. A `has` layer names the relation field its children hang off and
-// never a record standing in a slot, so its children are never the caller's own choice of parent. A
-// chain batched to no records draws nothing, and goes on as the child factory that creates nothing.
-function drawn(children: Embedded, wiring: Wiring): Record<string, unknown>[] | undefined {
+// A factory whose model the pool names stands for rows already written rather than for records to
+// create: one pick per record its own chain would have created, drawn with replacement, so two of them
+// may well be the same row. A chain batched to no records draws nothing, and goes on as the factory
+// that creates nothing.
+function drawn(children: Embedded, wiring: Wiring, explicit: boolean): Record<string, unknown>[] | undefined {
   const picks: Record<string, unknown>[] = [];
 
   for (let index = 0; index < (children[recycler]?.batch ?? 1); index += 1) {
-    const row = pooled(children, wiring, false);
+    const row = pooled(children, wiring, explicit);
 
     if (row === undefined) return undefined;
 
@@ -634,7 +705,11 @@ function drawn(children: Embedded, wiring: Wiring): Record<string, unknown>[] | 
 }
 
 // The two forms part here: a row goes into the connect list the parent's own create carries, and a
-// factory goes into `pending`, which is created once that create has returned the parent row.
+// factory goes into `pending`, which is created once that create has returned the parent row. Neither
+// the children nor the base they gathered on top of is explicit: the layer names the relation field its
+// children hang off and never a record standing in a slot, and an override replaces the relation field
+// whole, children and all, so the base survived every override there was. A `for` stand-in does reach
+// `connected` as that base, and stays the caller's own by the mark it carries rather than by the flag.
 async function attaching(
   wiring: Wiring,
   model: string,
@@ -646,7 +721,7 @@ async function attaching(
 
   for (const entry of value.entries) {
     if (isFactory(entry.children)) {
-      const picks = drawn(entry.children, wiring);
+      const picks = drawn(entry.children, wiring, false);
 
       if (picks === undefined) {
         pending.push({ field, children: entry.children, inverse: entry.inverse, order: entry.order });
@@ -660,10 +735,8 @@ async function attaching(
     for (const row of listed(entry.children)) rows.push(targetScalars(wiring.client, model, field, row as Written));
   }
 
-  // Overrides replace the relation field whole, children and all, so what a `has` layer gathered on
-  // top of is never the caller's own choice of parent.
-  const held = plainObject(value.base);
-  const base = held === undefined ? {} : ((await connected(wiring, model, field, held)) as Written);
+  const held = standing(value.base);
+  const base = held === undefined ? {} : await connected(wiring, model, field, held, pending);
 
   return connecting(base, rows);
 }
@@ -675,8 +748,8 @@ async function resolved(
   explicit: ReadonlySet<string>,
 ): Promise<Resolved> {
   const embedded = Object.entries(data).flatMap(([key, value]) => {
-    const object = plainObject(value);
-    return object === undefined ? [] : [[key, object] as const];
+    const held = standing(value);
+    return held === undefined ? [] : [[key, held] as const];
   });
 
   if (embedded.length === 0) return { data, pending: [] };
@@ -687,26 +760,25 @@ async function resolved(
 
   for (const [key, value] of embedded) {
     if (!relations.includes(key)) continue;
+    if (await unread(wiring.client, model, key, value)) continue;
 
-    if (!isAttached(value)) {
-      written[key] = await connected(wiring, model, key, value, explicit.has(key));
-      continue;
-    }
+    const input = isAttached(value)
+      ? await attaching(wiring, model, key, value, pending)
+      : await connected(wiring, model, key, value, pending, explicit.has(key));
 
-    const input = await attaching(wiring, model, key, value, pending);
-
-    // Children the parent's own create says nothing about — factories, and none at all — leave the
-    // relation field unwritten rather than naming it and giving Prisma nothing to do.
+    // What the parent's own create has nothing to say about — a list holding no row, children created
+    // once the parent row exists, and none at all — leaves the relation field unwritten rather than
+    // naming it and giving Prisma nothing to do.
     written[key] = Object.keys(input).length === 0 ? undefined : input;
   }
 
   return { data: given(written), pending: pending.sort((one, next) => one.order - next.order) };
 }
 
-// The children a `has` layer left pending are created once the parent row exists, through their own
-// factory, so every layer their own chain holds still applies. They reach back to that row on the
-// relation field pairing with the one they hang off it by, which the escape hatch names outright in
-// place of looking it up.
+// The children left pending — by a `has` layer, or by a factory standing in a relation field holding
+// many records — are created once the parent row exists, through their own factory, so every layer their
+// own chain holds still applies. They reach back to that row on the relation field pairing with the one
+// they hang off it by, which the escape hatch names outright in place of looking it up.
 async function borne(wiring: Wiring, model: string, row: unknown, entry: Pending): Promise<void> {
   const { client } = wiring;
   const target = entry.children[brand];
@@ -814,8 +886,9 @@ async function write<C, M extends ModelName<C>>(
     const { data, pending } = await resolved(wiring, model, { ...attrs, ...applied }, explicit);
     const row = await delegate.create({ data });
 
-    // Depth first, layers in the order they were called: every child of one record exists before the
-    // next record of the batch is created.
+    // Depth first: every child of one record exists before the next record of the batch is created,
+    // the children a relation field's own value left pending ahead of the ones the `has` layers add,
+    // and those in the order the calls were made.
     for (const entry of pending) await borne(wiring, model, row, entry);
 
     // The graph under this record stands complete here, and each callback settles before the next
@@ -847,8 +920,8 @@ async function write<C, M extends ModelName<C>>(
  * It carries `Symbol.for("prisma-factorio.recycle")` the same way, valued with an object whose `draw`
  * takes a pool and a picker and hands back this factory drawing from them, its own pooled rows kept.
  * Resolving a relation calls it, which is what spreads one `recycle` over a graph. The same object
- * reports this chain's batch size as `batch`, which is how many rows a `has` layer draws in place of
- * the records it would have created.
+ * reports this chain's batch size as `batch`, which is how many rows a `has` layer — or a relation
+ * field holding many records — draws in place of the records it would have created.
  *
  * @example
  * ```ts

@@ -1,5 +1,5 @@
 import { expect, expectTypeOf, onTestFinished, test, vi, type MockedFunction } from "vitest";
-import { inverseRelationField } from "./datamodel.js";
+import { holdsManyRecords, inverseRelationField } from "./datamodel.js";
 import type { FakerOptions } from "./faker.js";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
@@ -612,6 +612,176 @@ test("native relation input naming create reaches Prisma untouched", async () =>
   await expect(prisma.user.findMany()).resolves.toMatchObject([{ id: post.authorId, name: "Grace" }]);
 });
 
+// Records of both models a post holds many of, already written. A comment hangs off a post of its own,
+// so the post a to-many slot attaches it to is never the one it was created under; a tag hangs off no
+// record at all, its factory naming none.
+interface Spare {
+  harness: Harness;
+  first: Row<TestClient, "comment">;
+  second: Row<TestClient, "comment">;
+  tag: Row<TestClient, "tag">;
+  other: Row<TestClient, "tag">;
+}
+
+async function spare(): Promise<Spare> {
+  const harness = await factorioHarness();
+
+  return {
+    harness,
+    first: await harness.comments.create(),
+    second: await harness.comments.create(),
+    tag: await harness.tags.create(),
+    other: await harness.tags.create(),
+  };
+}
+
+function ids(rows: readonly { id: number }[]): number[] {
+  return rows.map((row) => row.id);
+}
+
+// What a post ended up holding on one of the two relations it holds many records in. A many-to-many
+// answers in join order, which is no order the caller declared, so the ids are sorted.
+async function attachedTo(prisma: TestClient, post: number, field: "comments" | "tags"): Promise<number[]> {
+  const held = await prisma.post.findUniqueOrThrow({ where: { id: post }, include: { comments: true, tags: true } });
+
+  return ids(held[field]).sort((one, next) => one - next);
+}
+
+test("an array of rows in create() overrides attaches every one of them", async () => {
+  const { harness, first, second } = await spare();
+
+  const post = await harness.posts.create({ comments: [first, second] });
+
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toStrictEqual(ids([first, second]));
+});
+
+test("an array of rows in create() overrides attaches every one across a many-to-many", async () => {
+  const { harness, tag, other } = await spare();
+
+  const post = await harness.posts.create({ tags: [tag, other] });
+
+  await expect(attachedTo(harness.prisma, post.id, "tags")).resolves.toStrictEqual(ids([tag, other]));
+});
+
+test("an array of rows in a definition attaches every one of them", async () => {
+  const { harness, first, second } = await spare();
+  const drafts = harness.f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: harness.users, comments: [first, second] }),
+  });
+
+  const post = await drafts.create();
+
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toStrictEqual(ids([first, second]));
+});
+
+test("an array of rows in a state attaches every one of them", async () => {
+  const { harness, tag, other } = await spare();
+
+  const post = await harness.posts.state({ tags: [tag, other] }).create();
+
+  await expect(attachedTo(harness.prisma, post.id, "tags")).resolves.toStrictEqual(ids([tag, other]));
+});
+
+// A relation field holding many records takes a single connect as readily as a list of them, so one
+// row stands in it exactly as it stands in a field holding a single record.
+test("a single row in a relation field holding many records attaches it", async () => {
+  const { harness, first } = await spare();
+
+  const post = await harness.posts.create({ comments: first });
+
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toStrictEqual([first.id]);
+});
+
+test("a single row in a many-to-many relation field attaches it", async () => {
+  const { harness, tag } = await spare();
+
+  const post = await harness.posts.state({ tags: tag }).create();
+
+  await expect(attachedTo(harness.prisma, post.id, "tags")).resolves.toStrictEqual([tag.id]);
+});
+
+// The rows reach the parent's own create and the children are created after it, so which of them the
+// relation ends up holding first is not the order the calls were made in.
+test("an array of rows under a has() layer on the same field attaches alongside the children", async () => {
+  const { harness, first, second } = await spare();
+
+  const post = await harness.posts
+    .state({ comments: [first, second] })
+    .has(harness.comments, "comments")
+    .create();
+  const held = await attachedTo(harness.prisma, post.id, "comments");
+
+  expect(held).toHaveLength(3);
+  expect(held).toEqual(expect.arrayContaining(ids([first, second])));
+});
+
+test("an array of rows under a has() layer attaches alongside the children across a many-to-many", async () => {
+  const { harness, tag, other } = await spare();
+
+  const post = await harness.posts
+    .state({ tags: [tag, other] })
+    .has(harness.tags, "tags")
+    .create();
+  const held = await attachedTo(harness.prisma, post.id, "tags");
+
+  expect(held).toHaveLength(3);
+  expect(held).toEqual(expect.arrayContaining(ids([tag, other])));
+});
+
+// A `has` layer gathers on top of the field rather than under it, so the rows a value of its own
+// contributes reach the parent's own create ahead of the rows the layer adds.
+test("the rows a value contributes come before the rows a later has() layer adds", async () => {
+  const { harness, first, second } = await spare();
+  const { client, written } = recording(harness.prisma, "post");
+
+  await harness.posts
+    .using(client)
+    .state({ comments: [first] })
+    .has([second], "comments")
+    .create();
+
+  expect(written[0]?.comments).toStrictEqual({ connect: [first, second] });
+});
+
+// Naming the field and leaving it empty would hand Prisma a nested write with nothing to do, which is
+// the reading a `has` layer holding no children already takes.
+test("an array holding no row leaves the relation field unwritten", async () => {
+  const { prisma, posts } = await factorioHarness();
+  const { client, written } = recording(prisma, "post");
+
+  await posts.using(client).create({ comments: [], tags: [] });
+
+  expect(Object.keys(written[0] ?? {})).toStrictEqual(["title", "author"]);
+});
+
+// A list stands for rows to connect on a relation field holding many records alone. One holding a
+// single record has no reading for a list, empty or not, so the value reaches the delegate as it stands
+// and Prisma refuses it rather than the field going silently unwritten.
+test("an array in a relation field holding a single record reaches Prisma, which refuses it", async () => {
+  const { posts, users } = await factorioHarness();
+  const ada = await users.create();
+
+  for (const editor of [[], [ada]]) {
+    await expect(posts.create({ editor })).rejects.toThrow(
+      "Argument `editor`: Invalid value provided. Expected UserCreateNestedOneWithoutEditedInput",
+    );
+  }
+});
+
+// The whole of Prisma's own nested input at this arity, none of it read as rows to connect. The
+// many-to-many takes no `createMany`, the join table Prisma hides carrying no envelope of its own.
+test("native relation input in a field holding many records reaches Prisma untouched", async () => {
+  const { harness, first, tag } = await spare();
+
+  const post = await harness.posts.create({
+    comments: { connect: [{ id: first.id }], create: [{ body: "written" }], createMany: { data: [{ body: "made" }] } },
+    tags: { connectOrCreate: [{ where: { id: tag.id }, create: { label: "reused" } }] },
+  });
+
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toHaveLength(3);
+  await expect(attachedTo(harness.prisma, post.id, "tags")).resolves.toStrictEqual([tag.id]);
+});
+
 test("a relation default in a definition evaluates once per record, so a batch draws a parent each", async () => {
   const { prisma, posts } = await factorioHarness();
 
@@ -642,13 +812,205 @@ test("connecting a row that has since changed fails rather than reaching the rec
   await expect(posts.create({ author: ada })).rejects.toMatchObject({ code: "P2025" });
 });
 
-test("a factory with no relation value to resolve never reads the client's relation metadata", async () => {
+test("a factory carrying no value that could stand in a relation field never reads the relation metadata", async () => {
   const { prisma } = await factorioHarness();
   const delegates = initPrismaFactorio({ user: prisma.user });
 
   const user = await delegates.define("user", { definition: userDefinition }).create();
 
   expect(user.name).toBe("Ada");
+});
+
+// The arity of a relation field is answered by querying it, so it is asked where the value standing in
+// the field reads differently at each — a list, or a factory — and of no other field: a probe of a field
+// no layer named can fail on the database rather than answering. A row reads alike at both arities.
+test("the arity is asked of the field a factory stands in, and of no field a row or no layer names", async () => {
+  const { harness, first } = await spare();
+  const oracle = vi.mocked(holdsManyRecords);
+
+  oracle.mockClear();
+  await harness.posts.create({ comments: first });
+
+  expect(oracle.mock.calls.map(([, model, field]) => `${model}.${field}`)).toStrictEqual(["post.author"]);
+});
+
+// A comment cannot exist before the post it hangs off, so a child factory creating its record ahead of
+// the parent brings a post of its own to satisfy that foreign key and leaves it behind once the connect
+// re-points the comment. The count of posts is what tells the two timings apart, whichever layer the
+// child factory arrived through.
+async function commented(
+  attach: (harness: Harness, children: Factory<TestClient, "comment">) => Promise<Row<TestClient, "post">>,
+): Promise<void> {
+  const harness = await factorioHarness();
+
+  const post = await attach(harness, harness.comments);
+
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toHaveLength(1);
+  await expect(harness.prisma.post.count()).resolves.toBe(1);
+}
+
+test("a factory in a to-many definition slot creates its children once the parent row exists", async () => {
+  await commented(({ f, users }, comments) =>
+    f.define("post", { definition: ({ uid }) => ({ title: uid, author: users, comments }) }).create(),
+  );
+});
+
+test("a factory in a to-many state slot creates its children once the parent row exists", async () => {
+  await commented(({ posts }, comments) => posts.state({ comments }).create());
+});
+
+test("a factory in a to-many slot in create() overrides creates its children once the parent row exists", async () => {
+  await commented(({ posts }, comments) => posts.create({ comments }));
+});
+
+type ChildComments = Factory<TestClient, "comment", Row<TestClient, "comment"> | Row<TestClient, "comment">[]>;
+
+// The children wait outside the parent's own create, which then has nothing to say about the field they
+// hang off: naming it there would hand Prisma either a connect for a record that does not exist yet or a
+// nested write with nothing to do, the second being the reading `has([])` already takes. One post is
+// written and no other, which is what the whole list of recorded creates pins.
+async function unwritten(children: (harness: Harness) => ChildComments): Promise<Harness> {
+  const harness = await factorioHarness();
+  const { client, written } = recording(harness.prisma, "post");
+
+  await harness.posts.using(client).create({ comments: children(harness) });
+
+  expect(written.map((data) => Object.keys(data))).toStrictEqual([["title", "author"]]);
+
+  return harness;
+}
+
+test("a factory in a to-many slot leaves the relation field unwritten in the parent's own create", async () => {
+  await unwritten(({ comments }) => comments);
+});
+
+test("a to-many default batched to no records at all leaves the relation field unwritten", async () => {
+  const { prisma } = await unwritten(({ comments }) => comments.count(0));
+
+  await expect(prisma.comment.count()).resolves.toBe(0);
+});
+
+// The far side a child reaches back through is read off the pairing metadata, the value naming none, so
+// a relation whose two sides both hold many records answers here as readily as a belongs-to one. The
+// label is written from the row the tag was created for, which stands only once that row exists.
+test("a factory in a many-to-many slot creates its record for the parent row and joins it", async () => {
+  const { prisma, f, posts } = await factorioHarness();
+  const credited = f.define("tag", {
+    definition: ({ uid }) => ({ label: uid }),
+    states: { credited: ({ parent }) => ({ label: `for ${String(parentId(parent))}` }) },
+  });
+
+  const post = await posts.create({ tags: credited.credited() });
+
+  await expect(attachedTo(prisma, post.id, "tags")).resolves.toHaveLength(1);
+  await expect(prisma.tag.findMany()).resolves.toMatchObject([{ label: `for ${String(post.id)}` }]);
+});
+
+// The deliberate opposite of `for`, whose parent factory is evaluated once however many records the
+// batch holds: children are no shared stand-in, so each record of a batch draws a set of its own and
+// the graph holds no record beyond the three parents and their six children.
+async function eachDrawingTwo(
+  attach: (
+    harness: Harness,
+    children: Factory<TestClient, "comment", Row<TestClient, "comment">[]>,
+  ) => Promise<Row<TestClient, "post">[]>,
+): Promise<void> {
+  const harness = await factorioHarness();
+
+  const written = await attach(harness, harness.comments.count(2));
+  const counted = await Promise.all(
+    written.map((post) => harness.prisma.comment.count({ where: { postId: post.id } })),
+  );
+
+  expect(counted).toStrictEqual([2, 2, 2]);
+  await expect(harness.prisma.post.count()).resolves.toBe(3);
+}
+
+test("a to-many default in a definition draws children per parent record", async () => {
+  await eachDrawingTwo(({ f, users }, comments) =>
+    f
+      .define("post", { definition: ({ uid }) => ({ title: uid, author: users, comments }) })
+      .count(3)
+      .create(),
+  );
+});
+
+test("a to-many default in create() overrides draws children per parent record too", async () => {
+  await eachDrawingTwo(({ posts }, comments) => posts.count(3).create({ comments }));
+});
+
+// Comment factories that name themselves as they evaluate, so which names reach the log is which layers
+// of the merge were the ones evaluated, and in what order their records were created. Each names a post
+// of its own, which stands unused wherever the children are created for a parent that already exists.
+interface Folded {
+  harness: Harness;
+  order: string[];
+  tagged: (tag: string) => Factory<TestClient, "comment">;
+}
+
+async function folded(): Promise<Folded> {
+  const harness = await factorioHarness();
+  const order: string[] = [];
+  const tagged = (tag: string): Factory<TestClient, "comment"> =>
+    harness.f.define("comment", {
+      definition: ({ uid }) => {
+        order.push(tag);
+        return { body: uid, post: harness.posts };
+      },
+    });
+
+  return { harness, order, tagged };
+}
+
+// A relation default is sugar for a `has` layer in what it does and a plain layer of the merge in how it
+// folds: `has` adds to what the layers before it left standing, so a field a default already filled ends
+// up holding both, the default's children created first.
+test("a has() layer adds to the children a to-many default left standing, the default's created first", async () => {
+  const { harness, order, tagged } = await folded();
+  const drafts = harness.f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: harness.users, comments: tagged("default") }),
+  });
+
+  const post = await drafts.has(tagged("added"), "comments").create();
+
+  expect(order).toStrictEqual(["default", "added"]);
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toHaveLength(2);
+  await expect(harness.prisma.post.count()).resolves.toBe(1);
+});
+
+// The other order of the same pair: every layer that is not a `has` call replaces the relation field
+// whole, the children gathered on it dropped along with it and never evaluated.
+test("a to-many default after has() replaces the field, the children it had gathered never evaluated", async () => {
+  const { harness, order, tagged } = await folded();
+
+  const gathered = harness.posts.has(tagged("dropped"), "comments");
+  const post = await gathered.state({ comments: tagged("kept") }).create();
+
+  expect(order).toStrictEqual(["kept"]);
+  await expect(attachedTo(harness.prisma, post.id, "comments")).resolves.toHaveLength(1);
+  await expect(harness.prisma.comment.count()).resolves.toBe(1);
+  await expect(harness.prisma.post.count()).resolves.toBe(1);
+});
+
+// A value standing in a relation field was named by no `has` call, so it carries the order of no layer:
+// every one of them falls ahead of every layer, whichever field it stands in, and what orders two of
+// them is where their keys fall in the merge. The definition names `tags` ahead of `comments`, which the
+// model declares the other way round, so schema order would read the pair backwards.
+test("to-many defaults create their children in key order, ahead of the children has() adds", async () => {
+  const { harness, order, tagged } = await folded();
+  const labelled = harness.f.define("tag", {
+    definition: ({ uid }) => {
+      order.push("tag");
+      return { label: uid };
+    },
+  });
+  const drafts = harness.f.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: harness.users, tags: labelled, comments: tagged("comment") }),
+  });
+
+  await drafts.has(tagged("added"), "comments").create();
+
+  expect(order).toStrictEqual(["tag", "comment", "added"]);
 });
 
 // Distinct from the harness's own user factory, which names every record "Ada": whichever name the
@@ -861,6 +1223,20 @@ test("for() rejects an omitted relation field where the model pair shares severa
   );
 });
 
+// A `for` call names one parent record, which a relation field holding many records has no reading
+// for. The type layer rejects it; the runtime says the same thing to a caller who compiles nothing,
+// rather than writing a record that hangs off no parent at all.
+test("for() rejects a relation field holding many records, naming it and the arity", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const bypassing = users as unknown as { for: (parent: unknown, field: string) => Factory<TestClient, "user"> };
+
+  await expect(bypassing.for(posts, "posts").create()).rejects.toThrow(
+    'The relation field "posts" on the model "user" holds many records, which for() has no reading for. ' +
+      "Attach the records with has() instead.",
+  );
+  await expect(prisma.post.count()).resolves.toBe(0);
+});
+
 test("for() hands create the relation field as connect and never a foreign key column", async () => {
   const { prisma, posts, users } = await factorioHarness();
   const { client, written } = recording(prisma, "post");
@@ -925,6 +1301,10 @@ test("a relation default in a definition is created through the client using() n
 
 test("a relation default reaching through several models runs every level on that client", async () => {
   await withoutOrphans(({ comments }, tx) => comments.using(tx).create(), [1, 1, 1]);
+});
+
+test("a to-many default creates its children on that client too, a rollback leaving neither behind", async () => {
+  await withoutOrphans(({ comments, posts }, tx) => posts.using(tx).create({ comments }), [1, 1, 1]);
 });
 
 // The recorded delegate hangs off `tx`, so the records the named client writes land in the
@@ -1509,6 +1889,20 @@ test("the join model's relation field may be left out, the pair sharing exactly 
   await expect(prisma.membership.count({ where: { userId: ada.id } })).resolves.toBe(2);
 });
 
+// The join model reached as a relation default rather than as a `has` layer: its records are created
+// once the parent row exists, so each carries the compound key whole and the leg the parent stands in
+// replaces the factory the definition names there, leaving no user behind.
+test("a batched factory in the join model's relation field creates its records for the parent", async () => {
+  const { prisma, users, memberships } = await factorioHarness();
+
+  const ada = await users.create({ memberships: memberships.count(2) });
+  const held = await prisma.membership.findMany({ where: { userId: ada.id } });
+
+  expect(held).toHaveLength(2);
+  expect(new Set(held.map((row) => row.teamId)).size).toBe(2);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
 test("for() names a leg of the join model, each record bringing the far side of its own", async () => {
   const { prisma, users, memberships } = await factorioHarness();
   const ada = await users.create();
@@ -1554,6 +1948,32 @@ test("connecting an existing join-model row fails on its compound key", async ()
 
   await expect(harness.users.has([membership], "memberships").create()).rejects.toThrow(
     "Expected MembershipWhereUniqueInput",
+  );
+});
+
+// The same compound key reached through the relation field itself rather than through a `has` layer: a
+// list of rows connects on the target model's scalars either way, and the flat scalars a join-model row
+// carries satisfy no `WhereUniqueInput`. Tracked as issue #41, whose workaround is passing native
+// relation input, `{ connect: { userId_teamId: … } }`. The README paragraph naming #41 stands or falls
+// with this test.
+test("a list of existing join-model rows in a relation field fails on the compound key", async () => {
+  const { harness, membership } = await joined();
+
+  await expect(harness.users.create({ memberships: [membership] })).rejects.toThrow(
+    "Expected MembershipWhereUniqueInput",
+  );
+});
+
+// The same compound key reached by a single row rather than a list of them: a row standing alone lands in
+// `connect` as a bare object, so Prisma names the array type it expected where a list has it name the
+// element type, and the flat scalars a join-model row carries satisfy neither. Tracked as issue #41, whose
+// workaround is passing native relation input, `{ connect: { userId_teamId: … } }`. The README paragraph
+// naming #41 stands or falls with this test.
+test("an existing join-model row standing in a relation field fails on the compound key", async () => {
+  const { harness, membership } = await joined();
+
+  await expect(harness.users.create({ memberships: membership })).rejects.toThrow(
+    "Expected MembershipWhereUniqueInput[], provided Object.",
   );
 });
 
@@ -1916,7 +2336,8 @@ async function attaching(rows: number): Promise<Attaching> {
 }
 
 // A drawn child leaves nothing behind that a created one would not, so what tells the picks apart is
-// the connect list the parent's own create was handed: one entry per pick.
+// the connect list the parent's own create was handed: one entry per pick, where a slot that connected
+// nothing leaves no relation field to read at all.
 function connectedIds(data: Record<string, unknown>, field: string): number[] {
   const held = data[field] as { connect?: { id: number }[] } | undefined;
 
@@ -2049,6 +2470,152 @@ test("a pooled join-model row fails on its compound key too, drawn into the pare
   await expect(harness.users.recycle("membership", membership).has(harness.memberships).create()).rejects.toThrow(
     "Expected MembershipWhereUniqueInput",
   );
+});
+
+// What the post's own create was handed under `comments`, one entry per record of the batch, alongside
+// what the post holds once the graph is done, every comment standing by then and the row the pool was
+// handed. A drawn child leaves nothing behind that a created one would not, and a pool of one hands
+// that row out every time, so the connect list is what tells one pick from two where the database tells
+// whether the picks landed on the post at all.
+interface Drawn {
+  attached: number[];
+  connected: number[][];
+  keys: string[][];
+  written: number;
+  drawn: number;
+}
+
+// Where the slot is filled is all these cases differ by: the pool, the children and the client the
+// writes are recorded through stand the same throughout, so what the picks answer to is the layer the
+// post factory arrives back through.
+async function pooledChildren(
+  records: number,
+  attach: (harness: Harness, children: ChildComments) => Factory<TestClient, "post", unknown>,
+): Promise<Drawn> {
+  const { harness, first } = await spare();
+  const { client, written: writes } = recording(harness.prisma, "post");
+
+  const post = (await attach(harness, harness.comments.count(records))
+    .recycle("comment", first)
+    .using(client)
+    .create()) as Row<TestClient, "post">;
+
+  return {
+    attached: await attachedTo(harness.prisma, post.id, "comments"),
+    connected: writes.map((data) => connectedIds(data, "comments")),
+    keys: writes.map((data) => Object.keys(data)),
+    written: await harness.prisma.comment.count(),
+    drawn: first.id,
+  };
+}
+
+// The batch size the child's own chain carries is what the pool answers for, record for record: a layer
+// collapsing it to one pick would connect half the children the slot was asked for.
+test("a to-many default a state names loses to the pool, one pick per record it would have created", async () => {
+  const { attached, connected, written, drawn } = await pooledChildren(2, (harness, comments) =>
+    harness.posts.state({ comments }),
+  );
+
+  expect(connected).toStrictEqual([[drawn, drawn]]);
+  expect(attached).toStrictEqual([drawn]);
+  expect(written).toBe(2);
+});
+
+test("a to-many default a definition names loses to the pool the same way", async () => {
+  const { connected, written, drawn } = await pooledChildren(2, ({ f, users }, comments) =>
+    f.define("post", { definition: ({ uid }) => ({ title: uid, author: users, comments }) }),
+  );
+
+  expect(connected).toStrictEqual([[drawn, drawn]]);
+  expect(written).toBe(2);
+});
+
+// A state is a state wherever it was declared: the pool beats the one the config names exactly as it
+// beats the one a call adds.
+test("a to-many default a config-declared state names loses to the pool too", async () => {
+  const { connected, written, drawn } = await pooledChildren(2, ({ f, users }, comments) =>
+    f
+      .define("post", {
+        definition: ({ uid }) => ({ title: uid, author: users }),
+        states: { commented: { comments } },
+      })
+      .commented(),
+  );
+
+  expect(connected).toStrictEqual([[drawn, drawn]]);
+  expect(written).toBe(2);
+});
+
+test("a to-many default the caller names outright beats the pool and creates its children", async () => {
+  const { harness, first } = await spare();
+
+  const post = await harness.posts.recycle("comment", first).create({ comments: harness.comments.count(2) });
+  const held = await attachedTo(harness.prisma, post.id, "comments");
+
+  expect(held).toHaveLength(2);
+  expect(held).not.toContain(first.id);
+  await expect(harness.prisma.comment.count()).resolves.toBe(4);
+});
+
+// A chain batched to no records asks the pool for nothing, and a relation field with nothing to connect
+// stays unwritten — the same reading a pooled `has` layer gives a batch of none.
+test("a pooled to-many default batched to no records draws nothing and leaves the relation field unwritten", async () => {
+  const { keys, written } = await pooledChildren(0, (harness, comments) => harness.posts.state({ comments }));
+
+  expect(keys).toStrictEqual([["title", "author"]]);
+  expect(written).toBe(2);
+});
+
+// The cadence a to-many default keeps, which is `for()`'s deliberate opposite: children belong to one
+// record, so every record of a batch draws a set of its own. The pool holds tags rather than comments
+// because a join table leaves the row it connects untouched, where a connect rewriting a foreign key
+// leaves the pooled row stale for the record behind it.
+test("a pooled to-many default is drawn per parent record, the whole batch of them", async () => {
+  const { prisma, posts, tags } = await factorioHarness({ seed: 7 });
+  const tag = await tags.create();
+  const { client, written } = recording(prisma, "post");
+
+  await posts
+    .recycle("tag", tag)
+    .state({ tags: tags.count(2) })
+    .count(2)
+    .using(client)
+    .create();
+
+  expect(written.map((data) => connectedIds(data, "tags"))).toStrictEqual([
+    [tag.id, tag.id],
+    [tag.id, tag.id],
+  ]);
+  await expect(prisma.tag.count()).resolves.toBe(1);
+});
+
+// Explicitness covers the slot the call named and nothing under it: the post the override names is
+// created rather than drawn, and the editor that post reaches for is drawn all the same.
+test("the pool reaches the graph below a to-many default the caller named outright", async () => {
+  const { harness, posts, ada } = await pooling();
+  const standing = await posts.create();
+
+  const user = await harness.users.recycle("post", standing).recycle("user", ada).create({ posts: harness.posts });
+  const authored = await harness.prisma.post.findMany({ where: { authorId: user.id } });
+
+  expect(authored.map((post) => post.editorId)).toStrictEqual([ada.id]);
+  await expect(harness.prisma.post.count()).resolves.toBe(2);
+  await expect(harness.prisma.user.count()).resolves.toBe(2);
+});
+
+// Both ends of an implicit many-to-many hold many records, so a to-many default reaches it through the
+// same picks a `has` layer draws, and they land in one join table row each.
+test("a pooled to-many default joins the parent across an implicit many-to-many", async () => {
+  const { prisma, posts, tags } = await factorioHarness({ seed: 7 });
+  const tag = await tags.create();
+
+  const post = await posts
+    .recycle("tag", tag)
+    .state({ tags: tags.count(2) })
+    .create();
+
+  await expect(attachedTo(prisma, post.id, "tags")).resolves.toStrictEqual([tag.id]);
+  await expect(prisma.tag.count()).resolves.toBe(1);
 });
 
 // The three ways a graph reaches a record of another model, in one create: the author the definition
@@ -2248,16 +2815,21 @@ test("a parent's callback sees its has() children already written", async () => 
   expect(counted).toStrictEqual([2]);
 });
 
-// The whole shape in one graph: a parent the definition embeds, two children a `has` layer creates,
-// and the record between them. The record's own entry counts its children, so the log pins that the
-// record was written before them as well as where its callbacks fall.
-test("a graph fires the parent's callbacks, then each child's own, then the record's last", async () => {
+// The whole shape in one graph: a parent the definition embeds, two children, and the record between
+// them. A child counts the posts standing when its own callback fires, and the record counts the
+// children it holds, so the log pins the record as written ahead of the children — a child created
+// before it would have brought the post its own definition names, and counted two.
+async function firingOrder(
+  attach: (posts: Factory<TestClient, "post">, children: ChildComments) => Factory<TestClient, "post">,
+): Promise<string[]> {
   const { f, posts: standing } = await factorioHarness();
   const log: string[] = [];
   const users = loggingUsers(f, log, "parent");
   const comments = f.define("comment", {
     definition: ({ uid }) => ({ body: uid, post: standing }),
-    afterCreating: logging(log, "child"),
+    afterCreating: async (comment, { client }) => {
+      log.push(`child, ${String(await client.post.count())} posts written`);
+    },
   });
   const posts = f.define("post", {
     definition: ({ uid }) => ({ title: uid, author: users }),
@@ -2266,9 +2838,23 @@ test("a graph fires the parent's callbacks, then each child's own, then the reco
     },
   });
 
-  await posts.has(comments.count(2), "comments").create();
+  await attach(posts, comments.count(2)).create();
 
-  expect(log).toStrictEqual(["parent", "child", "child", "record sees 2 children"]);
+  return log;
+}
+
+const wholeGraph = ["parent", "child, 1 posts written", "child, 1 posts written", "record sees 2 children"];
+
+test("a graph fires the parent's callbacks, then each child's own, then the record's last", async () => {
+  await expect(firingOrder((posts, children) => posts.has(children, "comments"))).resolves.toStrictEqual(wholeGraph);
+});
+
+// A record a to-many default brings runs a `write` of its own, so its callbacks fire exactly where a
+// `has` child's do, and the whole graph reads the same either way.
+test("a to-many default fires each child's own callbacks between the record and the record's own", async () => {
+  await expect(firingOrder((posts, children) => posts.state({ comments: children }))).resolves.toStrictEqual(
+    wholeGraph,
+  );
 });
 
 // One parent answers the whole batch, so its own create runs once and so do the callbacks behind it.
@@ -2312,6 +2898,25 @@ test("a has() child factory drawn from the pool fires no callback", async () => 
   await users.recycle("post", standing).has(posts.count(2), "posts").create();
 
   expect(log).toStrictEqual(["post"]);
+});
+
+// The standing comment is created through the factory, so the one entry on the log is its own: the two
+// records the to-many default would have created were drawn from the pool instead and fired nothing.
+test("a to-many default drawn from the pool fires no callback", async () => {
+  const { f, posts } = await factorioHarness();
+  const log: string[] = [];
+  const comments = f.define("comment", {
+    definition: ({ uid }) => ({ body: uid, post: posts }),
+    afterCreating: logging(log, "comment"),
+  });
+  const standing = await comments.create();
+
+  await posts
+    .recycle("comment", standing)
+    .state({ comments: comments.count(2) })
+    .create();
+
+  expect(log).toStrictEqual(["comment"]);
 });
 
 // `for()` names the caller's own parent, which the pool never stands in for, so that record is created
