@@ -184,7 +184,7 @@ test("a row fitting no target model of the child is rejected, naming the candida
   const prisma = await disposableClient();
 
   expect(() => resolveRowRelationField(prisma, "comment", userShape)).toThrow(
-    'The row passed to for() fits no single model the relation fields of "comment" point at. ' +
+    'The row fits no single model the relation fields of "comment" point at. ' +
       'Pass the relation field explicitly. Relation fields on "comment": "post".',
   );
 });
@@ -194,7 +194,7 @@ test("a row fitting several target models of the child is rejected, naming the c
   const prisma = await disposableClient();
 
   expect(() => resolveRowRelationField(prisma, "post", { id: 1 })).toThrow(
-    'The row passed to for() fits no single model the relation fields of "post" point at. ' +
+    'The row fits no single model the relation fields of "post" point at. ' +
       'Pass the relation field explicitly. Relation fields on "post": "author", "editor", "comments".',
   );
 });
