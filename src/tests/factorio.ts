@@ -8,7 +8,8 @@ import { createTestClient, disposeTestClient, type TestClient } from "./client.j
  * A bootstrap over a throwaway database, with one factory per model already declared on it.
  *
  * `posts`, `comments` and `memberships` carry a relation default, so creating any of them walks the
- * chain of factories behind it: a comment brings a post, which brings a user.
+ * chain of factories behind it: a comment brings a post, which brings a user, and a membership brings
+ * a user and a team both.
  *
  * @example
  * ```ts

@@ -66,7 +66,9 @@ export interface StateContext<C, M extends ModelName<C>> extends EvaluationConte
    *
    * @example
    * ```ts
-   * const credited = ({ parent }: StateContext<PrismaClient, "post">) => ({ title: `by ${String(parent?.id)}` });
+   * const credited = ({ parent }: StateContext<PrismaClient, "post">) => ({
+   *   title: parent !== undefined && "id" in parent ? `by ${String(parent.id)}` : "unattributed",
+   * });
    * ```
    */
   parent: Row<C, ModelName<C>> | undefined;

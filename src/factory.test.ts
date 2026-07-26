@@ -1438,7 +1438,7 @@ test("has(rows) attaches records that already exist across a many-to-many, creat
   const post = await posts.has(existing).create();
   const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
 
-  expect(joined.tags.map((tag) => tag.id)).toStrictEqual(existing.map((tag) => tag.id));
+  expect(new Set(joined.tags.map((tag) => tag.id))).toStrictEqual(new Set(existing.map((tag) => tag.id)));
   await expect(prisma.tag.count()).resolves.toBe(2);
 });
 
@@ -1446,8 +1446,9 @@ test("a many-to-many draws its children per parent record, the cadence every has
   const { prisma, posts, tags } = await factorioHarness();
 
   await posts.count(3).has(tags.count(2)).create();
+  const joined = await prisma.post.findMany({ include: { tags: true } });
 
-  await expect(prisma.post.count()).resolves.toBe(3);
+  expect(joined.map((post) => post.tags.length)).toStrictEqual([2, 2, 2]);
   await expect(prisma.tag.count()).resolves.toBe(6);
 });
 
@@ -1499,8 +1500,7 @@ test("a state pins an existing row into a leg of the join model rather than draw
 // The join model's only unique constraint is its compound key, which Prisma exposes under the single
 // generated name `userId_teamId` and demands under that name; the flat scalars a row carries satisfy
 // no `WhereUniqueInput`. Tracked as issue #41, whose workaround is passing native relation input,
-// `{ connect: { userId_teamId: … } }`. This test fails the day #41 lands, which is when the README
-// paragraph naming it has to go.
+// `{ connect: { userId_teamId: … } }`. The README paragraph naming #41 stands or falls with this test.
 test("connecting an existing join-model row fails on its compound key", async () => {
   const { users, memberships } = await factorioHarness();
   const ada = await users.create();
