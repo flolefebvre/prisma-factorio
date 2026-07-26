@@ -63,6 +63,7 @@ export function initPrismaFactorio<C extends object>(
       explicit: false,
       faker,
       batch: undefined,
+      parent: undefined,
     });
 
   return { define };

@@ -127,6 +127,8 @@ export function resolveRelationField(client: unknown, model: string, target: str
   return only;
 }
 
+const inverseOption = 'Pass the inverse relation field as the "inverse" option of has(). ';
+
 function fieldListing(client: unknown, model: string): string {
   const names = relationFieldsOf(client, model);
 
@@ -164,7 +166,7 @@ export function inverseRelationField(client: unknown, model: string, relationFie
   if (field.relationName === undefined)
     throw new TypeError(
       `The relation field "${relationField}" on the model "${model}" carries no metadata pairing it with a relation field on "${target}". ` +
-        "Pass the inverse relation field explicitly. " +
+        inverseOption +
         fieldListing(client, target),
     );
 
@@ -179,14 +181,14 @@ export function inverseRelationField(client: unknown, model: string, relationFie
   if (only === undefined)
     throw new TypeError(
       `The model "${target}" has no relation field pairing with "${relationField}" on "${model}". ` +
-        "Pass the inverse relation field explicitly. " +
+        inverseOption +
         fieldListing(client, target),
     );
 
   if (rest.length > 0)
     throw new TypeError(
       `The model "${target}" has more than one relation field pairing with "${relationField}" on "${model}". ` +
-        "Pass the inverse relation field explicitly. " +
+        inverseOption +
         `Relation fields on "${target}" pairing with "${relationField}" on "${model}": ${quoted(candidates)}.`,
     );
 

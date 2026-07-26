@@ -239,7 +239,7 @@ test("a relation field the datamodel pairs with nothing at all is rejected", () 
 
   expect(() => inverseRelationField(client, "user", "posts")).toThrow(
     'The relation field "posts" on the model "user" carries no metadata pairing it with a relation field on "post". ' +
-      'Pass the inverse relation field explicitly. Relation fields on "post": "author".',
+      'Pass the inverse relation field as the "inverse" option of has(). Relation fields on "post": "author".',
   );
 });
 
@@ -248,7 +248,7 @@ test("a relation field nothing on the target model pairs with is rejected", () =
 
   expect(() => inverseRelationField(client, "user", "posts")).toThrow(
     'The model "post" has no relation field pairing with "posts" on "user". ' +
-      'Pass the inverse relation field explicitly. Relation fields on "post": "author".',
+      'Pass the inverse relation field as the "inverse" option of has(). Relation fields on "post": "author".',
   );
 });
 
@@ -264,7 +264,7 @@ test("more than one relation field pairing with the one the lookup starts from i
 
   expect(() => inverseRelationField(client, "node", "parent")).toThrow(
     'The model "node" has more than one relation field pairing with "parent" on "node". ' +
-      "Pass the inverse relation field explicitly. " +
+      'Pass the inverse relation field as the "inverse" option of has(). ' +
       'Relation fields on "node" pairing with "parent" on "node": "children", "leaves".',
   );
 });
