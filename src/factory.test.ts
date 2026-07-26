@@ -374,6 +374,15 @@ test("a state named recycle is rejected where the factory is defined", async () 
   ).toThrow('The state "recycle" takes a name a factory reserves. Rename the state.');
 });
 
+test("a state named afterCreating is rejected where the factory is defined", async () => {
+  const { f } = await factorioHarness();
+
+  expect(() =>
+    // @ts-expect-error a state may not take the name the callback method answers to
+    f.define("user", { definition: userDefinition, states: { afterCreating: { name: "Grace" } } }),
+  ).toThrow('The state "afterCreating" takes a name a factory reserves. Rename the state.');
+});
+
 test("a state named __proto__ becomes a method rather than a write to the prototype", async () => {
   const { f } = await factorioHarness();
   const users = f.define("user", { definition: userDefinition, states: { ["__proto__"]: { name: "Grace" } } });

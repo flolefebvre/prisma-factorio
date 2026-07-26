@@ -122,10 +122,11 @@ interface Reserved {
   for?: never;
   has?: never;
   recycle?: never;
+  afterCreating?: never;
   then?: never;
 }
 
-const reservedNames = ["create", "count", "using", "state", "for", "has", "recycle", "then"];
+const reservedNames = ["create", "count", "using", "state", "for", "has", "recycle", "afterCreating", "then"];
 
 /**
  * What a factory's declared `states` must satisfy: every value exact, and no name the factory
