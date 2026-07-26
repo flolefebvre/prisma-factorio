@@ -178,12 +178,17 @@ test("a relation field takes a factory of the model it points at, a row of it, o
   expectTypeOf<Row<TestClient, "post">>().not.toExtend<Author>();
 });
 
-test("a relation field holding many records takes native relation input and nothing else", () => {
+test("a relation field holding many records takes a factory, a row, an array of rows, or native input", () => {
   type Posts = PartialAttributes<TestClient, "user">["posts"];
 
+  expectTypeOf<Factory<TestClient, "post">>().toExtend<Posts>();
+  expectTypeOf<Batched<"post">>().toExtend<Posts>();
+  expectTypeOf<Row<TestClient, "post">>().toExtend<Posts>();
+  expectTypeOf<Row<TestClient, "post">[]>().toExtend<Posts>();
   expectTypeOf<{ connect: { id: number } }>().toExtend<Posts>();
-  expectTypeOf<Factory<TestClient, "post">>().not.toExtend<Posts>();
-  expectTypeOf<Row<TestClient, "post">>().not.toExtend<Posts>();
+  expectTypeOf<Factory<TestClient, "user">>().not.toExtend<Posts>();
+  expectTypeOf<Row<TestClient, "user">>().not.toExtend<Posts>();
+  expectTypeOf<Row<TestClient, "user">[]>().not.toExtend<Posts>();
 });
 
 test("create() is typed as the model's row and count(n).create() as an array of them", async () => {
@@ -219,6 +224,7 @@ export function checkedByTheCompiler(
   named: boolean,
   userRow: Row<TestClient, "user">,
   postRow: Row<TestClient, "post">,
+  postRows: Row<TestClient, "post">[],
   stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
   comments: Factory<TestClient, "comment">,
   commentRows: Row<TestClient, "comment">[],
@@ -243,6 +249,11 @@ export function checkedByTheCompiler(
   void posts.create({ author: userRow });
   void posts.state({ author: users });
   void posts.state(({ index }) => ({ author: index === 0 ? users : userRow }));
+
+  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@e.com`, posts: posts, edited: postRow }) });
+  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@e.com`, memberships: [], posts: posts.count(3) }) });
+  void users.create({ posts: postRows });
+  void users.state({ edited: posts.count(3) });
 
   // @ts-expect-error a model name the client does not carry
   f.define("usre", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });
@@ -271,8 +282,8 @@ export function checkedByTheCompiler(
 
   // @ts-expect-error a factory of a model the relation does not point at
   f.define("post", { definition: ({ uid }) => ({ title: uid, author: posts }) });
-  // @ts-expect-error a factory standing in a relation field that holds many records
-  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@e.com`, posts: posts }) });
+  // @ts-expect-error a factory of a model the has-many relation does not point at
+  f.define("user", { definition: ({ uid }) => ({ email: `${uid}@e.com`, posts: comments }) });
   // @ts-expect-error a factory where the model declares a scalar
   f.define("post", { definition: () => ({ title: users, author: users }) });
   // @ts-expect-error a factory on the relation half while the raw foreign key holds the other
