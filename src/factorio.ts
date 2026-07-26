@@ -39,7 +39,9 @@ function resolver<C extends object>(source: C | (() => C)): () => C {
  * The client may be a thunk, which is called on the first `create` and never again: importing a
  * module that declares factories then costs nothing, and a test may replace the client beforehand.
  * `locale` configures the one faker every definition of this bootstrap reads, and `seed` pins both
- * the values that faker generates and the rows a recycle pool picks.
+ * the values that faker generates and the rows a recycle pool picks. The picks belong to the graph
+ * that resolves them rather than to the bootstrap that defined the factory, so a factory defined here
+ * and reached through a graph of another bootstrap draws from that one's stream, seeded or not.
  *
  * @example
  * ```ts

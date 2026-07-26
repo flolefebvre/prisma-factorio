@@ -500,6 +500,9 @@ function pooled(value: Embedded, { pool, pick }: Wiring, explicit: boolean): Rec
 
   const rows = pool[value[brand]];
 
+  // A model the pool names carries at least one row of that model — `recycledPool` keeps no empty
+  // list, and `recycle` takes rows alone — so the pick is a row rather than the `undefined` a picker
+  // answers an empty list with.
   return rows === undefined ? undefined : (pick(rows) as Record<string, unknown>);
 }
 
@@ -801,9 +804,13 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
   const bear = (parent: unknown): Factory<C, M, R, S> => createFactory({ ...chain, parent });
   // The rows a chain pools stack up rather than replace the ones this factory pools itself, the same
   // reading two `recycle` calls on one chain take; the picker is the resolving graph's, so one stream
-  // covers every pick the graph makes, in the order it makes them.
+  // covers every pick the graph makes, in the order it makes them. A graph pooling nothing and drawing
+  // on this factory's own stream leaves it exactly as it stands, which is every graph no `recycle`
+  // call was ever made on.
   const draw = (pool: Pool, pick: Picker): Factory<C, M, R, S> =>
-    createFactory({ ...chain, pool: mergedPool(chain.pool, pool), pick });
+    Object.keys(pool).length === 0 && pick === chain.pick
+      ? factory
+      : createFactory({ ...chain, pool: mergedPool(chain.pool, pool), pick });
 
   Object.defineProperty(factory, brand, { value: String(chain.model) });
   Object.defineProperty(factory, rebind, { value: inherit });
