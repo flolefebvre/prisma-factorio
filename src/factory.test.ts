@@ -1964,6 +1964,19 @@ test("a list of existing join-model rows in a relation field fails on the compou
   );
 });
 
+// The same compound key reached by a single row rather than a list of them: a row standing alone lands in
+// `connect` as a bare object, so Prisma names the array type it expected where a list has it name the
+// element type, and the flat scalars a join-model row carries satisfy neither. Tracked as issue #41, whose
+// workaround is passing native relation input, `{ connect: { userId_teamId: … } }`. The README paragraph
+// naming #41 stands or falls with this test.
+test("an existing join-model row standing in a relation field fails on the compound key", async () => {
+  const { harness, membership } = await joined();
+
+  await expect(harness.users.create({ memberships: membership })).rejects.toThrow(
+    "Expected MembershipWhereUniqueInput[], provided Object.",
+  );
+});
+
 // The schema being enforced, not the library misbehaving: one user belongs to one team once.
 test("two join-model records of the same pair collide on the compound key", async () => {
   const { users, teams, memberships } = await factorioHarness();
