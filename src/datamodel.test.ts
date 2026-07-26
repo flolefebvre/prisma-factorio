@@ -391,6 +391,19 @@ test("the probe names a filter key the target model declares no field under", as
   ]);
 });
 
+// A target model declaring a field under all three leaves the probe no key that a field holding a
+// single record refuses, where sending one anyway would validate against that model's own field and
+// report the arity as many.
+test("a target model declaring a field under every filter key has no arity to read", async () => {
+  const client = probing(() => Promise.resolve(null), scalars("some", "every", "none"));
+
+  await expect(holdsManyRecords(client, "user", "posts")).rejects.toThrow(
+    'The model at the far end of the relation field "posts" on "user" declares a field under each of ' +
+      '"some", "every", "none", which leaves the arity no filter key to be read off. ' +
+      "Rename one of them in the Prisma schema.",
+  );
+});
+
 // A query the database refused — a missing table, a dropped connection — says nothing about the
 // schema, so it reaches the caller in place of standing for a relation field holding one record.
 test("a query the database refused is rethrown rather than read as an arity", async () => {

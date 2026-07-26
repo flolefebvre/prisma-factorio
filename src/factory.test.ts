@@ -1223,6 +1223,20 @@ test("for() rejects an omitted relation field where the model pair shares severa
   );
 });
 
+// A `for` call names one parent record, which a relation field holding many records has no reading
+// for. The type layer rejects it; the runtime says the same thing to a caller who compiles nothing,
+// rather than writing a record that hangs off no parent at all.
+test("for() rejects a relation field holding many records, naming it and the arity", async () => {
+  const { prisma, posts, users } = await factorioHarness();
+  const bypassing = users as unknown as { for: (parent: unknown, field: string) => Factory<TestClient, "user"> };
+
+  await expect(bypassing.for(posts, "posts").create()).rejects.toThrow(
+    'The relation field "posts" on the model "user" holds many records, which for() has no reading for. ' +
+      "Attach the records with has() instead.",
+  );
+  await expect(prisma.post.count()).resolves.toBe(0);
+});
+
 test("for() hands create the relation field as connect and never a foreign key column", async () => {
   const { prisma, posts, users } = await factorioHarness();
   const { client, written } = recording(prisma, "post");

@@ -490,8 +490,9 @@ const attached = Symbol("prisma-factorio.attached");
 interface Attachment {
   children: object;
   inverse: string | undefined;
-  // The position of the `has` call among the layers, which is what the children are created in: the
-  // keys of the merge fall in the order the layers first named them, one field at a time.
+  // The position of the `has` call among the layers, which is the order its children are created in:
+  // the layers of every relation field fall together in call order, behind the children a relation
+  // field's own value left standing.
   order: number;
 }
 
@@ -600,8 +601,9 @@ function matchingAll(client: unknown, model: string, field: string, rows: readon
 
 // A value a relation field has no reading for: a list standing in a field that holds a single record,
 // which keeps the value it was handed so that Prisma's own validation refuses it rather than the field
-// going unwritten. The arity costs a query to answer, so it is asked of a field a list stands in and of
-// no other.
+// going unwritten. A list is not the only value the arity is asked for — a factory standing in a field
+// asks it too — and neither ask is dear: the answer is held per client, and a field holding a single
+// record never reaches the database, Prisma refusing the probe filter where it stands.
 async function unread(client: unknown, model: string, field: string, value: Standing): Promise<boolean> {
   return Array.isArray(value) && !(await holdsManyRecords(client, model, field));
 }
@@ -637,6 +639,14 @@ async function embodied(
 
   if (!(await holdsManyRecords(wiring.client, model, field)))
     return { connect: await recycling(inheriting(value, wiring.client), wiring).create() };
+
+  // The stand-in a `for` call leaves takes no overrides, so it has nothing to reach back through the
+  // inverse relation with: pending children of it would hang off no parent at all.
+  if (value[chosen] === true)
+    throw new TypeError(
+      `The relation field "${field}" on the model "${model}" holds many records, which for() has no reading for. ` +
+        "Attach the records with has() instead.",
+    );
 
   pending.push({ field, children: value, inverse: undefined, order: standingOrder });
 

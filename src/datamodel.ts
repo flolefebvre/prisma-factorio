@@ -336,7 +336,16 @@ const manyFilters = ["some", "every", "none"];
 function probeFilter(client: unknown, model: string, relationField: string): string {
   const tag = tagOf(client, model, relationField);
   const declared = tag === undefined ? [] : declaredNames(modelsOf(client), tag);
-  const [free = "some"] = manyFilters.filter((key) => !declared.includes(key));
+  const [free] = manyFilters.filter((key) => !declared.includes(key));
+
+  // A model declaring a field under every one of them leaves no key a field holding a single record
+  // refuses, so any of them would validate there and report that field as holding many.
+  if (free === undefined)
+    throw new TypeError(
+      `The model at the far end of the relation field "${relationField}" on "${model}" declares a field under each of ` +
+        `${quoted(manyFilters)}, which leaves the arity no filter key to be read off. ` +
+        "Rename one of them in the Prisma schema.",
+    );
 
   return free;
 }
