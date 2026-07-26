@@ -1409,6 +1409,48 @@ test("the inverse option is checked before the parent record is written", async 
   await expect(prisma.user.count()).resolves.toBe(0);
 });
 
+// An implicit many-to-many holds many records at both ends, so `has` reaches it from either one and
+// the relation field is skippable on both. The join table Prisma keeps hidden carries no model of its
+// own, which is why none of this needs machinery beyond what a one-to-many already uses.
+test("has(factory) joins the children to the parent across an implicit many-to-many", async () => {
+  const { prisma, posts, tags } = await factorioHarness();
+
+  const post = await posts.has(tags.count(3)).create();
+  const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
+
+  expect(joined.tags).toHaveLength(3);
+  await expect(prisma.tag.count()).resolves.toBe(3);
+});
+
+test("has(factory) reaches a many-to-many from the far end just as well", async () => {
+  const { prisma, posts, tags } = await factorioHarness();
+
+  const tag = await tags.has(posts.count(2)).create();
+  const joined = await prisma.tag.findUniqueOrThrow({ where: { id: tag.id }, include: { posts: true } });
+
+  expect(joined.posts).toHaveLength(2);
+});
+
+test("has(rows) attaches records that already exist across a many-to-many, creating none", async () => {
+  const { prisma, posts, tags } = await factorioHarness();
+  const existing = await tags.count(2).create();
+
+  const post = await posts.has(existing).create();
+  const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
+
+  expect(joined.tags.map((tag) => tag.id)).toStrictEqual(existing.map((tag) => tag.id));
+  await expect(prisma.tag.count()).resolves.toBe(2);
+});
+
+test("a many-to-many draws its children per parent record, the cadence every has() layer keeps", async () => {
+  const { prisma, posts, tags } = await factorioHarness();
+
+  await posts.count(3).has(tags.count(2)).create();
+
+  await expect(prisma.post.count()).resolves.toBe(3);
+  await expect(prisma.tag.count()).resolves.toBe(6);
+});
+
 // Never invoked: these calls exist for `pnpm typecheck`, which reads this file. Each directive fails
 // the gate the moment the type it names stops rejecting — or stops accepting — what it is given.
 export function relationsCheckedByTheCompiler(
@@ -1420,6 +1462,8 @@ export function relationsCheckedByTheCompiler(
   commentRow: Row<TestClient, "comment">,
   stateful: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
   draftable: Factory<TestClient, "post", Row<TestClient, "post">, { drafted: unknown }>,
+  tags: Factory<TestClient, "tag">,
+  tagRow: Row<TestClient, "tag">,
 ): void {
   void posts.for(users, "author").create();
   void posts.for(userRow, "editor").create();
@@ -1485,4 +1529,21 @@ export function relationsCheckedByTheCompiler(
   void users.has(posts, "posts", { inverze: "author" });
   // @ts-expect-error the options stand alone only where the relation field may be left out
   void users.has(posts, { inverse: "author" });
+
+  void posts.has(tags).create();
+  void posts.has(tags.count(3), "tags").create();
+  void posts.has([tagRow]).create();
+  void tags.has(posts).create();
+  void tags.has(posts.count(2), "posts").create();
+
+  // Both ends of an implicit many-to-many hold many records, so the pair has no belongs-to side at
+  // all and `has` is the only way in — from whichever end reads better.
+  // @ts-expect-error no belongs-to relation reaches a tag from a post
+  void posts.for(tags);
+  // @ts-expect-error naming the field does not make one, the field being a list at both ends
+  void posts.for(tags, "tags");
+  // @ts-expect-error no belongs-to relation reaches a post from a tag either
+  void tags.for(posts);
+  // @ts-expect-error a row names the same pair, and answers the same way
+  void posts.for(tagRow);
 }
