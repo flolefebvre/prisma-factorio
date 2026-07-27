@@ -6,7 +6,7 @@ import {
   relationFieldsOf,
   resolveRelationField,
   resolveRowRelationField,
-  targetScalars,
+  targetWhere,
 } from "./datamodel.js";
 import type { FakerInstance, FakerProvider } from "./faker.js";
 import { mergedPool, recycledPool, type Pool } from "./pool.js";
@@ -593,13 +593,15 @@ function pooled(value: Embedded, { pool, pick }: Wiring, explicit: boolean): Rec
   return rows === undefined ? undefined : (pick(rows) as Record<string, unknown>);
 }
 
-// Every scalar of the row goes into the `where`: the runtime datamodel marks no field unique, so no
-// subset of them is knowably the one Prisma would match on. Every extra field narrows the match,
-// which is what makes a stale row fail rather than reach the record it has become. A relation the
-// row carries is no field to match on at all — a row loaded with `include` carries one, and so may a
-// pooled row — so the where-clause is what the target model declares as scalars and nothing else.
+// Every scalar of the row goes into the `where`, plus a compound selector for every unique
+// constraint the row can name whole — the one match a model whose only unique constraint is
+// compound answers to. The runtime datamodel marks no field unique, so no subset of the scalars is
+// knowably the one Prisma would match on; every extra field narrows the match, which is what makes
+// a stale row fail rather than reach the record it has become. A relation the row carries is no
+// field to match on at all — a row loaded with `include` carries one, and so may a pooled row —
+// so the where-clause is what `targetWhere` reads off the row and nothing else.
 function matching(client: unknown, model: string, field: string, row: Record<string, unknown>): Written {
-  return { connect: targetScalars(client, model, field, row) };
+  return { connect: targetWhere(client, model, field, row) };
 }
 
 // A list connects as a list, which is what a relation field holding many records takes: a list found
@@ -607,7 +609,7 @@ function matching(client: unknown, model: string, field: string, row: Record<str
 // here, `resolved` turning it back on the arity. A single row connects on its own, the one shape both
 // arities take. A list holding no row connects nothing at all, leaving the field to the layers around it.
 function matchingAll(client: unknown, model: string, field: string, rows: readonly unknown[]): Written {
-  return rows.length === 0 ? {} : { connect: rows.map((row) => targetScalars(client, model, field, row as Written)) };
+  return rows.length === 0 ? {} : { connect: rows.map((row) => targetWhere(client, model, field, row as Written)) };
 }
 
 // A value a relation field has no reading for: a list standing in a field that holds a single record,
@@ -738,11 +740,11 @@ async function attaching(
         continue;
       }
 
-      for (const row of picks) rows.push(targetScalars(wiring.client, model, field, row));
+      for (const row of picks) rows.push(targetWhere(wiring.client, model, field, row));
       continue;
     }
 
-    for (const row of listed(entry.children)) rows.push(targetScalars(wiring.client, model, field, row as Written));
+    for (const row of listed(entry.children)) rows.push(targetWhere(wiring.client, model, field, row as Written));
   }
 
   const held = standing(value.base);
@@ -793,7 +795,7 @@ async function borne(wiring: Wiring, model: string, row: unknown, entry: Pending
   const { client } = wiring;
   const target = entry.children[brand];
   const back = entry.inverse ?? inverseRelationField(client, model, entry.field, entry.advice);
-  const connect = targetScalars(client, target, back, row as Written);
+  const connect = targetWhere(client, target, back, row as Written);
 
   await bearing(recycling(inheriting(entry.children, client), wiring), row).create({ [back]: { connect } });
 }
