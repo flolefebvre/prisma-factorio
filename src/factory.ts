@@ -308,8 +308,8 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * `has` layer or stands in a relation field holding many records.
    *
    * A row of the named model is what the argument takes, whatever else it carries: pooled rows
-   * connect on the target model's scalars, so one loaded with `include` stands here as readily as one
-   * straight from a create.
+   * connect on the target model's scalars, plus the compound selector for each unique constraint the
+   * row names whole, so one loaded with `include` stands here as readily as one straight from a create.
    *
    * @example
    * ```ts
@@ -649,11 +649,12 @@ async function embodied(
   explicit: boolean,
 ): Promise<Written> {
   if (!(await holdsManyRecords(wiring.client, model, field))) {
-    const row = pooled(value, wiring, explicit);
+    const row = pooled(value, wiring, explicit) ?? (await recycling(inheriting(value, wiring.client), wiring).create());
 
-    return row === undefined
-      ? { connect: await recycling(inheriting(value, wiring.client), wiring).create() }
-      : matching(wiring.client, model, field, row);
+    // A row the factory just created matches back like one the caller handed over, its compound
+    // selector included. A batch factory standing in a field holding a single record hands back a
+    // list, which is left for Prisma to refuse rather than being mangled into a match.
+    return Array.isArray(row) ? { connect: row } : matching(wiring.client, model, field, row as Written);
   }
 
   const picks = drawn(value, wiring, explicit);
