@@ -2100,42 +2100,77 @@ async function joined(): Promise<Joined> {
   return { harness, membership: await harness.membershipFactory.for(ada).create() };
 }
 
-// The join model's only unique constraint is its compound key, which Prisma exposes under the single
-// generated name `userId_teamId` and demands under that name; the flat scalars a row carries satisfy
-// no `WhereUniqueInput`. Tracked as issue #41, whose workaround is passing native relation input,
-// `{ connect: { userId_teamId: … } }`. The README paragraph naming #41 stands or falls with this test.
-test("connecting an existing join-model row fails on its compound key", async () => {
+// The join model's only unique constraint is its compound key, which Prisma demands under the single
+// generated name `userId_teamId`: the flat scalars a row carries satisfy no `WhereUniqueInput`, so
+// the where-clause carries the compound selector read off the schema text the client holds.
+// Connecting re-homes the row — the membership keeps its team and role, and its user becomes the
+// created record.
+test("connecting an existing join-model row matches on its compound key", async () => {
   const { harness, membership } = await joined();
 
-  await expect(harness.userFactory.has([membership], "memberships").create()).rejects.toThrow(
-    "Expected MembershipWhereUniqueInput",
-  );
+  const grace = await harness.userFactory.has([membership], "memberships").create();
+
+  await expect(harness.prisma.membership.findMany()).resolves.toStrictEqual([{ ...membership, userId: grace.id }]);
 });
 
-// The same compound key reached through the relation field itself rather than through a `has` layer: a
-// list of rows connects on the target model's scalars either way, and the flat scalars a join-model row
-// carries satisfy no `WhereUniqueInput`. Tracked as issue #41, whose workaround is passing native
-// relation input, `{ connect: { userId_teamId: … } }`. The README paragraph naming #41 stands or falls
-// with this test.
-test("a list of existing join-model rows in a relation field fails on the compound key", async () => {
+// The same compound key reached through the relation field itself rather than through a `has` layer:
+// a list of rows connects through `targetWhere` either way, and neither route stands in for the other.
+test("a list of existing join-model rows in a relation field connects on the compound key", async () => {
   const { harness, membership } = await joined();
 
-  await expect(harness.userFactory.create({ memberships: [membership] })).rejects.toThrow(
-    "Expected MembershipWhereUniqueInput",
-  );
+  const grace = await harness.userFactory.create({ memberships: [membership] });
+
+  await expect(harness.prisma.membership.findMany()).resolves.toStrictEqual([{ ...membership, userId: grace.id }]);
 });
 
-// The same compound key reached by a single row rather than a list of them: a row standing alone lands in
-// `connect` as a bare object, so Prisma names the array type it expected where a list has it name the
-// element type, and the flat scalars a join-model row carries satisfy neither. Tracked as issue #41, whose
-// workaround is passing native relation input, `{ connect: { userId_teamId: … } }`. The README paragraph
-// naming #41 stands or falls with this test.
-test("an existing join-model row standing in a relation field fails on the compound key", async () => {
+// The same compound key reached by a single row rather than a list of them: a row standing alone
+// lands in `connect` as a bare object, which Prisma's list form accepts only once the selector
+// satisfies the element type.
+test("an existing join-model row standing in a relation field connects on the compound key", async () => {
   const { harness, membership } = await joined();
 
-  await expect(harness.userFactory.create({ memberships: membership })).rejects.toThrow(
-    "Expected MembershipWhereUniqueInput[], provided Object.",
-  );
+  const grace = await harness.userFactory.create({ memberships: membership });
+
+  await expect(harness.prisma.membership.findMany()).resolves.toStrictEqual([{ ...membership, userId: grace.id }]);
+});
+
+// A factory standing in a relation field holding a single record creates its row first, and the
+// created row matches back on the compound selector exactly as a handed one does — `badge.membership`
+// is the one field the scratch schema reaches a compound-keyed model through bare, no `has` layer
+// and no list.
+test("a relation default creating a compound-keyed row connects it on its compound key", async () => {
+  const { prisma, badgeFactory } = await factorioHarness();
+
+  const badge = await badgeFactory.create();
+  const memberships = await prisma.membership.findMany();
+
+  expect(memberships).toHaveLength(1);
+  expect([badge.userId, badge.teamId]).toStrictEqual([memberships[0]?.userId, memberships[0]?.teamId]);
+});
+
+// The same single-record field filled from a pool: the pick lands in `connect` rather than the
+// membership factory running, and matches on the selector alike.
+test("a pooled join-model row fills a single-record field on its compound key", async () => {
+  const { harness, membership } = await joined();
+
+  const badge = await harness.badgeFactory.recycle("membership", membership).create();
+
+  expect([badge.userId, badge.teamId]).toStrictEqual([membership.userId, membership.teamId]);
+  await expect(harness.prisma.membership.count()).resolves.toBe(1);
+});
+
+// Pending children reach back to the row that now exists through the same where-clause: badges hung
+// off a membership by a `has` layer name it on the compound selector.
+test("has() children of a compound-keyed parent reach back on its compound key", async () => {
+  const { prisma, membershipFactory, badgeFactory } = await factorioHarness();
+
+  const membership = await membershipFactory.has(badgeFactory.count(2), "badges").create();
+  const badges = await prisma.badge.findMany({
+    where: { userId: membership.userId, teamId: membership.teamId },
+  });
+
+  expect(badges).toHaveLength(2);
+  await expect(prisma.membership.count()).resolves.toBe(1);
 });
 
 // The schema being enforced, not the library misbehaving: one user belongs to one team once.
@@ -2668,15 +2703,15 @@ test("a pooled has() child joins the parent across an implicit many-to-many", as
   await expect(prisma.tag.count()).resolves.toBe(1);
 });
 
-// A drawn row lands in the parent's own create, which is a call site of its own: the tripwire above
-// reaches the same compound key through the rows a caller hands `has`, and neither route stands in
-// for the other. Both hold until #41 is fixed, and the README paragraph naming it rests on the pair.
-test("a pooled join-model row fails on its compound key too, drawn into the parent's own create", async () => {
+// A drawn row lands in the parent's own create, which is a call site of its own: the same compound
+// selector reaches it there, so a pooled join-model row connects exactly as one the caller hands
+// `has`, and no membership is created for the drawn slot.
+test("a pooled join-model row connects on its compound key, drawn into the parent's own create", async () => {
   const { harness, membership } = await joined();
 
-  await expect(
-    harness.userFactory.recycle("membership", membership).has(harness.membershipFactory).create(),
-  ).rejects.toThrow("Expected MembershipWhereUniqueInput");
+  const grace = await harness.userFactory.recycle("membership", membership).has(harness.membershipFactory).create();
+
+  await expect(harness.prisma.membership.findMany()).resolves.toStrictEqual([{ ...membership, userId: grace.id }]);
 });
 
 // What the post's own create was handed under `comments`, one entry per record of the batch, alongside

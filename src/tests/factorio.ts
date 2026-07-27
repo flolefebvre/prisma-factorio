@@ -7,9 +7,9 @@ import { createTestClient, disposeTestClient, type TestClient } from "./client.j
 /**
  * A bootstrap over a throwaway database, with one factory per model already declared on it.
  *
- * `postFactory`, `commentFactory` and `membershipFactory` carry a relation default, so creating any of them walks the
- * chain of factories behind it: a comment brings a post, which brings a user, and a membership brings
- * a user and a team both.
+ * `postFactory`, `commentFactory`, `membershipFactory` and `badgeFactory` carry a relation default, so
+ * creating any of them walks the chain of factories behind it: a comment brings a post, which brings a
+ * user; a membership brings a user and a team both; and a badge brings a whole membership.
  *
  * @example
  * ```ts
@@ -25,6 +25,7 @@ export interface Harness {
   tagFactory: Factory<TestClient, "tag">;
   teamFactory: Factory<TestClient, "team">;
   membershipFactory: Factory<TestClient, "membership">;
+  badgeFactory: Factory<TestClient, "badge">;
 }
 
 /**
@@ -78,6 +79,9 @@ export async function factorioHarness(options: FactorioOptions = {}): Promise<Ha
   const membershipFactory = prismaFactorio.define("membership", {
     definition: () => ({ role: "member", user: userFactory, team: teamFactory }),
   });
+  const badgeFactory = prismaFactorio.define("badge", {
+    definition: ({ uid }) => ({ note: uid, membership: membershipFactory }),
+  });
 
   return {
     prisma,
@@ -88,5 +92,6 @@ export async function factorioHarness(options: FactorioOptions = {}): Promise<Ha
     tagFactory,
     teamFactory,
     membershipFactory,
+    badgeFactory,
   };
 }

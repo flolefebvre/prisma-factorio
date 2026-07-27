@@ -61,11 +61,23 @@ model Team {
 // this join model alone. Its compound key is the only one in the schema that a flat row of scalars
 // cannot satisfy as a `connect` where-clause.
 model Membership {
-  user   User   @relation(fields: [userId], references: [id])
+  user   User    @relation(fields: [userId], references: [id])
   userId Int
-  team   Team   @relation(fields: [teamId], references: [id])
+  team   Team    @relation(fields: [teamId], references: [id])
   teamId Int
   role   String
+  badges Badge[]
 
   @@id([userId, teamId])
+}
+
+// The to-one leg onto the join model: the one relation field a row reaches `connect` through bare —
+// no `has` layer, no list — so the compound selector on the fresh-created and pooled to-one paths is
+// pinned here. `note` is a scalar no other model declares, which keeps a row of this model resolvable.
+model Badge {
+  id         Int        @id @default(autoincrement())
+  note       String
+  membership Membership @relation(fields: [userId, teamId], references: [userId, teamId])
+  userId     Int
+  teamId     Int
 }

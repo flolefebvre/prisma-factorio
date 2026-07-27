@@ -20,7 +20,7 @@ prisma/
   schema.prisma   Scratch schema for this library's own tests
 src/
   index.ts        Package root export
-  datamodel.ts    Relation metadata off the client; the only reader of `_runtimeDataModel`
+  datamodel.ts    Relation and uniqueness metadata off the client; the only reader of `_runtimeDataModel` and the inline schema
   tests/          Shared test helpers (never published)
     generated/    Generated scratch client and its DDL (gitignored, never published)
 scripts/

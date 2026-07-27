@@ -8,6 +8,7 @@ import {
   resolveRelationField,
   resolveRowRelationField,
   targetScalars,
+  targetWhere,
 } from "./datamodel.js";
 import { disposableClient } from "./tests/factorio.js";
 
@@ -193,6 +194,122 @@ test("a relation field the model does not declare hands the row back whole", asy
   const prisma = await disposableClient();
 
   expect(targetScalars(prisma, "post", "illustrator", userShape)).toStrictEqual(userShape);
+});
+
+// The compound keys are read off the schema text the client carries, which a hand-built shape stands
+// in for where the scratch schema has no such constraint: `parent` holds the relation field under
+// test, `child` the model whose schema block is being read.
+function compoundClient(inlineSchema: string): unknown {
+  const client = clientWith({
+    Parent: [{ name: "child", kind: "object", type: "Child", relationName: "kids" }],
+    Child: scalars("a", "b", "c"),
+  });
+
+  return { ...(client as object), _engineConfig: { inlineSchema } };
+}
+
+const child = { a: 1, b: 2, c: 3 };
+
+function childBlock(attributes: string): string {
+  return `model Child {\n  a Int\n  b Int\n  c String\n${attributes}\n}`;
+}
+
+test("a row of a model whose unique constraint is compound carries the compound selector", async () => {
+  const prisma = await disposableClient();
+  const membership = { userId: 1, teamId: 2, role: "admin" };
+
+  expect(targetWhere(prisma, "user", "memberships", membership)).toStrictEqual({
+    ...membership,
+    userId_teamId: { userId: 1, teamId: 2 },
+  });
+});
+
+test("a row of a model without a compound constraint stays the flat scalars", async () => {
+  const prisma = await disposableClient();
+
+  expect(targetWhere(prisma, "post", "author", { ...userShape, posts: [] })).toStrictEqual(userShape);
+});
+
+test("a relation field the model does not declare hands the row back whole, compound keys unread", async () => {
+  const prisma = await disposableClient();
+
+  expect(targetWhere(prisma, "post", "illustrator", userShape)).toStrictEqual(userShape);
+});
+
+test("a client carrying no schema text answers the flat scalars alone", () => {
+  const client = clientWith({
+    Parent: [{ name: "child", kind: "object", type: "Child", relationName: "kids" }],
+    Child: scalars("a", "b", "c"),
+  });
+
+  expect(targetWhere(client, "parent", "child", child)).toStrictEqual(child);
+});
+
+test("a compound key named in the schema is exposed under that name rather than the joined one", () => {
+  const client = compoundClient(childBlock('  @@unique(fields: [a, b], name: "pair", map: "db_pair")'));
+
+  expect(targetWhere(client, "parent", "child", child)).toStrictEqual({ ...child, pair: { a: 1, b: 2 } });
+});
+
+test("a compound id and a compound unique are read alike, each adding its own selector", () => {
+  const client = compoundClient(childBlock("  @@id([a, b])\n  @@unique([b, c])"));
+
+  expect(targetWhere(client, "parent", "child", child)).toStrictEqual({
+    ...child,
+    a_b: { a: 1, b: 2 },
+    b_c: { b: 2, c: 3 },
+  });
+});
+
+test("a single-field unique adds no selector, the flat scalar already carrying it", () => {
+  const client = compoundClient(childBlock("  @@unique([c])"));
+
+  expect(targetWhere(client, "parent", "child", child)).toStrictEqual(child);
+});
+
+test("arguments on a field reference do not reach the selector", () => {
+  const client = compoundClient(childBlock("  @@unique([a(sort: Desc), b(length: 10)])"));
+
+  expect(targetWhere(client, "parent", "child", child)).toStrictEqual({ ...child, a_b: { a: 1, b: 2 } });
+});
+
+test("an attribute spanning several lines is read whole", () => {
+  const client = compoundClient(childBlock('  @@unique(\n    fields: [a,\n      b],\n    name: "pair",\n  )'));
+
+  expect(targetWhere(client, "parent", "child", child)).toStrictEqual({ ...child, pair: { a: 1, b: 2 } });
+});
+
+test("a constraint written in a comment or a string literal is no constraint", () => {
+  const client = compoundClient(
+    'model Decoy {\n  d String @default("} @@unique([a, b]) model Child {")\n  // @@unique([a, b])\n}\n' +
+      childBlock("  // @@id([a, c])\n  @@id([a, b])"),
+  );
+
+  expect(targetWhere(client, "parent", "child", child)).toStrictEqual({ ...child, a_b: { a: 1, b: 2 } });
+});
+
+test("a selector needs every constituent present and non-null, and skips the row otherwise", () => {
+  const client = compoundClient(childBlock("  @@id([a, b])\n  @@unique([b, c])"));
+
+  expect(targetWhere(client, "parent", "child", { a: 1, b: 2, c: null })).toStrictEqual({
+    a: 1,
+    b: 2,
+    c: null,
+    a_b: { a: 1, b: 2 },
+  });
+  expect(targetWhere(client, "parent", "child", { a: 1, c: "x" })).toStrictEqual({ a: 1, c: "x" });
+});
+
+test("a constraint the scanner cannot read whole adds nothing rather than guessing", () => {
+  const client = compoundClient(childBlock('  @@unique([a, b], name: "")\n  @@id([, ])'));
+
+  expect(targetWhere(client, "parent", "child", child)).toStrictEqual(child);
+});
+
+test("a selector never overwrites a scalar the row already carries under its name", () => {
+  const client = compoundClient(childBlock('  @@unique(fields: [a, b], name: "c")'));
+
+  expect(targetWhere(client, "parent", "child", child)).toStrictEqual(child);
 });
 
 // `include` hands back the loaded relation alongside the scalars, and the relation it names belongs
