@@ -2134,6 +2134,45 @@ test("an existing join-model row standing in a relation field connects on the co
   await expect(harness.prisma.membership.findMany()).resolves.toStrictEqual([{ ...membership, userId: grace.id }]);
 });
 
+// A factory standing in a relation field holding a single record creates its row first, and the
+// created row matches back on the compound selector exactly as a handed one does — `badge.membership`
+// is the one field the scratch schema reaches a compound-keyed model through bare, no `has` layer
+// and no list.
+test("a relation default creating a compound-keyed row connects it on its compound key", async () => {
+  const { prisma, badgeFactory } = await factorioHarness();
+
+  const badge = await badgeFactory.create();
+  const memberships = await prisma.membership.findMany();
+
+  expect(memberships).toHaveLength(1);
+  expect([badge.userId, badge.teamId]).toStrictEqual([memberships[0]?.userId, memberships[0]?.teamId]);
+});
+
+// The same single-record field filled from a pool: the pick lands in `connect` rather than the
+// membership factory running, and matches on the selector alike.
+test("a pooled join-model row fills a single-record field on its compound key", async () => {
+  const { harness, membership } = await joined();
+
+  const badge = await harness.badgeFactory.recycle("membership", membership).create();
+
+  expect([badge.userId, badge.teamId]).toStrictEqual([membership.userId, membership.teamId]);
+  await expect(harness.prisma.membership.count()).resolves.toBe(1);
+});
+
+// Pending children reach back to the row that now exists through the same where-clause: badges hung
+// off a membership by a `has` layer name it on the compound selector.
+test("has() children of a compound-keyed parent reach back on its compound key", async () => {
+  const { prisma, membershipFactory, badgeFactory } = await factorioHarness();
+
+  const membership = await membershipFactory.has(badgeFactory.count(2), "badges").create();
+  const badges = await prisma.badge.findMany({
+    where: { userId: membership.userId, teamId: membership.teamId },
+  });
+
+  expect(badges).toHaveLength(2);
+  await expect(prisma.membership.count()).resolves.toBe(1);
+});
+
 // The schema being enforced, not the library misbehaving: one user belongs to one team once.
 test("two join-model records of the same pair collide on the compound key", async () => {
   const { userFactory, teamFactory, membershipFactory } = await factorioHarness();

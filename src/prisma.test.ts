@@ -32,7 +32,9 @@ interface InverseOption {
 type Batched<M extends ModelName<TestClient>> = Factory<TestClient, M, Row<TestClient, M>[]>;
 
 test("a model name is a delegate the client carries", () => {
-  expectTypeOf<ModelName<TestClient>>().toEqualTypeOf<"user" | "post" | "comment" | "tag" | "team" | "membership">();
+  expectTypeOf<ModelName<TestClient>>().toEqualTypeOf<
+    "user" | "post" | "comment" | "tag" | "team" | "membership" | "badge"
+  >();
 });
 
 test("a row carries the model's scalars and none of its relations", () => {
