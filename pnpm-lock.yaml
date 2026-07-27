@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@prisma/get-dmmf':
+        specifier: ^7.9.0
+        version: 7.9.0
     devDependencies:
       '@eslint/js':
         specifier: ^10.0.1
@@ -340,8 +344,14 @@ packages:
   '@prisma/debug@7.8.0':
     resolution: {integrity: sha512-p+QZReysDUqXC+mk17q9a+Y/qzh4c2KYliDK30buYUyfrGeTGSyfmc0AIrJRhZJrLHhRiJa9Au/J72h3C+szvA==}
 
+  '@prisma/debug@7.9.0':
+    resolution: {integrity: sha512-i0KdVQuKUE6N9NloHs+sUNAk2c9svR3myBndQbA3BoeoArsSpwtNgTdHZL+wBtCLCcdS2OOC/PKhgTe36jkF5A==}
+
   '@prisma/dev@0.24.3':
     resolution: {integrity: sha512-ffHlQuKXZiaDt9Go0OnCTdJZrHxK0k7omJKNV86/VjpsXu5EIHZLK0T7JSWgvNlJwh56kW9JFu9v0qJciFzepg==}
+
+  '@prisma/dmmf@7.9.0':
+    resolution: {integrity: sha512-XpS08oSPWAmQFuuvEo6gMXnNCmTHZ4U2uxY9SsxjZ8RUOWJfajVF8wkM9mL2EyWreje9YXNesCbvEYrSLukK6Q==}
 
   '@prisma/driver-adapter-utils@7.8.0':
     resolution: {integrity: sha512-/Q13o0ZT0rjc1Xk0Q9KhZYwuq2EW/vSbWUBKfgEKkaCuB/Sg6bqnjmTZqC5cD4d6y1vfFAEwBRzfzoSMIVJ55A==}
@@ -355,11 +365,17 @@ packages:
   '@prisma/fetch-engine@7.8.0':
     resolution: {integrity: sha512-gwB0Euiz/DDRyxFRpLXYlK3RfaZUj1c5dAYMuhZYfApg7arknJlcb9bIsOHDppJmbqYaVA+yBIiFMDBfprsNPQ==}
 
+  '@prisma/get-dmmf@7.9.0':
+    resolution: {integrity: sha512-KJHEd5C2dZZONyu9vmMz0hTDKUEyLyLccx0/H4Q9Z1OOoP1Wo5gQeqTYXLoT8JaELT/tsrpC4C6ctyHuFA5+Pg==}
+
   '@prisma/get-platform@7.2.0':
     resolution: {integrity: sha512-k1V0l0Td1732EHpAfi2eySTezyllok9dXb6UQanajkJQzPUGi3vO2z7jdkz67SypFTdmbnyGYxvEvYZdZsMAVA==}
 
   '@prisma/get-platform@7.8.0':
     resolution: {integrity: sha512-WlxgRGnolL8VH2EmkH1R/DkKNr/mVdS3G2h42IZFFZ3eUrH9OT6t73kIOSlkkrv50wG123Iq8d96ufv5LlZktw==}
+
+  '@prisma/prisma-schema-wasm@7.9.0-1.e922089b7d7502aff4249d5da3420f6fa55fc6ad':
+    resolution: {integrity: sha512-T/rEPnqirWxCvpaaIcZQj+d9PIQzI6M+a24Kd8ciX3+OihLU/SqdefY8NzqVQgJvz/oNX9E2FIzB4nA77I4EFw==}
 
   '@prisma/query-plan-executor@7.2.0':
     resolution: {integrity: sha512-EOZmNzcV8uJ0mae3DhTsiHgoNCuu1J9mULQpGCh62zN3PxPTd+qI9tJvk5jOst8WHKQNwJWR3b39t0XvfBB0WQ==}
@@ -550,6 +566,9 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@streamparser/json@0.0.22':
+    resolution: {integrity: sha512-b6gTSBjJ8G8SuO3Gbbj+zXbVx8NSs1EbpbMKpzGLWMdkR+98McH9bEjSz3+0mPJf68c5nxa3CrJHp5EQNXM6zQ==}
 
   '@tybys/wasm-util@0.10.3':
     resolution: {integrity: sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg==}
@@ -1236,6 +1255,10 @@ packages:
   pkg-types@2.3.1:
     resolution: {integrity: sha512-y+ichcgc2LrADuhLNAx8DFjVfgz91pRxfZdI3UDhxHvcVEZsenLO+7XaU5vOp0u/7V/wZ+plyuQxtrDlZJ+yeg==}
 
+  pluralize@8.0.0:
+    resolution: {integrity: sha512-Nc3IT5yHzflTfbjgqWcCPpo7DaKy4FnpB0l/zCAW0Tc7jxAiuqSxHasntB3D7887LSrA93kDJ9IXovxJYxyLCA==}
+    engines: {node: '>=4'}
+
   postcss@8.5.16:
     resolution: {integrity: sha512-vuwillviilfKZsg0VGj5R/YwwcHx4SLsIOI/7K6mQkWx+l5cUHTjj5g0AasTBcyXsbfTgrwsUNmVUb5xVwyPwg==}
     engines: {node: ^10 || ^12 || >=14}
@@ -1772,6 +1795,8 @@ snapshots:
 
   '@prisma/debug@7.8.0': {}
 
+  '@prisma/debug@7.9.0': {}
+
   '@prisma/dev@0.24.3(typescript@6.0.3)':
     dependencies:
       '@electric-sql/pglite': 0.4.1
@@ -1794,6 +1819,8 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
+  '@prisma/dmmf@7.9.0': {}
+
   '@prisma/driver-adapter-utils@7.8.0':
     dependencies:
       '@prisma/debug': 7.8.0
@@ -1813,6 +1840,14 @@ snapshots:
       '@prisma/engines-version': 7.8.0-6.3c6e192761c0362d496ed980de936e2f3cebcd3a
       '@prisma/get-platform': 7.8.0
 
+  '@prisma/get-dmmf@7.9.0':
+    dependencies:
+      '@prisma/debug': 7.9.0
+      '@prisma/dmmf': 7.9.0
+      '@prisma/prisma-schema-wasm': 7.9.0-1.e922089b7d7502aff4249d5da3420f6fa55fc6ad
+      '@streamparser/json': 0.0.22
+      pluralize: 8.0.0
+
   '@prisma/get-platform@7.2.0':
     dependencies:
       '@prisma/debug': 7.2.0
@@ -1820,6 +1855,8 @@ snapshots:
   '@prisma/get-platform@7.8.0':
     dependencies:
       '@prisma/debug': 7.8.0
+
+  '@prisma/prisma-schema-wasm@7.9.0-1.e922089b7d7502aff4249d5da3420f6fa55fc6ad': {}
 
   '@prisma/query-plan-executor@7.2.0': {}
 
@@ -1946,6 +1983,8 @@ snapshots:
   '@rolldown/pluginutils@1.0.1': {}
 
   '@standard-schema/spec@1.1.0': {}
+
+  '@streamparser/json@0.0.22': {}
 
   '@tybys/wasm-util@0.10.3':
     dependencies:
@@ -2625,6 +2664,8 @@ snapshots:
       confbox: 0.2.4
       exsolve: 1.1.0
       pathe: 2.0.3
+
+  pluralize@8.0.0: {}
 
   postcss@8.5.16:
     dependencies:

@@ -83,5 +83,8 @@
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.63.0",
     "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@prisma/get-dmmf": "^7.9.0"
   }
 }

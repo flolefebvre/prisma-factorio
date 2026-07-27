@@ -268,20 +268,23 @@ test("a single-field unique adds no selector, the flat scalar already carrying i
 });
 
 test("arguments on a field reference do not reach the selector", () => {
-  const client = compoundClient(childBlock("  @@unique([a(sort: Desc), b(length: 10)])"));
+  const client = compoundClient(childBlock("  @@unique([a(sort: Desc), b])"));
 
   expect(targetWhere(client, "parent", "child", child)).toStrictEqual({ ...child, a_b: { a: 1, b: 2 } });
 });
 
-test("an attribute spanning several lines is read whole", () => {
-  const client = compoundClient(childBlock('  @@unique(\n    fields: [a,\n      b],\n    name: "pair",\n  )'));
+// Prisma refuses an invalid schema whole, so one bad attribute anywhere costs every model its
+// constraints — the shape a generated client never carries, its schema having validated at generate
+// time, and the one a parser older than the schema's own syntax hands back.
+test("a schema Prisma's parser refuses adds no selector for any model", () => {
+  const client = compoundClient("model Broken {\n  @@nonsense\n}\n" + childBlock("  @@id([a, b])"));
 
-  expect(targetWhere(client, "parent", "child", child)).toStrictEqual({ ...child, pair: { a: 1, b: 2 } });
+  expect(targetWhere(client, "parent", "child", child)).toStrictEqual(child);
 });
 
 test("a constraint written in a comment or a string literal is no constraint", () => {
   const client = compoundClient(
-    'model Decoy {\n  d String @default("} @@unique([a, b]) model Child {")\n  // @@unique([a, b])\n}\n' +
+    'model Decoy {\n  d String @id @default("} @@unique([a, b]) model Child {")\n  // @@unique([d, d])\n}\n' +
       childBlock("  // @@id([a, c])\n  @@id([a, b])"),
   );
 
@@ -300,7 +303,7 @@ test("a selector needs every constituent present and non-null, and skips the row
   expect(targetWhere(client, "parent", "child", { a: 1, c: "x" })).toStrictEqual({ a: 1, c: "x" });
 });
 
-test("a constraint the scanner cannot read whole adds nothing rather than guessing", () => {
+test("a constraint Prisma's parser cannot read whole adds nothing rather than guessing", () => {
   const client = compoundClient(childBlock('  @@unique([a, b], name: "")\n  @@id([, ])'));
 
   expect(targetWhere(client, "parent", "child", child)).toStrictEqual(child);

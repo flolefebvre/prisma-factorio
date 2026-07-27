@@ -8,7 +8,7 @@ This project is a Laravel-style model factory library for Prisma (TypeScript). T
 
 ## Stack
 
-TypeScript (strict, ESM) · Node ≥ 20 · @prisma/client ≥ 7 < 8 as required peer · prisma ≥ 7 < 8 and @faker-js/faker as optional peers · Vitest · ESLint + Prettier + jscpd. Package manager: pnpm.
+TypeScript (strict, ESM) · Node ≥ 20 · @prisma/client ≥ 7 < 8 as required peer · prisma ≥ 7 < 8 and @faker-js/faker as optional peers · @prisma/get-dmmf as the only runtime dependency (see ADR 0004) · Vitest · ESLint + Prettier + jscpd. Package manager: pnpm.
 
 ## Layout
 
