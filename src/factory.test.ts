@@ -2633,6 +2633,20 @@ test("a pooled has() child is drawn per parent record, the whole batch of them",
   expect(written).toBe(1);
 });
 
+// The whole error a stale pooled draw is retold as: the entire message, and the raw Prisma error
+// standing behind it as the cause — `toMatchObject` reads the pair as a subset, leaving the cause's
+// other fields free.
+function singleUse(field: string, model: string): { message: string; cause: { code: string } } {
+  return {
+    message:
+      `A pooled row drawn into "${field}" on the model "${model}" no longer matches the database: ` +
+      "a connect into a relation field backed by a required foreign key re-homes the record, " +
+      "rewriting the column the pooled copy still carries, so a pooled row fills such a relation once. " +
+      "Pool one row per parent record, or pass native relation input.",
+    cause: { code: "P2018" },
+  };
+}
+
 // A connect into a relation field backed by a required foreign key re-homes the child, rewriting the
 // column the pooled copy still carries: the next parent record drawing that row matches it on scalars
 // the database no longer holds. The raw error names engine internals, so the failure is retold in the
@@ -2641,14 +2655,9 @@ test("a pooled has() child is drawn per parent record, the whole batch of them",
 test("a pooled has() child fails the second parent record in the pool's own terms, its foreign key rewritten by the first", async () => {
   const { harness, authorFactory } = await attaching(1);
 
-  await expect(authorFactory.count(2).has(harness.postFactory, "posts").create()).rejects.toMatchObject({
-    message:
-      'A pooled row drawn into "posts" on the model "user" no longer matches the database: ' +
-      "a connect into a relation field backed by a required foreign key re-homes the record, " +
-      "rewriting the column the pooled copy still carries, so a pooled row fills such a relation once. " +
-      "Pool one row per parent record, or pass native relation input.",
-    cause: expect.objectContaining({ code: "P2018" }),
-  });
+  await expect(authorFactory.count(2).has(harness.postFactory, "posts").create()).rejects.toMatchObject(
+    singleUse("posts", "user"),
+  );
 });
 
 // The per-record cadence holds on a relation backed by a required foreign key too: every record of the
@@ -2660,7 +2669,7 @@ test("a pooled has() child is drawn per parent record over a required foreign ke
 
   await expect(
     harness.postFactory.recycle("comment", first).has(harness.commentFactory.count(2)).count(2).using(client).create(),
-  ).rejects.toMatchObject({ message: expect.stringContaining("fills such a relation once") });
+  ).rejects.toMatchObject(singleUse("comments", "post"));
   expect(writes.map((data) => connectedIds(data, "comments"))).toStrictEqual([
     [first.id, first.id],
     [first.id, first.id],
@@ -2674,10 +2683,7 @@ test("a pooled to-many default fails the second parent record in the pool's own 
 
   await expect(
     harness.postFactory.count(2).recycle("comment", first).state({ comments: harness.commentFactory }).create(),
-  ).rejects.toMatchObject({
-    message: expect.stringContaining('A pooled row drawn into "comments" on the model "post"'),
-    cause: expect.objectContaining({ code: "P2018" }),
-  });
+  ).rejects.toMatchObject(singleUse("comments", "post"));
 });
 
 // Each create() call wires a pool run of its own, so a row an earlier call drew and re-homed fails a
@@ -2687,10 +2693,9 @@ test("a pooled has() child drawn again by a later create() fails in the pool's o
 
   await authorFactory.has(harness.postFactory, "posts").create();
 
-  await expect(authorFactory.has(harness.postFactory, "posts").create()).rejects.toMatchObject({
-    message: expect.stringContaining('A pooled row drawn into "posts" on the model "user"'),
-    cause: expect.objectContaining({ code: "P2018" }),
-  });
+  await expect(authorFactory.has(harness.postFactory, "posts").create()).rejects.toMatchObject(
+    singleUse("posts", "user"),
+  );
 });
 
 // The pool's terms belong to the pool: a row the caller hands over went stale by the caller's own
