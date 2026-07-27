@@ -307,6 +307,266 @@ export function targetScalars(
   return Object.fromEntries(Object.entries(row).filter(([key]) => scalars.includes(key)));
 }
 
+// The schema the client was generated from rides along as one inline text, the only runtime surface
+// naming the fields behind a unique constraint. Like `_runtimeDataModel`, it is absent from the
+// generated `.d.ts`, so reading it needs a shape declared here.
+interface WithEngineConfig {
+  _engineConfig?: { inlineSchema?: string };
+}
+
+interface CompoundKey {
+  name: string;
+  fields: string[];
+}
+
+// A `//` inside a string literal opens no comment, so the walk tracks the quotes; a backslash keeps
+// the character behind it, which is how a quote written as `\"` stays inside its string.
+function withoutComments(schema: string): string {
+  let clean = "";
+  let index = 0;
+  let quoted = false;
+
+  while (index < schema.length) {
+    const char = schema.charAt(index);
+
+    if (quoted && char === "\\" && index + 1 < schema.length) {
+      clean += char + schema.charAt(index + 1);
+      index += 2;
+    } else if (char === '"') {
+      quoted = !quoted;
+      clean += char;
+      index += 1;
+    } else if (!quoted && char === "/" && schema.charAt(index + 1) === "/") {
+      const newline = schema.indexOf("\n", index);
+      index = newline === -1 ? schema.length : newline;
+    } else {
+      clean += char;
+      index += 1;
+    }
+  }
+
+  return clean;
+}
+
+// Structural scans read the mask, where string contents are spaces of their own length: a brace or
+// an attribute inside a literal matches nothing, while every index still addresses `clean`.
+function blankedStrings(clean: string): string {
+  let mask = "";
+  let index = 0;
+  let quoted = false;
+
+  while (index < clean.length) {
+    const char = clean.charAt(index);
+
+    if (quoted && char === "\\" && index + 1 < clean.length) {
+      mask += "  ";
+      index += 2;
+    } else if (char === '"') {
+      quoted = !quoted;
+      mask += char;
+      index += 1;
+    } else {
+      mask += quoted ? " " : char;
+      index += 1;
+    }
+  }
+
+  return mask;
+}
+
+// The index one past the close matching the opener `from` sits on, read off the mask, or -1 where
+// the text runs out first.
+function spanEnd(mask: string, from: number, open: string, close: string): number {
+  let depth = 0;
+
+  for (let index = from; index < mask.length; index++) {
+    const char = mask.charAt(index);
+
+    if (char === open) depth += 1;
+    else if (char === close) {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+  }
+
+  return -1;
+}
+
+// A comma inside a field reference's own arguments — `title(sort: Desc)` — separates no fields.
+function splitFields(listMask: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+
+  for (let index = 0; index < listMask.length; index++) {
+    const char = listMask.charAt(index);
+
+    if (char === "(") depth += 1;
+    else if (char === ")") depth -= 1;
+    else if (char === "," && depth === 0) {
+      parts.push(listMask.slice(start, index));
+      start = index + 1;
+    }
+  }
+
+  parts.push(listMask.slice(start));
+
+  return parts;
+}
+
+const identifier = /^[A-Za-z_]\w*$/;
+
+function fieldNameOf(reference: string): string | undefined {
+  const bare = (reference.split("(")[0] ?? "").trim();
+
+  return identifier.test(bare) ? bare : undefined;
+}
+
+// The name Prisma exposes a compound constraint under: the `name` argument where the schema gives
+// one, the constituent fields joined with `_` where it does not. A `name` that is present but not a
+// bare identifier is left to `parsedConstraint` to refuse.
+function constraintName(argClean: string, argMask: string, fields: string[]): string | undefined {
+  const named = /\bname\s*:/.exec(argMask);
+
+  if (named === null) return fields.join("_");
+
+  const quote = argMask.indexOf('"', named.index + named[0].length);
+
+  if (quote === -1 || argMask.slice(named.index + named[0].length, quote).trim() !== "") return undefined;
+
+  const closing = argMask.indexOf('"', quote + 1);
+
+  if (closing === -1) return undefined;
+
+  const name = argClean.slice(quote + 1, closing);
+
+  return identifier.test(name) ? name : undefined;
+}
+
+// One constraint read off an attribute's argument text, or nothing where any part of it does not
+// parse cleanly: a selector built on a guess would refuse connects that work today, where a skipped
+// constraint leaves the flat scalars as they always were. A single field is no compound constraint —
+// Prisma exposes it as the flat scalar the splat already carries.
+function parsedConstraint(argClean: string, argMask: string): CompoundKey | undefined {
+  const fieldsToken = /\bfields\s*:/.exec(argMask);
+  const bracket = argMask.indexOf("[", fieldsToken === null ? 0 : fieldsToken.index + fieldsToken[0].length);
+
+  if (bracket === -1) return undefined;
+
+  const bracketEnd = spanEnd(argMask, bracket, "[", "]");
+
+  if (bracketEnd === -1) return undefined;
+
+  const references = splitFields(argMask.slice(bracket + 1, bracketEnd - 1)).map(fieldNameOf);
+  const fields = references.filter((reference): reference is string => reference !== undefined);
+
+  if (fields.length < 2 || fields.length !== references.length) return undefined;
+
+  const name = constraintName(argClean, argMask, fields);
+
+  return name === undefined ? undefined : { name, fields };
+}
+
+// `@@index` and `@@ignore` share the prefix and are told apart by the paren the match requires
+// right after the attribute's own name.
+const constraintAttribute = /@@(?:id|unique)\s*\(/g;
+
+function constraintsOf(bodyClean: string, bodyMask: string): CompoundKey[] {
+  const keys: CompoundKey[] = [];
+
+  for (const match of bodyMask.matchAll(constraintAttribute)) {
+    const open = match.index + match[0].length - 1;
+    const end = spanEnd(bodyMask, open, "(", ")");
+
+    if (end === -1) continue;
+
+    const key = parsedConstraint(bodyClean.slice(open + 1, end - 1), bodyMask.slice(open + 1, end - 1));
+
+    if (key !== undefined) keys.push(key);
+  }
+
+  return keys;
+}
+
+const modelHeader = /(?:^|\n)\s*model\s+([A-Za-z_]\w*)\s*\{/g;
+
+function scannedCompoundKeys(schema: string): Map<string, CompoundKey[]> {
+  const clean = withoutComments(schema);
+  const mask = blankedStrings(clean);
+  const keys = new Map<string, CompoundKey[]>();
+
+  for (const match of mask.matchAll(modelHeader)) {
+    const tag = match[1];
+
+    if (tag === undefined) continue;
+
+    const open = match.index + match[0].length - 1;
+    const end = spanEnd(mask, open, "{", "}");
+
+    if (end === -1) continue;
+
+    const constraints = constraintsOf(clean.slice(open + 1, end - 1), mask.slice(open + 1, end - 1));
+
+    if (constraints.length > 0) keys.set(tag, constraints);
+  }
+
+  return keys;
+}
+
+// One schema text per generated client per process, so the entries stay few while a transaction
+// client — a fresh wrapper per transaction — still hits the text it shares with its parent.
+const compoundKeys = new Map<string, Map<string, CompoundKey[]>>();
+
+function heldCompoundKeys(schema: string): Map<string, CompoundKey[]> {
+  const held = compoundKeys.get(schema) ?? scannedCompoundKeys(schema);
+
+  compoundKeys.set(schema, held);
+
+  return held;
+}
+
+function targetCompoundKeys(client: unknown, tag: string): CompoundKey[] {
+  const schema = (client as WithEngineConfig)._engineConfig?.inlineSchema;
+
+  return schema === undefined ? [] : (heldCompoundKeys(schema).get(tag) ?? []);
+}
+
+/**
+ * The where-clause a row satisfies on the model at the far end of a relation field: its scalars,
+ * plus a compound selector for every unique constraint of that model the row can name whole.
+ *
+ * The model is named by its delegate key, the relation field by the name it carries on that model.
+ * The runtime datamodel marks no field unique, so compound constraints are read off the schema text
+ * the client carries instead; a client carrying none answers the scalars alone. A constraint adds no
+ * selector where a constituent is missing from the row or holds `null` — Prisma's compound selectors
+ * take values alone — or where the row already carries a scalar under the selector's name. A
+ * relation field the model does not declare hands the row back whole.
+ *
+ * @example
+ * ```ts
+ * targetWhere(prisma, "user", "memberships", membership);
+ * // { userId: 1, teamId: 2, role: "admin", userId_teamId: { userId: 1, teamId: 2 } }
+ * ```
+ */
+export function targetWhere(
+  client: unknown,
+  model: string,
+  relationField: string,
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  const where = targetScalars(client, model, relationField, row);
+
+  for (const key of targetCompoundKeys(client, tagOf(client, model, relationField) ?? "")) {
+    const values = key.fields.map((field) => row[field]);
+
+    if (key.name in where || values.some((value) => value === null || value === undefined)) continue;
+
+    where[key.name] = Object.fromEntries(key.fields.map((field, at) => [field, values[at]]));
+  }
+
+  return where;
+}
+
 /**
  * The one relation field of a model pointing at the model a row belongs to, given outright or
  * resolved.
