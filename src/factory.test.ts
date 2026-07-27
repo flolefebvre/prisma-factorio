@@ -2651,6 +2651,22 @@ test("a pooled has() child fails the second parent record in the pool's own term
   });
 });
 
+// The per-record cadence holds on a relation backed by a required foreign key too: every record of the
+// batch draws the whole batch of children its chain names, which is what each create's own connect list
+// was handed — the second record's failure is the single-use rule, never a draw that went missing.
+test("a pooled has() child is drawn per parent record over a required foreign key, the whole batch before the failure", async () => {
+  const { harness, first } = await spare();
+  const { client, written: writes } = recording(harness.prisma, "post");
+
+  await expect(
+    harness.postFactory.recycle("comment", first).has(harness.commentFactory.count(2)).count(2).using(client).create(),
+  ).rejects.toMatchObject({ message: expect.stringContaining("fills such a relation once") });
+  expect(writes.map((data) => connectedIds(data, "comments"))).toStrictEqual([
+    [first.id, first.id],
+    [first.id, first.id],
+  ]);
+});
+
 // A relation default draws through the same connect a `has` layer writes, so a stale pooled row fails
 // its second parent record in the same terms whichever layer named the children.
 test("a pooled to-many default fails the second parent record in the pool's own terms", async () => {
