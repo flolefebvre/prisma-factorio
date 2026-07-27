@@ -2635,14 +2635,58 @@ test("a pooled has() child is drawn per parent record, the whole batch of them",
 
 // A connect into a relation field backed by a required foreign key re-homes the child, rewriting the
 // column the pooled copy still carries: the next parent record drawing that row matches it on scalars
-// the database no longer holds. Tracked as issue #47, which leaves a pooled row of such a relation good
-// for one parent record. The README paragraph naming #47 stands or falls with this test.
-test("a pooled has() child fails the second parent record, its foreign key rewritten by the first", async () => {
+// the database no longer holds. The raw error names engine internals, so the failure is retold in the
+// pool's own terms, the original standing behind it as the cause. The README paragraph on single-use
+// pooling stands or falls with this test.
+test("a pooled has() child fails the second parent record in the pool's own terms, its foreign key rewritten by the first", async () => {
   const { harness, authorFactory } = await attaching(1);
 
-  await expect(authorFactory.count(2).has(harness.postFactory, "posts").create()).rejects.toThrow(
-    "The required connected records were not found",
-  );
+  await expect(authorFactory.count(2).has(harness.postFactory, "posts").create()).rejects.toMatchObject({
+    message:
+      'A pooled row drawn into "posts" on the model "user" no longer matches the database: ' +
+      "a connect into a relation field backed by a required foreign key re-homes the record, " +
+      "rewriting the column the pooled copy still carries, so a pooled row fills such a relation once. " +
+      "Pool one row per parent record, or pass native relation input.",
+    cause: expect.objectContaining({ code: "P2018" }),
+  });
+});
+
+// A relation default draws through the same connect a `has` layer writes, so a stale pooled row fails
+// its second parent record in the same terms whichever layer named the children.
+test("a pooled to-many default fails the second parent record in the pool's own terms", async () => {
+  const { harness, first } = await spare();
+
+  await expect(
+    harness.postFactory.count(2).recycle("comment", first).state({ comments: harness.commentFactory }).create(),
+  ).rejects.toMatchObject({
+    message: expect.stringContaining('A pooled row drawn into "comments" on the model "post"'),
+    cause: expect.objectContaining({ code: "P2018" }),
+  });
+});
+
+// Each create() call wires a pool run of its own, so a row an earlier call drew and re-homed fails a
+// later one the same way it fails a batch-mate.
+test("a pooled has() child drawn again by a later create() fails in the pool's own terms", async () => {
+  const { harness, authorFactory } = await attaching(1);
+
+  await authorFactory.has(harness.postFactory, "posts").create();
+
+  await expect(authorFactory.has(harness.postFactory, "posts").create()).rejects.toMatchObject({
+    message: expect.stringContaining('A pooled row drawn into "posts" on the model "user"'),
+    cause: expect.objectContaining({ code: "P2018" }),
+  });
+});
+
+// The pool's terms belong to the pool: a row the caller hands over went stale by the caller's own
+// doing, and Prisma's error reaches it unretold.
+test("rows the caller hands has() keep Prisma's own error when stale", async () => {
+  const { prisma, userFactory, postFactory } = await factorioHarness();
+  const ada = await userFactory.create();
+  const post = await postFactory.create({ author: ada });
+  await userFactory.has([post], "posts").create();
+
+  await expect(userFactory.has([post], "posts").create()).rejects.toMatchObject({ code: "P2018" });
+  await expect(prisma.user.count()).resolves.toBe(2);
 });
 
 // A caller pools rows it loaded itself, and an `include`d relation is no field to match a record on.

@@ -477,11 +477,14 @@ interface Embedded {
 }
 
 // What resolving a relation takes beyond the value standing in it: the client the records are written
-// through, and the pool a record of a pooled model is drawn from in place of being created.
+// through, and the pool a record of a pooled model is drawn from in place of being created. One wiring
+// serves a whole `create()` call, so the fields it saw pooled rows drawn into span the batch — which is
+// the span a stale draw can fail over, a row one record connected going stale for the next.
 interface Wiring {
   client: unknown;
   pool: Pool;
   pick: Picker;
+  drawnInto: string[];
 }
 
 // A row carries whatever columns the model declares, `create` among them where the schema says so,
@@ -659,7 +662,10 @@ async function embodied(
 
   const picks = drawn(value, wiring, explicit);
 
-  if (picks !== undefined) return matchingAll(wiring.client, model, field, picks);
+  if (picks !== undefined) {
+    wiring.drawnInto.push(field);
+    return matchingAll(wiring.client, model, field, picks);
+  }
 
   // The stand-in a `for` call leaves takes no overrides, so it has nothing to reach back through the
   // inverse relation with: pending children of it would hang off no parent at all.
@@ -741,6 +747,7 @@ async function attaching(
         continue;
       }
 
+      wiring.drawnInto.push(field);
       for (const row of picks) rows.push(targetWhere(wiring.client, model, field, row));
       continue;
     }
@@ -799,6 +806,32 @@ async function borne(wiring: Wiring, model: string, row: unknown, entry: Pending
   const connect = targetWhere(client, target, back, row as Written);
 
   await bearing(recycling(inheriting(entry.children, client), wiring), row).create({ [back]: { connect } });
+}
+
+// The code Prisma refuses a create with when a `connect` inside it finds none of the records it names.
+const unmatchedConnect = "P2018";
+
+// A create that drew pooled rows into a to-many relation field is the one whose connect can fail by the
+// pool's own doing: a required foreign key rewritten by an earlier record's connect leaves the pooled
+// copy matching nothing. Prisma's refusal names engine internals, so it is retold in the pool's terms,
+// the original standing behind it as the cause; every other failure passes through untouched, a stale
+// row the caller handed over still failing in Prisma's words.
+async function created(delegate: CreateDelegate, data: Written, wiring: Wiring, model: string): Promise<unknown> {
+  try {
+    return await delegate.create({ data });
+  } catch (error) {
+    const fields = [...new Set(wiring.drawnInto)];
+
+    if (fields.length === 0 || (error as { code?: unknown }).code !== unmatchedConnect) throw error;
+
+    throw new Error(
+      `A pooled row drawn into ${fields.map((field) => `"${field}"`).join(" or ")} on the model "${model}" ` +
+        "no longer matches the database: a connect into a relation field backed by a required foreign key " +
+        "re-homes the record, rewriting the column the pooled copy still carries, so a pooled row fills " +
+        "such a relation once. Pool one row per parent record, or pass native relation input.",
+      { cause: error },
+    );
+  }
 }
 
 // A `for` call names one specific parent, so the parent factory runs at most once however many
@@ -878,7 +911,7 @@ async function write<C, M extends ModelName<C>>(
   const faker = await chain.faker();
   const client = chain.client();
   const model = String(chain.model);
-  const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick };
+  const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick, drawnInto: [] };
   // Every model the client carries, which is what a callback reaches a second one through. `using`
   // asks for a single delegate, so a chain redirected to a stub carrying fewer stands on the caller.
   const reached = { client: client as Pick<C, ModelName<C>> };
@@ -897,7 +930,7 @@ async function write<C, M extends ModelName<C>>(
     for (const state of steps) attrs = { ...attrs, ...given(state({ ...context, attrs })) };
 
     const { data, pending } = await resolved(wiring, model, { ...attrs, ...applied }, explicit);
-    const row = await delegate.create({ data });
+    const row = await created(delegate, data, wiring, model);
 
     // Depth first: every child of one record exists before the next record of the batch is created,
     // the children a relation field's own value left pending ahead of the ones the `has` layers add,
