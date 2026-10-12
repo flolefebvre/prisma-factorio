@@ -281,15 +281,18 @@ function targetOf(client: unknown, model: string, relationField: string | undefi
 }
 
 /**
- * The fields of a row that the model at the far end of a relation field declares as scalars.
+ * The fields of a row that the model at the far end of a relation field declares as scalars, those
+ * holding `null` left out.
  *
- * The model is named by its delegate key, the relation field by the name it carries on that model. A
- * relation field the model does not declare hands the row back whole, having no target model to read
- * scalars off.
+ * The model is named by its delegate key, the relation field by the name it carries on that model.
+ * Prisma types a nullable unique column in `WhereUniqueInput` as a bare selector rather than a
+ * nullable filter, so a `null` standing in one refuses the whole where-clause; the runtime datamodel
+ * marks no field unique, so every `null` is left out alike. A relation field the model does not
+ * declare hands the row back whole, having no target model to read scalars off.
  *
  * @example
  * ```ts
- * targetScalars(prisma, "post", "author", user); // { id: 1, email: "ada@example.com", name: null }
+ * targetScalars(prisma, "post", "author", user); // { id: 1, email: "ada@example.com" }
  * ```
  */
 export function targetScalars(
@@ -304,12 +307,12 @@ export function targetScalars(
 
   const scalars = scalarNames(modelsOf(client), tag);
 
-  return Object.fromEntries(Object.entries(row).filter(([key]) => scalars.includes(key)));
+  return Object.fromEntries(Object.entries(row).filter(([key, value]) => scalars.includes(key) && value !== null));
 }
 
 // The schema the client was generated from rides along as one inline text, the only runtime surface
-// naming the fields behind a unique constraint. Like `_runtimeDataModel`, it is absent from the
-// generated `.d.ts`, so reading it needs a shape declared here.
+// naming the fields behind a unique constraint or a foreign key. Like `_runtimeDataModel`, it is
+// absent from the generated `.d.ts`, so reading it needs a shape declared here.
 interface WithEngineConfig {
   _engineConfig?: { inlineSchema?: string };
 }
@@ -317,6 +320,27 @@ interface WithEngineConfig {
 interface CompoundKey {
   name: string;
   fields: string[];
+}
+
+/**
+ * The foreign key a model holds for one of its relation fields: the scalars it is written to, and the
+ * fields of the model at the far end each one takes its value from, position for position.
+ *
+ * @example
+ * ```ts
+ * const key: ForeignKey = { fields: ["authorId"], references: ["id"] };
+ * ```
+ */
+export interface ForeignKey {
+  fields: string[];
+  references: string[];
+}
+
+// What the scan read off one model block. A relation field maps to its foreign key, to `null` where
+// the block declares it holding none, and to `undefined` where its declaration does not read cleanly.
+interface ScannedModel {
+  keys: CompoundKey[];
+  relations: Map<string, ForeignKey | null | undefined>;
 }
 
 // A `//` inside a string literal opens no comment, so the walk tracks the quotes; a backslash keeps
@@ -488,12 +512,102 @@ function constraintsOf(bodyClean: string, bodyMask: string): CompoundKey[] {
   return keys;
 }
 
+// A field declaration ends at the first line break outside its attributes' brackets, which is how an
+// attribute spanning several lines stays one declaration.
+function declarationsOf(bodyMask: string): string[] {
+  const declarations: string[] = [];
+  let depth = 0;
+  let start = 0;
+
+  for (let index = 0; index < bodyMask.length; index++) {
+    const char = bodyMask.charAt(index);
+
+    if (char === "(" || char === "[") depth += 1;
+    else if (char === ")" || char === "]") depth -= 1;
+    else if (char === "\n" && depth === 0) {
+      declarations.push(bodyMask.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+
+  declarations.push(bodyMask.slice(start).trim());
+
+  return declarations.filter((declaration) => declaration !== "" && !declaration.startsWith("@@"));
+}
+
+// The bare field names a named list argument holds — `fields: [a, b]` — `null` where the argument is
+// absent, and `undefined` where it is present but not a list of bare names.
+function namedList(argMask: string, name: string): string[] | null | undefined {
+  const token = new RegExp(`\\b${name}\\s*:\\s*`).exec(argMask);
+
+  if (token === null) return null;
+
+  const bracket = token.index + token[0].length;
+
+  if (argMask.charAt(bracket) !== "[") return undefined;
+
+  const bracketEnd = spanEnd(argMask, bracket, "[", "]");
+
+  if (bracketEnd === -1) return undefined;
+
+  const names = splitFields(argMask.slice(bracket + 1, bracketEnd - 1)).map((part) => part.trim());
+
+  return names.every((part) => identifier.test(part)) ? names : undefined;
+}
+
+const relationAttribute = /@relation\b\s*/;
+
+// The foreign key one field declaration names. A declaration carrying no `fields` argument names none,
+// which is how every relation field reads but the side holding the key; one whose arguments do not read
+// cleanly answers `undefined`, so a guessed column never reaches a write.
+function declaredForeignKey(declaration: string): ForeignKey | null | undefined {
+  const attribute = relationAttribute.exec(declaration);
+
+  if (attribute === null) return null;
+
+  const open = attribute.index + attribute[0].length;
+
+  if (declaration.charAt(open) !== "(") return null;
+
+  const end = spanEnd(declaration, open, "(", ")");
+
+  if (end === -1) return undefined;
+
+  const argMask = declaration.slice(open + 1, end - 1);
+  const fields = namedList(argMask, "fields");
+  const references = namedList(argMask, "references");
+
+  if (fields === null && references === null) return null;
+
+  if (!Array.isArray(fields) || !Array.isArray(references) || fields.length !== references.length) return undefined;
+
+  return { fields, references };
+}
+
+const declaredName = /^([A-Za-z_]\w*)\s/;
+
+// A name declared twice is a schema Prisma refuses to generate from, so no answer is given for it
+// rather than one of the two being picked.
+function relationsOf(bodyMask: string): Map<string, ForeignKey | null | undefined> {
+  const relations = new Map<string, ForeignKey | null | undefined>();
+
+  for (const declaration of declarationsOf(bodyMask)) {
+    const name = declaredName.exec(declaration)?.[1];
+
+    if (name === undefined) continue;
+
+    relations.set(name, relations.has(name) ? undefined : declaredForeignKey(declaration));
+  }
+
+  return relations;
+}
+
 const modelHeader = /(?:^|\n)\s*model\s+([A-Za-z_]\w*)\s*\{/g;
 
-function scannedCompoundKeys(schema: string): Map<string, CompoundKey[]> {
+function scannedModels(schema: string): Map<string, ScannedModel> {
   const clean = withoutComments(schema);
   const mask = blankedStrings(clean);
-  const keys = new Map<string, CompoundKey[]>();
+  const models = new Map<string, ScannedModel>();
 
   for (const match of mask.matchAll(modelHeader)) {
     const tag = match[1];
@@ -505,35 +619,72 @@ function scannedCompoundKeys(schema: string): Map<string, CompoundKey[]> {
 
     if (end === -1) continue;
 
-    const constraints = constraintsOf(clean.slice(open + 1, end - 1), mask.slice(open + 1, end - 1));
+    const bodyClean = clean.slice(open + 1, end - 1);
+    const bodyMask = mask.slice(open + 1, end - 1);
 
-    if (constraints.length > 0) keys.set(tag, constraints);
+    models.set(tag, { keys: constraintsOf(bodyClean, bodyMask), relations: relationsOf(bodyMask) });
   }
 
-  return keys;
+  return models;
 }
 
 // One schema text per generated client per process, so the entries stay few while a transaction
 // client — a fresh wrapper per transaction — still hits the text it shares with its parent.
-const compoundKeys = new Map<string, Map<string, CompoundKey[]>>();
+const scans = new Map<string, Map<string, ScannedModel>>();
 
-function heldCompoundKeys(schema: string): Map<string, CompoundKey[]> {
-  const held = compoundKeys.get(schema) ?? scannedCompoundKeys(schema);
+function scannedModel(client: unknown, tag: string): ScannedModel | undefined {
+  const schema = (client as WithEngineConfig)._engineConfig?.inlineSchema;
 
-  compoundKeys.set(schema, held);
+  if (schema === undefined) return undefined;
 
-  return held;
+  const held = scans.get(schema) ?? scannedModels(schema);
+
+  scans.set(schema, held);
+
+  return held.get(tag);
 }
 
 function targetCompoundKeys(client: unknown, tag: string): CompoundKey[] {
-  const schema = (client as WithEngineConfig)._engineConfig?.inlineSchema;
-
-  return schema === undefined ? [] : (heldCompoundKeys(schema).get(tag) ?? []);
+  return scannedModel(client, tag)?.keys ?? [];
 }
 
 /**
- * The where-clause a row satisfies on the model at the far end of a relation field: its scalars,
- * plus a compound selector for every unique constraint of that model the row can name whole.
+ * The foreign key a model holds for one of its relation fields, read off the schema text the client
+ * carries.
+ *
+ * The model is named by its delegate key, the relation field by the name it carries on that model.
+ * The answer is `null` where the model holds no key for the field — one holding many records, or the
+ * side of a one-to-one whose key the far end holds — and `undefined` where there is no telling: a
+ * name the model declares as no relation field, a client carrying no schema text, or a declaration
+ * the scan cannot read cleanly, a key naming a field either model does not declare among them.
+ *
+ * @example
+ * ```ts
+ * foreignKeyOf(prisma, "post", "author"); // { fields: ["authorId"], references: ["id"] }
+ * foreignKeyOf(prisma, "user", "posts"); // null
+ * ```
+ */
+export function foreignKeyOf(client: unknown, model: string, relationField: string): ForeignKey | null | undefined {
+  const target = tagOf(client, model, relationField);
+  const tag = entryOf(modelsOf(client), model)?.[0];
+
+  if (target === undefined || tag === undefined) return undefined;
+
+  const key = scannedModel(client, tag)?.relations.get(relationField);
+
+  if (key === null || key === undefined) return key;
+
+  const models = modelsOf(client);
+  const held =
+    key.fields.every((field) => scalarNames(models, tag).includes(field)) &&
+    key.references.every((field) => scalarNames(models, target).includes(field));
+
+  return held ? key : undefined;
+}
+
+/**
+ * The where-clause a row satisfies on the model at the far end of a relation field: its non-null
+ * scalars, plus a compound selector for every unique constraint of that model the row can name whole.
  *
  * The model is named by its delegate key, the relation field by the name it carries on that model.
  * The runtime datamodel marks no field unique, so compound constraints are read off the schema text
