@@ -998,6 +998,37 @@ function attachStep({ client }: Wiring, model: string, layer: Children, order: n
   return ({ attrs }): Written => ({ [field]: accumulating(attrs[field], entry) });
 }
 
+// Every relation field of a model whose foreign key the schema text names, beside the columns of that
+// key. A field whose key is held at the far end, or cannot be read at all, pairs with no column.
+type Pairing = readonly (readonly [field: string, columns: readonly string[]])[];
+
+function pairingOf(client: unknown, model: string): Pairing {
+  return relationFieldsOf(client, model).flatMap((field) => {
+    const key = foreignKeyOf(client, model, field);
+
+    return key === null || key === undefined ? [] : [[field, key.fields] as const];
+  });
+}
+
+// A relation field and its foreign key columns are one key to the merge: a later layer writing either
+// drops what an earlier one wrote under the other, while a layer naming both keeps both for Prisma to
+// refuse. Only a layer holding a value that may stand in a relation field can pair anything, so the
+// metadata is read for no other — a client carrying none still creates a model holding no relation.
+function overlaid(earlier: Written, later: Written, pairing: () => Pairing): Written {
+  const layers = [earlier, later].flatMap((layer) => Object.values(layer));
+
+  if (!layers.some((value) => standing(value) !== undefined)) return { ...earlier, ...later };
+
+  const displaced = new Set(
+    pairing().flatMap(([field, columns]) => [
+      ...(columns.some((column) => column in later) ? [field] : []),
+      ...(field in later ? columns : []),
+    ]),
+  );
+
+  return { ...Object.fromEntries(Object.entries(earlier).filter(([key]) => !displaced.has(key))), ...later };
+}
+
 function layerStep(wiring: Wiring, model: string, layer: Layer, order: number): Step {
   if (typeof layer === "function") return layer;
 
@@ -1022,15 +1053,17 @@ async function write<C, M extends ModelName<C>>(
   // leaves standing; a key valued `undefined` names nothing, `given` having dropped it.
   const explicit = new Set(Object.keys(applied));
   const steps = chain.applied.map((layer, order) => layerStep(wiring, model, layer, order));
+  let paired: Pairing | undefined;
+  const pairing = (): Pairing => (paired ??= pairingOf(client, model));
   const rows: unknown[] = [];
 
   for (let index = 0; index < (chain.batch ?? 1); index += 1) {
     const context = { faker, index, uid: nextUid(), parent: chain.parent };
     let attrs = given(chain.definition(context));
 
-    for (const state of steps) attrs = { ...attrs, ...given(state({ ...context, attrs })) };
+    for (const state of steps) attrs = overlaid(attrs, given(state({ ...context, attrs })), pairing);
 
-    const { data, pending } = await resolved(wiring, model, { ...attrs, ...applied }, explicit);
+    const { data, pending } = await resolved(wiring, model, overlaid(attrs, applied, pairing), explicit);
     const row = await persisted(delegate, data, wiring, model);
 
     // Depth first: every child of one record exists before the next record of the batch is created,

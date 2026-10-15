@@ -952,15 +952,63 @@ test("an explicit id beside a handed-over parent is refused, the parent staying 
   await expect(postFactory.state({ author: ada }).create({ id: 7 })).rejects.toThrow("Unknown argument `id`");
 });
 
-// The column the fresh row would fill is the caller's already, so the create is left exactly as it
-// stood, for Prisma to refuse the clash it has always refused.
-test("a foreign key column the caller wrote keeps the fresh row behind it on connect", async () => {
+// A relation field and the foreign key columns backing it are one key to the merge: a later layer
+// writing either drops what an earlier layer wrote under the other.
+test("a foreign key column in create() overrides drops the relation default, which creates no record", async () => {
   const { harness, client, written, ada } = await besideAda();
-  const { postFactory } = harness;
+  const { prisma, postFactory } = harness;
 
-  await expect(postFactory.using(client).create({ authorId: ada.id })).rejects.toThrow("Unknown argument `authorId`");
+  const post = await postFactory.using(client).create({ authorId: ada.id });
 
-  expect(written.map((data) => Object.keys(data))).toStrictEqual([["title", "author", "authorId"]]);
+  expect(post.authorId).toBe(ada.id);
+  expect(written).toStrictEqual([{ title: post.title, authorId: ada.id }]);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("a foreign key column drops a relation a state wrote, and a state's column drops the definition's", async () => {
+  const { harness, ada } = await besideAda();
+  const { prisma, postFactory, userFactory } = harness;
+
+  const overState = await postFactory.state({ author: userFactory }).create({ authorId: ada.id });
+  const fromState = await postFactory.state({ authorId: ada.id }).create();
+
+  expect([overState.authorId, fromState.authorId]).toStrictEqual([ada.id, ada.id]);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("a relation field drops the foreign key column an earlier layer wrote", async () => {
+  const { harness, ada } = await besideAda();
+  const { prismaFactorio, userFactory } = harness;
+  const grace = await userFactory.create({ name: "Grace" });
+  const adasFactory = prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, authorId: ada.id }) });
+
+  const toGrace = await adasFactory.create({ author: grace });
+  const toFresh = await adasFactory.create({ author: userFactory });
+  const viaFor = await adasFactory.for(grace, "author").create();
+
+  expect(toGrace.authorId).toBe(grace.id);
+  expect([ada.id, grace.id]).not.toContain(toFresh.authorId);
+  expect(viaFor.authorId).toBe(grace.id);
+});
+
+test("a foreign key column valued undefined leaves the relation default standing", async () => {
+  const { harness, ada } = await besideAda();
+  const { prisma, postFactory } = harness;
+
+  const post = await postFactory.create({ authorId: undefined });
+
+  expect(post.authorId).not.toBe(ada.id);
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+test("every column of a compound foreign key drops the relation default, persisting against the given row", async () => {
+  const { prisma, membershipFactory, badgeFactory } = await factorioHarness();
+  const membership = await membershipFactory.create();
+
+  const badge = await badgeFactory.create({ userId: membership.userId, teamId: membership.teamId });
+
+  expect([badge.userId, badge.teamId]).toStrictEqual([membership.userId, membership.teamId]);
+  await expect(prisma.membership.count()).resolves.toBe(1);
 });
 
 // The foreign key is read off the schema text the client carries; a client carrying none leaves the
