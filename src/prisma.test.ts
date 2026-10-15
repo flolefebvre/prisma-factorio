@@ -22,6 +22,7 @@ interface UserRow {
   id: number;
   email: string;
   name: string | null;
+  handle: string | null;
 }
 
 // Stands in for the options object `has` takes, which the factory owns.

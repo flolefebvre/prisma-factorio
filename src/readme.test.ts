@@ -306,11 +306,12 @@ export async function withoutSequence(userFactory: Factory<TestClient, "user">):
     .create();
 }
 
-// README "Good to know", the bullet "An explicit `id` and a belongs-to relation field cannot meet".
-// Prisma's checked create input carries no `id`, so naming one forces the record into the unchecked
-// branch, which drops every relation field whose foreign key the model holds and demands the raw
-// column instead. A Prisma release reshaping either branch falsifies the bullet, and these three
-// lines are what says so.
+// README "Runtime edges", the bullet "An explicit database-generated `id` meets a belongs-to relation
+// field only through a parent the build creates". Prisma's checked create input carries no `id` the
+// database generates, so naming one forces the record into the unchecked branch, which drops every
+// relation field whose foreign key the model holds and takes the raw column instead. A Prisma release
+// reshaping either branch falsifies the bullet, and these three lines are what says so; the runtime
+// half is pinned in `factory.test.ts`.
 export function explicitIdAndRelation(postFactory: Factory<TestClient, "post">): void {
   void postFactory.create({ id: 7 });
   void postFactory.create({ id: 7, authorId: 1 });
