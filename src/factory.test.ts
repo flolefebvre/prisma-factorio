@@ -991,6 +991,44 @@ test("a relation field drops the foreign key column an earlier layer wrote", asy
   expect(viaFor.authorId).toBe(grace.id);
 });
 
+// A create kept on `connect` by a row the caller handed over cannot carry a raw column beside it, so
+// the column set becomes a `connect` on the key's referenced fields: the caller's own value, which
+// nothing could have made stale, and so matched on that value alone.
+test("a foreign key column beside a handed-over row reaches create as connect on the referenced field", async () => {
+  const { harness, client, written, ada } = await besideAda();
+  const grace = await harness.userFactory.create({ name: "Grace" });
+
+  const postFactory = harness.postFactory.using(client);
+
+  const layered = await postFactory.state({ editor: grace }).create({ authorId: ada.id });
+  // The compiler refuses a column beside a relation within one object; the rewrite does not depend on
+  // the layers the mix arrived through.
+  const inline = await postFactory.create({ authorId: ada.id, editor: grace } as never);
+
+  for (const post of [layered, inline]) expect([post.authorId, post.editorId]).toStrictEqual([ada.id, grace.id]);
+  expect(written).toStrictEqual(
+    [layered, inline].map(({ title }) => ({
+      title,
+      author: { connect: { id: ada.id } },
+      editor: { connect: filled(grace) },
+    })),
+  );
+});
+
+// A key whose every column is `null` names no record, which the checked input says by leaving the
+// relation field out.
+test("a foreign key column set to null beside a handed-over row leaves its relation unwritten", async () => {
+  const { harness, client, written, ada } = await besideAda();
+
+  const post = await harness.postFactory
+    .using(client)
+    .state({ editor: harness.userFactory, author: ada })
+    .create({ editorId: null });
+
+  expect(post.editorId).toBeNull();
+  expect(written).toStrictEqual([{ title: post.title, author: { connect: filled(ada) } }]);
+});
+
 test("a foreign key column valued undefined leaves the relation default standing", async () => {
   const { harness, ada } = await besideAda();
   const { prisma, postFactory } = harness;
