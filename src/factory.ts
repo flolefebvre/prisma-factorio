@@ -351,7 +351,12 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
  * Attributes merge in one order: the definition, then the states in the order they were applied,
  * then the overrides `create` was given. Last write wins per key, save for the relation field a `has`
  * layer adds to rather than replaces — see {@link FactoryMethods.has}; a key valued `undefined` is
- * skipped at every layer, so the layer before it stands; a `null` is written.
+ * skipped at every layer, so the layer before it stands; a `null` is written. A relation field and
+ * the columns of the foreign key backing it count as one key: a layer writing any of those columns
+ * drops the relation field an earlier layer wrote, and a layer writing the relation field drops the
+ * columns an earlier layer wrote. Where the create keeps another relation on `connect`, a column set
+ * named whole reaches Prisma as a `connect` on its own relation field, and one wholly `null` as that
+ * field left out. A model whose foreign keys the client's schema text does not name merges key by key.
  *
  * `count` takes a non-negative whole number and throws a `RangeError` on anything else; `count(0)`
  * is legal and creates no records.
