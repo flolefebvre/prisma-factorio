@@ -1045,6 +1045,31 @@ test("a row whose nullable unique column is null connects, handed over or drawn 
   expect([handed.authorId, drawn.authorId]).toStrictEqual([ada.id, ada.id]);
 });
 
+// Prisma types a Json column in `WhereUniqueInput` as a filter, so a value standing in one is read as
+// filter arguments and refused: a row holding one connects on its other scalars, by every route a row
+// reaches `connect` through (#65).
+test("a row whose Json column holds a value connects, through for, an attribute or a pool", async () => {
+  const { postFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create({ meta: { a: 1 } });
+
+  const followed = await postFactory.for(ada, "author").create();
+  const handed = await postFactory.create({ author: ada });
+  const drawn = await postFactory.recycle("user", ada).create();
+
+  expect([followed.authorId, handed.authorId, drawn.authorId]).toStrictEqual([ada.id, ada.id, ada.id]);
+});
+
+// Leaving the Json column out narrows the match by nothing else: a row read before the record
+// changed still fails loudly rather than connecting to what the record has become.
+test("a stale row whose Json column holds a value still fails to connect", async () => {
+  const { prisma, postFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create({ meta: { a: 1 } });
+
+  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+
+  await expect(postFactory.for(ada, "author").create()).rejects.toMatchObject({ code: "P2025" });
+});
+
 // The same row created fresh in the build, alone in the create and beside a caller's row, which keeps
 // every relation of that create on `connect`.
 test("a fresh row whose nullable unique column is null connects, alone or beside a caller's row", async () => {

@@ -16,6 +16,7 @@ import type {
   TargetModel,
 } from "./prisma.js";
 import type { TestClient } from "./tests/client.js";
+import type { Prisma } from "./tests/generated/client.js";
 import { factorioHarness } from "./tests/factorio.js";
 
 interface UserRow {
@@ -23,6 +24,7 @@ interface UserRow {
   email: string;
   name: string | null;
   handle: string | null;
+  meta: Prisma.JsonValue | null;
 }
 
 // Stands in for the options object `has` takes, which the factory owns.
