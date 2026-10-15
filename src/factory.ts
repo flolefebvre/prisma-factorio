@@ -351,7 +351,12 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
  * Attributes merge in one order: the definition, then the states in the order they were applied,
  * then the overrides `create` was given. Last write wins per key, save for the relation field a `has`
  * layer adds to rather than replaces — see {@link FactoryMethods.has}; a key valued `undefined` is
- * skipped at every layer, so the layer before it stands; a `null` is written.
+ * skipped at every layer, so the layer before it stands; a `null` is written. A relation field and
+ * the columns of the foreign key backing it count as one key: a layer writing any of those columns
+ * drops the relation field an earlier layer wrote, and a layer writing the relation field drops the
+ * columns an earlier layer wrote. Where the create keeps another relation on `connect`, a column set
+ * named whole reaches Prisma as a `connect` on its own relation field, and one wholly `null` as that
+ * field left out. A model whose foreign keys the client's schema text does not name merges key by key.
  *
  * `count` takes a non-negative whole number and throws a `RangeError` on anything else; `count(0)`
  * is legal and creates no records.
@@ -837,7 +842,7 @@ async function resolved(
   const settled = given(written);
 
   return {
-    data: fresh.size === 0 ? settled : keyed(wiring.client, model, settled, fresh),
+    data: keyed(wiring.client, model, settled, fresh),
     pending: pending.sort((one, next) => one.order - next.order),
   };
 }
@@ -863,10 +868,16 @@ function columnsOf(key: ForeignKey, row: Written, filled: Written): Written | un
 // model holds a foreign key, or the unchecked one, carrying the raw columns there instead and refusing
 // those relation fields. A relation field holding no key — one holding many records, the side of a
 // one-to-one whose key the far end holds — is accepted by both. So the columns are written only where
-// every relation field holding a key is filled by a row this build created, and the create is
-// otherwise handed back as it stood, every relation on `connect`: a row the caller handed over or a
-// pool drew may have gone stale, and matching it on every scalar is what makes that fail loudly.
+// every relation field holding a key is filled by a row this build created, and every relation
+// otherwise goes on `connect`, the columns the caller wrote among them: a row the caller handed over or
+// a pool drew may have gone stale, and matching it on every scalar is what makes that fail loudly.
 function keyed(client: unknown, model: string, data: Written, fresh: Fresh): Written {
+  const columns = columnsFor(client, model, data, fresh);
+
+  return columns ?? reconnected(client, model, data);
+}
+
+function columnsFor(client: unknown, model: string, data: Written, fresh: Fresh): Written | undefined {
   const replaced = new Map<string, Written>();
   const filled: Written = { ...data };
 
@@ -878,7 +889,7 @@ function keyed(client: unknown, model: string, data: Written, fresh: Fresh): Wri
     const row = fresh.get(field);
     const columns = key === undefined || row === undefined ? undefined : columnsOf(key, row, filled);
 
-    if (columns === undefined) return data;
+    if (columns === undefined) return undefined;
 
     Object.assign(filled, columns);
     replaced.set(field, columns);
@@ -891,6 +902,51 @@ function keyed(client: unknown, model: string, data: Written, fresh: Fresh): Wri
       return columns === undefined ? [[name, value]] : Object.entries(columns);
     }),
   );
+}
+
+// Every relation field of a model whose foreign key the schema text names, beside that key. A field
+// whose key is held at the far end, or cannot be read at all, pairs with no column.
+type Pairing = readonly (readonly [field: string, key: ForeignKey])[];
+
+function pairingOf(client: unknown, model: string): Pairing {
+  return relationFieldsOf(client, model).flatMap((field) => {
+    const key = foreignKeyOf(client, model, field);
+
+    return key === null || key === undefined ? [] : [[field, key] as const];
+  });
+}
+
+// A create left on `connect` takes no raw foreign key column, so a key whose columns the data names
+// whole is written as a `connect` on the fields it references instead, and one whose columns are all
+// `null` as the relation field left out. A key named in part, or holding `null` in part, is left for
+// Prisma to refuse.
+function reconnected(client: unknown, model: string, data: Written): Written {
+  const keys = pairingOf(client, model);
+
+  if (!keys.some(([field]) => field in data)) return data;
+
+  const connects: Written = {};
+  const consumed = new Set<string>();
+
+  for (const [field, key] of keys) {
+    if (field in data || !key.fields.every((column) => column in data)) continue;
+
+    const values = key.fields.map((column) => data[column]);
+
+    if (values.every((value) => value === null)) {
+      for (const column of key.fields) consumed.add(column);
+      continue;
+    }
+
+    if (values.some((value) => value === null)) continue;
+
+    const row = Object.fromEntries(key.references.map((reference, at) => [reference, values[at]]));
+
+    connects[field] = { connect: targetWhere(client, model, field, row) };
+    for (const column of key.fields) consumed.add(column);
+  }
+
+  return { ...Object.fromEntries(Object.entries(data).filter(([name]) => !consumed.has(name))), ...connects };
 }
 
 // The children left pending — by a `has` layer, or by a factory standing in a relation field holding
@@ -998,6 +1054,25 @@ function attachStep({ client }: Wiring, model: string, layer: Children, order: n
   return ({ attrs }): Written => ({ [field]: accumulating(attrs[field], entry) });
 }
 
+// A relation field and its foreign key columns are one key to the merge: a later layer writing either
+// drops what an earlier one wrote under the other, while a layer naming both keeps both for Prisma to
+// refuse. Only a layer holding a value that may stand in a relation field can pair anything, so the
+// metadata is read for no other — a client carrying none still creates a model holding no relation.
+function overlaid(earlier: Written, later: Written, pairing: () => Pairing): Written {
+  const layers = [earlier, later].flatMap((layer) => Object.values(layer));
+
+  if (!layers.some((value) => standing(value) !== undefined)) return { ...earlier, ...later };
+
+  const displaced = new Set(
+    pairing().flatMap(([field, { fields }]) => [
+      ...(fields.some((column) => column in later) ? [field] : []),
+      ...(field in later ? fields : []),
+    ]),
+  );
+
+  return { ...Object.fromEntries(Object.entries(earlier).filter(([key]) => !displaced.has(key))), ...later };
+}
+
 function layerStep(wiring: Wiring, model: string, layer: Layer, order: number): Step {
   if (typeof layer === "function") return layer;
 
@@ -1022,15 +1097,17 @@ async function write<C, M extends ModelName<C>>(
   // leaves standing; a key valued `undefined` names nothing, `given` having dropped it.
   const explicit = new Set(Object.keys(applied));
   const steps = chain.applied.map((layer, order) => layerStep(wiring, model, layer, order));
+  let paired: Pairing | undefined;
+  const pairing = (): Pairing => (paired ??= pairingOf(client, model));
   const rows: unknown[] = [];
 
   for (let index = 0; index < (chain.batch ?? 1); index += 1) {
     const context = { faker, index, uid: nextUid(), parent: chain.parent };
     let attrs = given(chain.definition(context));
 
-    for (const state of steps) attrs = { ...attrs, ...given(state({ ...context, attrs })) };
+    for (const state of steps) attrs = overlaid(attrs, given(state({ ...context, attrs })), pairing);
 
-    const { data, pending } = await resolved(wiring, model, { ...attrs, ...applied }, explicit);
+    const { data, pending } = await resolved(wiring, model, overlaid(attrs, applied, pairing), explicit);
     const row = await persisted(delegate, data, wiring, model);
 
     // Depth first: every child of one record exists before the next record of the batch is created,

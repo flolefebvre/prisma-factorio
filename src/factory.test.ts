@@ -952,15 +952,110 @@ test("an explicit id beside a handed-over parent is refused, the parent staying 
   await expect(postFactory.state({ author: ada }).create({ id: 7 })).rejects.toThrow("Unknown argument `id`");
 });
 
-// The column the fresh row would fill is the caller's already, so the create is left exactly as it
-// stood, for Prisma to refuse the clash it has always refused.
-test("a foreign key column the caller wrote keeps the fresh row behind it on connect", async () => {
+// A relation field and the foreign key columns backing it are one key to the merge: a later layer
+// writing either drops what an earlier layer wrote under the other.
+test("a foreign key column in create() overrides drops the relation default, which creates no record", async () => {
   const { harness, client, written, ada } = await besideAda();
-  const { postFactory } = harness;
+  const { prisma, postFactory } = harness;
 
-  await expect(postFactory.using(client).create({ authorId: ada.id })).rejects.toThrow("Unknown argument `authorId`");
+  const post = await postFactory.using(client).create({ authorId: ada.id });
 
-  expect(written.map((data) => Object.keys(data))).toStrictEqual([["title", "author", "authorId"]]);
+  expect(post.authorId).toBe(ada.id);
+  expect(written).toStrictEqual([{ title: post.title, authorId: ada.id }]);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("a foreign key column drops a relation a state wrote, and a state's column drops the definition's", async () => {
+  const { harness, ada } = await besideAda();
+  const { prisma, postFactory, userFactory } = harness;
+
+  const overState = await postFactory.state({ author: userFactory }).create({ authorId: ada.id });
+  const fromState = await postFactory.state({ authorId: ada.id }).create();
+
+  expect([overState.authorId, fromState.authorId]).toStrictEqual([ada.id, ada.id]);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("a relation field drops the foreign key column an earlier layer wrote", async () => {
+  const { harness, ada } = await besideAda();
+  const { prismaFactorio, userFactory } = harness;
+  const grace = await userFactory.create({ name: "Grace" });
+  const adasFactory = prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, authorId: ada.id }) });
+
+  const toGrace = await adasFactory.create({ author: grace });
+  const toFresh = await adasFactory.create({ author: userFactory });
+  const viaFor = await adasFactory.for(grace, "author").create();
+
+  expect(toGrace.authorId).toBe(grace.id);
+  expect([ada.id, grace.id]).not.toContain(toFresh.authorId);
+  expect(viaFor.authorId).toBe(grace.id);
+});
+
+// A create kept on `connect` by a row the caller handed over cannot carry a raw column beside it, so
+// the column set becomes a `connect` on the key's referenced fields: the caller's own value, which
+// nothing could have made stale, and so matched on that value alone.
+test("a foreign key column beside a handed-over row reaches create as connect on the referenced field", async () => {
+  const { harness, client, written, ada } = await besideAda();
+  const grace = await harness.userFactory.create({ name: "Grace" });
+
+  const postFactory = harness.postFactory.using(client);
+
+  const layered = await postFactory.state({ editor: grace }).create({ authorId: ada.id });
+  // The compiler refuses a column beside a relation within one object; the rewrite does not depend on
+  // the layers the mix arrived through.
+  const inline = await postFactory.create({ authorId: ada.id, editor: grace } as never);
+
+  for (const post of [layered, inline]) expect([post.authorId, post.editorId]).toStrictEqual([ada.id, grace.id]);
+  expect(written).toStrictEqual(
+    [layered, inline].map(({ title }) => ({
+      title,
+      author: { connect: { id: ada.id } },
+      editor: { connect: filled(grace) },
+    })),
+  );
+});
+
+// A key whose every column is `null` names no record, which the checked input says by leaving the
+// relation field out.
+test("a foreign key column set to null beside a handed-over row leaves its relation unwritten", async () => {
+  const { harness, client, written, ada } = await besideAda();
+
+  const post = await harness.postFactory
+    .using(client)
+    .state({ editor: harness.userFactory, author: ada })
+    .create({ editorId: null });
+
+  expect(post.editorId).toBeNull();
+  expect(written).toStrictEqual([{ title: post.title, author: { connect: filled(ada) } }]);
+});
+
+// Naming one column hands the whole key to the caller, who then owes the rest of it.
+test("one column of a compound foreign key drops the relation default, the other left to the caller", async () => {
+  const { prisma, badgeFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create();
+
+  await expect(badgeFactory.create({ userId: ada.id })).rejects.toThrow("Argument `membership` is missing");
+  await expect(prisma.membership.count()).resolves.toBe(0);
+});
+
+test("a foreign key column valued undefined leaves the relation default standing", async () => {
+  const { harness, ada } = await besideAda();
+  const { prisma, postFactory } = harness;
+
+  const post = await postFactory.create({ authorId: undefined });
+
+  expect(post.authorId).not.toBe(ada.id);
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+test("every column of a compound foreign key drops the relation default, persisting against the given row", async () => {
+  const { prisma, membershipFactory, badgeFactory } = await factorioHarness();
+  const membership = await membershipFactory.create();
+
+  const badge = await badgeFactory.create({ userId: membership.userId, teamId: membership.teamId });
+
+  expect([badge.userId, badge.teamId]).toStrictEqual([membership.userId, membership.teamId]);
+  await expect(prisma.membership.count()).resolves.toBe(1);
 });
 
 // The foreign key is read off the schema text the client carries; a client carrying none leaves the
