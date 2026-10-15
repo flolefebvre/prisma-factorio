@@ -1029,6 +1029,15 @@ test("a foreign key column set to null beside a handed-over row leaves its relat
   expect(written).toStrictEqual([{ title: post.title, author: { connect: filled(ada) } }]);
 });
 
+// Naming one column hands the whole key to the caller, who then owes the rest of it.
+test("one column of a compound foreign key drops the relation default, the other left to the caller", async () => {
+  const { prisma, badgeFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create();
+
+  await expect(badgeFactory.create({ userId: ada.id })).rejects.toThrow("Argument `membership` is missing");
+  await expect(prisma.membership.count()).resolves.toBe(0);
+});
+
 test("a foreign key column valued undefined leaves the relation default standing", async () => {
   const { harness, ada } = await besideAda();
   const { prisma, postFactory } = harness;
