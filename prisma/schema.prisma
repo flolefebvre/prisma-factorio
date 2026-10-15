@@ -11,11 +11,14 @@ generator client {
 
 // `handle` is the one nullable unique column in the schema: Prisma types it in `WhereUniqueInput` as
 // a bare selector rather than a nullable filter, so a row holding `null` there names no record.
+// `meta` is the one Json column: Prisma types it in `WhereUniqueInput` as a filter, never a bare
+// value, so a row holding one there names no record either.
 model User {
   id          Int          @id @default(autoincrement())
   email       String       @unique
   name        String?
   handle      String?      @unique
+  meta        Json?
   posts       Post[]       @relation("authored")
   edited      Post[]       @relation("edited")
   memberships Membership[]
