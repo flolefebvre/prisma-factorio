@@ -318,6 +318,67 @@ test("a selector never overwrites a scalar the row already carries under its nam
   expect(targetWhere(client, "parent", "child", child)).toStrictEqual(child);
 });
 
+// SQLite declares no list column, so the scratch schema holds none: a stand-in carries `String[]`,
+// `Int[]` and an enum list beside a `Json` column, and the schema text is the only part a test varies.
+function listingClient(inlineSchema?: string): unknown {
+  const client = clientWith({
+    Parent: [{ name: "child", kind: "object", type: "Child", relationName: "kids" }],
+    Child: [
+      ...scalars("a", "tags"),
+      { name: "scores", kind: "scalar", type: "Int" },
+      { name: "roles", kind: "enum", type: "Role" },
+      { name: "meta", kind: "scalar", type: "Json" },
+      { name: "parents", kind: "object", type: "Parent", relationName: "kids" },
+    ],
+  });
+
+  return inlineSchema === undefined ? client : { ...(client as object), _engineConfig: { inlineSchema } };
+}
+
+const listingBlock =
+  "model Child {\n  a String @id\n  tags String[]\n  scores Int [ ] @default([])\n  roles Role[]\n  meta Json?\n" +
+  "  parents Parent[]\n}";
+
+const listing = { a: "x", tags: ["t"], scores: [1, 2], roles: ["ADMIN"], meta: { a: 1 } };
+
+test("a Json column is left out of the where-clause whatever it holds, read off the runtime datamodel", async () => {
+  const prisma = await disposableClient();
+
+  expect(targetScalars(prisma, "post", "author", { ...userShape, meta: { a: 1 } })).toStrictEqual({
+    id: 1,
+    email: "ada@example.com",
+  });
+  expect(targetWhere(listingClient(), "parent", "child", { a: "x", meta: "a string" })).toStrictEqual({ a: "x" });
+});
+
+test("a column the schema text declares as a list is left out of the where-clause, enum lists included", () => {
+  const client = listingClient(listingBlock);
+
+  expect(targetScalars(client, "parent", "child", listing)).toStrictEqual({ a: "x" });
+  expect(targetWhere(client, "parent", "child", listing)).toStrictEqual({ a: "x" });
+});
+
+test("a client carrying no schema text keeps its list columns in the where-clause", () => {
+  expect(targetWhere(listingClient(), "parent", "child", listing)).toStrictEqual({
+    a: "x",
+    tags: ["t"],
+    scores: [1, 2],
+    roles: ["ADMIN"],
+  });
+});
+
+test("a list bracket inside a comment or a string marks no column as a list", () => {
+  const block =
+    'model Child {\n  a String @id\n  tags String // String[]\n  scores Int @default(0) @map("scores[]")\n' +
+    "  roles Role[]\n  meta Json?\n}";
+
+  expect(targetWhere(listingClient(block), "parent", "child", listing)).toStrictEqual({
+    a: "x",
+    tags: ["t"],
+    scores: [1, 2],
+  });
+});
+
 test("the foreign key behind a relation field is read off the schema text the generated client carries", async () => {
   const prisma = await disposableClient();
 

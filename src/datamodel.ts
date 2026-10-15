@@ -247,6 +247,17 @@ function scalarNames(models: Record<string, DataModelModel>, tag: string): strin
   return (models[tag]?.fields ?? []).filter((field) => field.kind !== "object").map((field) => field.name);
 }
 
+// A `WhereUniqueInput` types a Json column and a list column as filters, never as a bare value, so
+// a value standing in either is refused or read as a filter. The runtime datamodel types Json but
+// marks no field as a list, which only the schema text the client carries declares.
+function matchingNames(client: unknown, tag: string): string[] {
+  const models = modelsOf(client);
+  const bracketed = scannedModel(client, tag)?.bracketed;
+  const json = (models[tag]?.fields ?? []).filter((field) => field.type === "Json").map((field) => field.name);
+
+  return scalarNames(models, tag).filter((name) => !json.includes(name) && bracketed?.has(name) !== true);
+}
+
 function declaredNames(models: Record<string, DataModelModel>, tag: string): string[] {
   return (models[tag]?.fields ?? []).map((field) => field.name);
 }
@@ -282,13 +293,16 @@ function targetOf(client: unknown, model: string, relationField: string | undefi
 
 /**
  * The fields of a row that the model at the far end of a relation field declares as scalars, those
- * holding `null` left out.
+ * holding `null`, `Json` columns and list columns left out.
  *
  * The model is named by its delegate key, the relation field by the name it carries on that model.
  * Prisma types a nullable unique column in `WhereUniqueInput` as a bare selector rather than a
  * nullable filter, so a `null` standing in one refuses the whole where-clause; the runtime datamodel
- * marks no field unique, so every `null` is left out alike. A relation field the model does not
- * declare hands the row back whole, having no target model to read scalars off.
+ * marks no field unique, so every `null` is left out alike. A `Json` column and a list column —
+ * `String[]`, `Role[]` — are typed there as filters, which a raw value does not satisfy, so they are
+ * left out whatever they hold. `Json` is read off the runtime datamodel; a list only off the schema
+ * text the client carries, so a client carrying none keeps its list columns. A relation field the
+ * model does not declare hands the row back whole, having no target model to read scalars off.
  *
  * @example
  * ```ts
@@ -305,7 +319,7 @@ export function targetScalars(
 
   if (tag === undefined) return row;
 
-  const scalars = scalarNames(modelsOf(client), tag);
+  const scalars = matchingNames(client, tag);
 
   return Object.fromEntries(Object.entries(row).filter(([key, value]) => scalars.includes(key) && value !== null));
 }
@@ -338,9 +352,11 @@ export interface ForeignKey {
 
 // What the scan read off one model block. A relation field maps to its foreign key, to `null` where
 // the block declares it holding none, and to `undefined` where its declaration does not read cleanly.
+// `bracketed` names every field whose declared type carries `[]`, relation fields included.
 interface ScannedModel {
   keys: CompoundKey[];
   relations: Map<string, ForeignKey | null | undefined>;
+  bracketed: Set<string>;
 }
 
 // A `//` inside a string literal opens no comment, so the walk tracks the quotes; a backslash keeps
@@ -602,6 +618,14 @@ function relationsOf(bodyMask: string): Map<string, ForeignKey | null | undefine
   return relations;
 }
 
+const bracketedDeclaration = /^([A-Za-z_]\w*)\s+[A-Za-z_][\w.]*\s*\[\s*\]/;
+
+function bracketedOf(bodyMask: string): Set<string> {
+  const names = declarationsOf(bodyMask).map((declaration) => bracketedDeclaration.exec(declaration)?.[1]);
+
+  return new Set(names.filter((name): name is string => name !== undefined));
+}
+
 const modelHeader = /(?:^|\n)\s*model\s+([A-Za-z_]\w*)\s*\{/g;
 
 function scannedModels(schema: string): Map<string, ScannedModel> {
@@ -622,7 +646,11 @@ function scannedModels(schema: string): Map<string, ScannedModel> {
     const bodyClean = clean.slice(open + 1, end - 1);
     const bodyMask = mask.slice(open + 1, end - 1);
 
-    models.set(tag, { keys: constraintsOf(bodyClean, bodyMask), relations: relationsOf(bodyMask) });
+    models.set(tag, {
+      keys: constraintsOf(bodyClean, bodyMask),
+      relations: relationsOf(bodyMask),
+      bracketed: bracketedOf(bodyMask),
+    });
   }
 
   return models;
