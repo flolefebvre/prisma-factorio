@@ -367,7 +367,7 @@ test("a client carrying no schema text keeps its list columns in the where-claus
   });
 });
 
-test("a list bracket inside a comment or a string marks no column as a list", () => {
+test("a list bracket later on a declaration line, in a comment or an attribute string, marks no column as a list", () => {
   const block =
     'model Child {\n  a String @id\n  tags String // String[]\n  scores Int @default(0) @map("scores[]")\n' +
     "  roles Role[]\n  meta Json?\n}";

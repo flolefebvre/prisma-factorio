@@ -255,7 +255,7 @@ function matchingNames(client: unknown, tag: string): string[] {
   const bracketed = scannedModel(client, tag)?.bracketed;
   const json = (models[tag]?.fields ?? []).filter((field) => field.type === "Json").map((field) => field.name);
 
-  return scalarNames(models, tag).filter((name) => !json.includes(name) && bracketed?.has(name) !== true);
+  return scalarNames(models, tag).filter((name) => !json.includes(name) && !bracketed?.has(name));
 }
 
 function declaredNames(models: Record<string, DataModelModel>, tag: string): string[] {
@@ -711,8 +711,8 @@ export function foreignKeyOf(client: unknown, model: string, relationField: stri
 }
 
 /**
- * The where-clause a row satisfies on the model at the far end of a relation field: its non-null
- * scalars, plus a compound selector for every unique constraint of that model the row can name whole.
+ * The where-clause a row satisfies on the model at the far end of a relation field: the scalars
+ * {@link targetScalars} keeps, plus a compound selector for every unique constraint of that model the row can name whole.
  *
  * The model is named by its delegate key, the relation field by the name it carries on that model.
  * The runtime datamodel marks no field unique, so compound constraints are read off the schema text

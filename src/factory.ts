@@ -310,9 +310,9 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * `has` layer or stands in a relation field holding many records.
    *
    * A row of the named model is what the argument takes, whatever else it carries: pooled rows
-   * connect on the target model's non-null scalars, plus the compound selector for each unique
-   * constraint the row names whole, so one loaded with `include` stands here as readily as one
-   * straight from a create.
+   * connect on every non-null scalar of the target model the where-clause can hold, plus the
+   * compound selector for each unique constraint the row names whole, so one loaded with `include`
+   * stands here as readily as one straight from a create.
    *
    * @example
    * ```ts
@@ -618,9 +618,9 @@ function pooled(value: Embedded, { pool, pick }: Wiring, explicit: boolean): Rec
   return rows === undefined ? undefined : (pick(rows) as Record<string, unknown>);
 }
 
-// Every non-null scalar of the row goes into the `where`, plus a compound selector for every unique
-// constraint the row can name whole — the one match a model whose only unique constraint is
-// compound answers to. The runtime datamodel marks no field unique, so no subset of the scalars is
+// Every scalar of the row `targetScalars` keeps goes into the `where`, plus a compound selector for
+// every unique constraint the row can name whole — the one match a model whose only unique
+// constraint is compound answers to. The runtime datamodel marks no field unique, so no subset of the scalars is
 // knowably the one Prisma would match on; every extra field narrows the match, which is what makes
 // a stale row fail rather than reach the record it has become. A relation the row carries is no
 // field to match on at all — a row loaded with `include` carries one, and so may a pooled row —
