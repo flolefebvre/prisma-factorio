@@ -54,6 +54,7 @@ The feature set is a port of [Laravel's model factories](https://laravel.com/doc
 - [Callbacks](#callbacks)
 - [Seeding](#seeding)
 - [Transactional tests](#transactional-tests)
+- [Types](#types)
 - [Deviations from Laravel](#deviations-from-laravel)
 - [Gotchas](#gotchas)
 - [Status](#status)
@@ -464,6 +465,38 @@ The sentinel is what commits nothing: the transaction callback only ever leaves 
 
 > [!NOTE]
 > An interactive transaction is capped in duration. A graph large enough to outrun the cap aborts and rolls back rather than merely running slow; `prisma.$transaction(fn, { timeout })` raises it. That cap is why a large seed is better run bare.
+
+## Types
+
+A helper wrapping a factory — a test fixture, a seed step — names the factory's types itself. The package exports them, each read off your client type and a model name, so there is nothing to generate:
+
+```ts
+// helpers.ts
+import type { Overrides, PartialAttributes, Row } from "@flefebvre/prisma-factorio";
+import { prisma } from "./db.js";
+import { postFactory, userFactory } from "./factories.js";
+
+type Client = typeof prisma;
+
+export async function makeAuthors(): Promise<Row<Client, "user">[]> {
+  return userFactory.count(3).create();
+}
+
+export async function makePost<O>(overrides?: Overrides<Client, "post", O>): Promise<Row<Client, "post">> {
+  return postFactory.create(overrides);
+}
+
+const drafted = { title: "Draft" } satisfies PartialAttributes<Client, "post">;
+
+const draft = await makePost(drafted);
+```
+
+- **`Row<Client, "post">`** is the row `create()` returns, and `Row<Client, "post">[]` the rows it returns under `count()` — what `Awaited<ReturnType<typeof postFactory.create>>` spells out at length.
+- **`Overrides<Client, "post", O>`** is what `create()` accepts. `O` is the type of the caller's own object, which the compiler infers at each call, and `Overrides` checks that object key by key against the create input — so `makePost({ titel: "Draft" })` is the same compile error `postFactory.create({ titel: "Draft" })` is. It is not usable without that `O`, which is why the helper forwarding to `create()` or `state()` is generic.
+- **`PartialAttributes<Client, "post">`** is any subset of the create input, every key optional: the plain shape `Overrides` checks against, for a value a helper reads or builds. A value typed `PartialAttributes` is not accepted by `create()` or `state()` as-is ([#94](https://github.com/flolefebvre/prisma-factorio/issues/94)); until then pass it with an explicit type argument, `postFactory.create<PartialAttributes<Client, "post">>(attrs)`.
+- **Not `Parameters<typeof postFactory.create>[0]`.** `Parameters<>` instantiates `create`'s free `O` with no caller object, so the exactness check has nothing to match against and collapses to `never`; type the parameter as the generic `Overrides` above.
+
+`CreateInput<Client, "post">` is the whole create input, its relation fields widened to factories and rows — [Typing edges](#typing-edges) has how that parts from Prisma's own — and `ModelName<Client>` is the union of the model names your client carries.
 
 ## Deviations from Laravel
 
