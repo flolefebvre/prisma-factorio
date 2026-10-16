@@ -322,6 +322,26 @@ export function explicitIdAndRelation(postFactory: Factory<TestClient, "post">):
   void postFactory.create({ id: 7, author: { connect: { id: 1 } } });
 }
 
+// README "Typing edges", the bullet "Error shape": a misspelled field is reported on the offending
+// property, so each directive sits on that property's line rather than on the call's.
+export function errorShape(prismaFactorio: Factorio<TestClient>, userFactory: Factory<TestClient, "user">): void {
+  void userFactory.create({
+    // @ts-expect-error a misspelled field in overrides
+    nmae: "Ada",
+  });
+  void userFactory.state({
+    // @ts-expect-error a misspelled field in a state
+    nmae: "Ada",
+  });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({
+      email: `${uid}@example.com`,
+      // @ts-expect-error a misspelled field in a definition
+      nmae: "Ada",
+    }),
+  });
+}
+
 // README "Relations", the paragraph "Such a value is a factory, an existing row, or Prisma's own
 // relation input": every value a relation field takes is checked against the model it points at, at
 // both arities and by every route an attribute is reached by, and relation input naming none of its
@@ -378,7 +398,7 @@ export function createInputIsNotPrismas(prisma: TestClient): void {
 
 // README "Types", the `helpers.ts` and `posts.test.ts` blocks and the bullets under them: each exported
 // type in the role the bullet gives it, a `satisfies`-checked value forwarding like a literal, the
-// excess-key check surviving the generic helper, and `Parameters<>` yielding no usable overrides type.
+// excess-key check surviving the generic helper, and `Parameters<>` spelling out `PartialAttributes`.
 export async function typesSection({ userFactory, postFactory }: ReadmeFactories): Promise<void> {
   async function makeAuthors(): Promise<Row<TestClient, "user">[]> {
     return userFactory.count(3).create();
@@ -400,25 +420,23 @@ export async function typesSection({ userFactory, postFactory }: ReadmeFactories
 
   // @ts-expect-error a field the model never declares, through the generic helper
   void makePost({ titel: "Draft" });
-  // @ts-expect-error `Parameters<>` instantiates the free `O` with no caller object, leaving `never`
-  const viaParameters: Parameters<typeof postFactory.create>[0] = { title: "Draft" };
+
+  type ViaParameters = Parameters<typeof postFactory.create>[0];
+  const viaParameters: ViaParameters = { title: "Draft" };
   void viaParameters;
+  expectTypeOf<ViaParameters>().toExtend<PartialAttributes<TestClient, "post"> | undefined>();
+  expectTypeOf<PartialAttributes<TestClient, "post"> | undefined>().toExtend<ViaParameters>();
 }
 
-// README "Types", the `PartialAttributes` bullet's interim pending #94: a value annotated with that
-// type, unlike one merely checked with `satisfies`, reaches `create()` and `state()` only through an
-// explicit type argument. The directives fail the gate once the value
-// is accepted as-is, which is when the sentence documenting the interim goes.
+// README "Types", the `PartialAttributes` bullet: a value annotated with that type, rather than
+// checked with `satisfies`, is a union of the create input's branches, and reaches `create()` and
+// `state()` as it is.
 export function partialAttributesForwarding(
   postFactory: Factory<TestClient, "post">,
   attrs: PartialAttributes<TestClient, "post">,
 ): void {
-  void postFactory.create<PartialAttributes<TestClient, "post">>(attrs);
-
-  // @ts-expect-error a `PartialAttributes` value is not accepted by `create()` as-is
-  void postFactory.create(attrs);
-  // @ts-expect-error nor by `state()`
-  void postFactory.state(attrs);
+  expectTypeOf(postFactory.create(attrs)).resolves.toEqualTypeOf<Row<TestClient, "post">>();
+  expectTypeOf(postFactory.state(attrs)).toEqualTypeOf<Factory<TestClient, "post">>();
 }
 
 // README "Transactional tests", the `posts.test.ts` block — run rather than merely compiled, the

@@ -220,6 +220,12 @@ export interface HasOptions {
  * ```
  */
 export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
+  // The naked `O` beside `Overrides` is what infers a value typed as a union of the create input's
+  // branches whole, rather than collapsing it to one branch. That holds only on a required
+  // parameter, an optional one being a union with `undefined` that splits the value branch by
+  // branch, so the call without overrides, and a helper forwarding its own optional overrides, take
+  // the second signature.
+  create<O>(overrides: O & Overrides<C, M, O>): Promise<R>;
   create<O>(overrides?: Overrides<C, M, O>): Promise<R>;
   count(records: number): Factory<C, M, Row<C, M>[], S>;
   /**
@@ -247,10 +253,11 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   // `Overrides` with the state's own shape inferred into it, which is what makes a field the model
   // does not declare an error. The closure form takes its return type through `ExactState`, the
   // same route a declared state takes, so both accept exactly the same states. The object form
-  // bars a function, whose empty `keyof` would otherwise satisfy `Overrides` and swallow every
-  // closure before the first signature checked it.
+  // takes its shape through a naked `V` as well, as `create` does, and bars a function, whose empty
+  // `keyof` would otherwise satisfy `Overrides` and swallow every closure before the first signature
+  // checked it.
   state<V extends (context: StateContext<C, M>) => unknown>(state: V & ExactState<C, M, V>): Factory<C, M, R, S>;
-  state<V extends Record<string, unknown>>(state: Overrides<C, M, V>): Factory<C, M, R, S>;
+  state<V extends Record<string, unknown>>(state: V & Overrides<C, M, V>): Factory<C, M, R, S>;
   /**
    * Connects every record this factory creates to one parent, named by a factory of the parent model
    * or by a row of it.
@@ -1224,7 +1231,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
   const derive = (layer: Layer): Factory<C, M, R, S> => createFactory({ ...chain, applied: [...chain.applied, layer] });
 
   const methods: FactoryMethods<C, M, R, S> = {
-    async create<O>(overrides?: Overrides<C, M, O>): Promise<R> {
+    async create(overrides?: unknown): Promise<R> {
       const rows = await write(chain, overrides as Written | undefined);
       return (chain.batch === undefined ? rows[0] : rows) as R;
     },

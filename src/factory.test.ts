@@ -4,7 +4,7 @@ import { holdsManyRecords, inverseRelationField } from "./datamodel.js";
 import type { FactorioOptions } from "./faker.js";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
-import type { ModelName, Row } from "./prisma.js";
+import type { ModelName, PartialAttributes, Row } from "./prisma.js";
 import { disposableClient, factorioHarness, userDefinition, type Harness } from "./tests/factorio.js";
 import type { TestClient } from "./tests/client.js";
 
@@ -462,6 +462,20 @@ export function statesCheckedByTheCompiler(prismaFactorio: Factorio<TestClient>,
   void userFactory.state(() => ({ nmae: "Ada" }));
   // @ts-expect-error an inline state closure returning an object excess property checking does not reach
   void userFactory.state(() => held);
+}
+
+// Never invoked, like the block above: a value typed `PartialAttributes` is a union of the create
+// input's checked and unchecked branches, and has to reach `create()` and `state()` as it is.
+export function partialAttributesForwarded(
+  userFactory: Factory<TestClient, "user">,
+  postFactory: Factory<TestClient, "post">,
+  user: PartialAttributes<TestClient, "user">,
+  post: PartialAttributes<TestClient, "post">,
+): void {
+  expectTypeOf(userFactory.create(user)).resolves.toEqualTypeOf<Row<TestClient, "user">>();
+  expectTypeOf(userFactory.state(user)).toEqualTypeOf<Factory<TestClient, "user">>();
+  expectTypeOf(postFactory.create(post)).resolves.toEqualTypeOf<Row<TestClient, "post">>();
+  expectTypeOf(postFactory.state(post)).toEqualTypeOf<Factory<TestClient, "post">>();
 }
 
 test("state(partial) applies attributes the config never declared", async () => {
