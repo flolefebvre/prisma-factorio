@@ -548,15 +548,15 @@ interface Embedded {
 // serves a whole `create()` call, so the fields it records span the batch — which is the span a stale
 // row can fail over, a row one record connected going stale for the next. `rehomedInto` holds the
 // relation fields a pooled row was drawn into whose foreign key the drawn row's own model holds, so
-// that the connect rewrites a column the pooled copy still carries; `matchedInto` every relation
-// field a row the caller handed over or a pool drew was matched into, whatever its arity. Where the
-// schema text leaves the inverse key unread, a field holding many records counts as re-homing and
-// one holding a single record does not.
+// that the connect rewrites a column the pooled copy still carries, each with its arity; `matchedInto`
+// every relation field a row the caller handed over or a pool drew was matched into, whatever its
+// arity. Where the schema text leaves the inverse key unread, a field holding many records counts as
+// re-homing and one holding a single record does not.
 interface Wiring {
   client: unknown;
   pool: Pool;
   pick: Picker;
-  rehomedInto: string[];
+  rehomedInto: { field: string; many: boolean }[];
   matchedInto: string[];
 }
 
@@ -692,7 +692,7 @@ function pooled(value: Embedded, { pool, pick }: Wiring, explicit: boolean): Rec
 function recordDraw(wiring: Wiring, model: string, field: string, many: boolean): void {
   const key = inverseForeignKeyOf(wiring.client, model, field);
 
-  if (many ? key !== null : key !== null && key !== undefined) wiring.rehomedInto.push(field);
+  if (many ? key !== null : key !== null && key !== undefined) wiring.rehomedInto.push({ field, many });
   wiring.matchedInto.push(field);
 }
 
@@ -1141,22 +1141,28 @@ function quoted(fields: readonly string[]): string {
 }
 
 // A create that drew pooled rows into a relation field whose foreign key the drawn rows hold is the one
-// whose connect can fail by the pool's own doing, whatever the field's arity: a key rewritten by an
-// earlier record's connect leaves the pooled copy matching nothing, which is retold in the pool's
-// terms. Any other connect that matched nothing while a handed or pooled row stood in the call is
-// retold as a stale row, naming every field such a row stood in across the call rather than the one
-// that failed. Prisma's error stands behind either as the cause; a create no such row reached passes
-// its failure through untouched.
+// whose connect can fail by the pool's own doing: a key rewritten by an earlier record's connect
+// leaves the pooled copy matching nothing, which is retold in the pool's terms. A re-homing field that
+// fails answers with a code of its arity — `P2018` one holding many records, `P2025` one holding a
+// single record — so only a re-homing field of that arity can be the one, and the retelling names
+// every such field across the call; a stale row in a field of the same arity is retold in the pool's
+// terms all the same. Any other connect that matched nothing while a handed or pooled row stood in
+// the call is retold as a stale row, naming every field such a row stood in across the call rather
+// than the one that failed. Prisma's error stands behind either as the cause; a create no such row
+// reached passes its failure through untouched.
 async function persisted(delegate: CreateDelegate, data: Written, wiring: Wiring, model: string): Promise<unknown> {
   try {
     return await delegate.create({ data });
   } catch (error) {
     const code = (error as { code?: unknown } | null | undefined)?.code;
     const unmatched = code === unmatchedConnect || code === unmatchedRecord;
+    const rehomed = wiring.rehomedInto
+      .filter(({ many }) => many === (code === unmatchedConnect))
+      .map(({ field }) => field);
 
-    if (unmatched && wiring.rehomedInto.length > 0)
+    if (unmatched && rehomed.length > 0)
       throw new Error(
-        `A pooled row drawn into ${quoted(wiring.rehomedInto)} on the model "${model}" ` +
+        `A pooled row drawn into ${quoted(rehomed)} on the model "${model}" ` +
           "no longer matches the database: a connect into a relation field backed by a required foreign key " +
           "re-homes the record, rewriting the column the pooled copy still carries, so a pooled row fills " +
           "such a relation once. Pool one row per parent record, or pass native relation input.",

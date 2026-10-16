@@ -1188,10 +1188,16 @@ test("a has() child of another package instance reaches its parent through the c
 // The whole error a stale row is retold as: the entire message, and the raw Prisma error standing
 // behind it as the cause — `toMatchObject` reads the pair as a subset, leaving the cause's other
 // fields free.
-function stale(field: string, model: string, code: string): { message: string; cause: { code: string } } {
+function stale(
+  fields: string | readonly string[],
+  model: string,
+  code: string,
+): { message: string; cause: { code: string } } {
+  const named = [fields].flat().map((field) => `"${field}"`);
+
   return {
     message:
-      `A row connected into "${field}" on the model "${model}" no longer matches the database: ` +
+      `A row connected into ${named.join(" or ")} on the model "${model}" no longer matches the database: ` +
       "it was read before its record changed, and every non-null scalar is matched on, so a changed " +
       "`updatedAt` is enough. Re-read the row from the client before handing it over or pooling it, " +
       "or pass native relation input ({ connect: { id } }) to match on the key alone.",
@@ -3447,6 +3453,35 @@ test("a pooled many-to-many child whose record changed fails as a stale row, not
   await expect(postFactory.recycle("tag", tag).has(tagFactory).create()).rejects.toMatchObject(
     stale("tags", "post", "P2025"),
   );
+});
+
+// Prisma answers an unmatched connect with a code of the failing field's arity, so a re-homing draw
+// into a field of the other arity cannot be what failed: a stale row beside it keeps its own terms.
+test("a stale handed to-many row beside a pooled one-to-one draw fails as a stale row", async () => {
+  const { prisma, userFactory, postFactory, profileFactory } = await factorioHarness();
+  const profile = await profileFactory.create();
+  const post = await postFactory.create();
+
+  await prisma.post.update({ where: { id: post.id }, data: { title: "Changed" } });
+
+  await expect(
+    userFactory
+      .recycle("profile", profile)
+      .state({ profile: profileFactory })
+      .create({ posts: [post] }),
+  ).rejects.toMatchObject(stale(["profile", "posts"], "user", "P2018"));
+});
+
+test("a stale pooled tag beside a pooled to-many draw fails as a stale row", async () => {
+  const { prisma, postFactory, commentFactory, tagFactory } = await factorioHarness();
+  const comment = await commentFactory.create();
+  const tag = await tagFactory.create();
+
+  await prisma.tag.update({ where: { id: tag.id }, data: { label: "Changed" } });
+
+  await expect(
+    postFactory.recycle("comment", comment).recycle("tag", tag).has(commentFactory).has(tagFactory).create(),
+  ).rejects.toMatchObject(stale(["comments", "tags"], "post", "P2025"));
 });
 
 // The pool's terms belong to the pool: a row the caller hands over went stale by the caller's own
