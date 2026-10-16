@@ -177,3 +177,67 @@ test("a stale row holding a scalar list and a Json value still fails to connect"
 
   await expect(postFactory.for(ada, "author").create()).rejects.toMatchObject(STALE);
 });
+
+interface Cost {
+  commits: number;
+  parentReads: number;
+}
+
+async function counters(prisma: PostgresTestClient): Promise<Cost> {
+  await prisma.$executeRaw`SELECT pg_stat_force_next_flush()`;
+  const [row] = await prisma.$queryRaw<{ commits: bigint; parentReads: bigint }[]>`
+    SELECT d.xact_commit AS "commits", t.seq_scan + COALESCE(t.idx_scan, 0) AS "parentReads"
+    FROM pg_stat_database d, pg_stat_user_tables t
+    WHERE d.datname = current_database() AND t.relname = 'User'`;
+
+  return { commits: Number(row?.commits), parentReads: Number(row?.parentReads) };
+}
+
+// A backend publishes its counters lazily; a forced flush publishes them once the statement asking for
+// it ends, so a read on the same backend right after sees every earlier statement. The client holds
+// one connection, so the flush, the read and the build share that backend, and the read and the next
+// flush are two committed statements of their own beside the build's.
+async function costOf(prisma: PostgresTestClient, build: () => Promise<unknown>): Promise<Cost> {
+  const before = await counters(prisma);
+  await build();
+  const after = await counters(prisma);
+
+  return { commits: after.commits - before.commits - 2, parentReads: after.parentReads - before.parentReads };
+}
+
+test("measuring no build counts no commit and no read of the parent table", async () => {
+  const { prisma } = await lane();
+
+  await expect(costOf(prisma, () => Promise.resolve())).resolves.toStrictEqual({ commits: 0, parentReads: 0 });
+});
+
+// Every row is one statement committed on its own, and a nested `connect` is one transaction around
+// its row, so the commits count rows whichever path a row takes. A nested `connect` reads the parent
+// once more than Postgres's own foreign key check does, so N children on the foreign-key path cost
+// exactly N parent reads (ADR 0005).
+test("a has() build commits one transaction per row and reads its fresh parent once per child", async () => {
+  const { prisma, postFactory, userFactory } = await lane();
+
+  const cost = await costOf(prisma, () => userFactory.has(postFactory.count(3), "posts").create());
+
+  expect(cost).toStrictEqual({ commits: 4, parentReads: 3 });
+});
+
+test("a batch whose relation default creates each parent reads every parent once", async () => {
+  const { prisma, postFactory } = await lane();
+
+  const cost = await costOf(prisma, () => postFactory.count(3).create());
+
+  expect(cost).toStrictEqual({ commits: 6, parentReads: 3 });
+});
+
+// The same build with its parent handed over, which stays on `connect`: what the read count tells
+// apart from the foreign-key path, where the commit count cannot.
+test("a handed-over parent stays on connect, costing a second parent read per child", async () => {
+  const { prisma, postFactory, userFactory } = await lane();
+  const ada = await userFactory.create();
+
+  const cost = await costOf(prisma, () => postFactory.count(3).for(ada, "author").create());
+
+  expect(cost).toStrictEqual({ commits: 3, parentReads: 6 });
+});
