@@ -51,6 +51,7 @@
     "test": "vitest run && echo '--test OK--'",
     "build": "tsc -p tsconfig.build.json && echo '--build OK--'",
     "pack:check": "tsx scripts/check-pack.ts && echo '--pack:check OK--'",
+    "bench:types": "tsx scripts/bench-types/index.ts && echo '--bench:types OK--'",
     "format": "prettier --write .",
     "format:check": "prettier --check . && echo '--format:check OK--'",
     "duplicates": "jscpd && echo '--duplicates OK--'",
