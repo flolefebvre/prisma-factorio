@@ -51,6 +51,7 @@
     "typecheck": "tsc --noEmit && echo '--typecheck OK--'",
     "lint": "eslint . && echo '--lint OK--'",
     "test": "vitest run && echo '--test OK--'",
+    "test:postgres": "vitest run --config vitest.postgres.config.ts && echo '--test:postgres OK--'",
     "build": "tsc -p tsconfig.build.json && echo '--build OK--'",
     "pack:check": "tsx scripts/check-pack.ts && echo '--pack:check OK--'",
     "bench:types": "tsx scripts/bench-types/index.ts && echo '--bench:types OK--'",
