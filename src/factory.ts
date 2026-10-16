@@ -15,13 +15,20 @@ import type { FakerInstance, FakerProvider } from "./faker.js";
 import { mergedPool, recycledPool, type Pool } from "./pool.js";
 import type {
   Attributes,
-  ChildArgs,
+  NamedChildField,
+  ChildModel,
+  ChildValue,
   CreateInput,
   ModelName,
   Overrides,
-  ParentArgs,
+  NamedParentField,
+  ParentModel,
+  ParentValue,
   PartialAttributes,
+  RelationsTo,
   Row,
+  SoleChild,
+  SoleParent,
 } from "./prisma.js";
 import type { Picker } from "./rng.js";
 import { nextUid } from "./uid.js";
@@ -286,27 +293,34 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * Connects every record this factory creates to one parent, named by a factory of the parent model
    * or by a row of it.
    *
-   * The relation field may be left out where the model pair shares exactly one belongs-to relation,
-   * and must be named where it shares several. A named field is one of the belongs-to fields pointing
-   * at the parent's model; where there is none, or where the parent stands for no record of any model
-   * — a hand-built partial object is no row — the field reads as a message saying which. A parent
-   * factory is evaluated once per `create` call, so a batch connects to one record rather than to one
-   * each. The relation field merges at the position `for` was called: a state applied after it wins
-   * that field, a state applied before it loses, and `create`'s overrides win over both.
+   * A named relation field is one of the belongs-to fields pointing at the parent's model; where there
+   * is none, or where the parent stands for no record of any model — a hand-built partial object is no
+   * row — the field reads as a message saying which. The field may be left out where the model pair
+   * shares exactly one belongs-to relation; where it shares several, or none, the parent parameter
+   * reads as a message naming the pair — and, for several, the fields to pick from. A parent factory is evaluated once per `create` call, so a batch connects to one record
+   * rather than to one each. The relation field merges at the position `for` was called: a state
+   * applied after it wins that field, a state applied before it loses, and `create`'s overrides win
+   * over both.
    *
    * @example
    * ```ts
    * const drafts = await postFactory.count(3).for(userFactory, "author").create();
+   * const comment = await commentFactory.for(post).create();
    * ```
    */
-  for<T extends object>(parent: T, ...args: ParentArgs<C, M, T>): Factory<C, M, R, S>;
+  for<T extends object>(parent: T, relationField: NamedParentField<C, M, T>): Factory<C, M, R, S>;
+  for<T extends ParentValue<C>>(
+    parent: SoleParent<C, M, T>,
+    relationField?: RelationsTo<C, M, ParentModel<C, T>>,
+  ): Factory<C, M, R, S>;
   /**
    * Fills a relation field this model holds many records in, alongside every record it creates.
    *
-   * The relation field may be left out where the model pair shares exactly one has-many relation, and
-   * must be named where it shares several. A named field is one of the has-many fields pointing at the
-   * children's model; where there is none, or where the children stand for no records of any model,
-   * the field reads as a message saying which. Rows are connected as they stand, no record of the child
+   * A named relation field is one of the has-many fields pointing at the children's model; where there
+   * is none, or where the children stand for no records of any model, the field reads as a message
+   * saying which. The field may be left out where the model pair shares exactly one has-many relation; where it shares several, or
+   * none, the children parameter reads as a message naming the pair — and, for several, the fields to
+   * pick from. Rows are connected as they stand, no record of the child
    * model being created for them; a child factory creates records of its own per parent record and
    * reaches back through the inverse relation field, which `inverse` names where the client's metadata
    * pairs the two sides down to more than one. Every child of one record is created before the next
@@ -320,9 +334,20 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * @example
    * ```ts
    * const author = await userFactory.has(postFactory.count(3), "posts").create();
+   * const post = await postFactory.has(commentFactory.count(2)).create();
    * ```
    */
-  has<T extends object>(children: T, ...args: ChildArgs<C, M, T, HasOptions>): Factory<C, M, R, S>;
+  has<T extends object>(
+    children: T,
+    relationField: NamedChildField<C, M, T>,
+    options?: HasOptions,
+  ): Factory<C, M, R, S>;
+  has<T extends ChildValue<C>>(
+    children: SoleChild<C, M, T>,
+    ...args:
+      | [options?: HasOptions]
+      | [relationField: RelationsTo<C, M, ChildModel<C, T>, true> | undefined, options?: HasOptions]
+  ): Factory<C, M, R, S>;
   /**
    * Pools existing rows of one model, so that a factory of that model standing in a relation field
    * connects a pooled row rather than creating a record.

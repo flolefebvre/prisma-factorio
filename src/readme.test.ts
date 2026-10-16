@@ -363,15 +363,7 @@ test("a value typed any under a field the model does not declare meets never, wh
   expectTypeOf<Overrides<TestClient, "user", { nmae: ReturnType<typeof JSON.parse> }>["nmae"]>().toBeNever();
 });
 
-export function errorShape(
-  prismaFactorio: Factorio<TestClient>,
-  userFactory: Factory<TestClient, "user">,
-  postFactory: Factory<TestClient, "post">,
-): void {
-  // @ts-expect-error the pair shares several belongs-to relations: TS2554, the field slot unnamed
-  void postFactory.for(userFactory);
-  // @ts-expect-error a partial object with the field left out: TS2554 as well
-  void postFactory.for({ id: 1 });
+export function errorShape(prismaFactorio: Factorio<TestClient>, userFactory: Factory<TestClient, "user">): void {
   void userFactory.create({
     // @ts-expect-error a misspelled field in overrides
     nmae: "Ada",
@@ -406,6 +398,7 @@ export function wrongModelValues(
   teamFactory: Factory<TestClient, "team">,
   teamRow: Row<TestClient, "team">,
   commentFactory: Factory<TestClient, "comment">,
+  ada: Row<TestClient, "user">,
 ): void {
   // @ts-expect-error a row of a model the belongs-to relation does not point at
   void postFactory.create({ author: teamRow });
@@ -430,6 +423,10 @@ export function wrongModelValues(
   void postFactory.for(teamRow, "author");
   // @ts-expect-error a hand-built partial object is no row
   void postFactory.for({ id: 1 }, "author");
+  // @ts-expect-error the pair shares several belongs-to relations
+  void postFactory.for(ada);
+  // @ts-expect-error the pair shares several belongs-to relations, a factory naming the pair the same
+  void postFactory.for(userFactory);
   // @ts-expect-error no belongs-to relation from "comment" to "user"
   void commentFactory.for(userFactory);
   // @ts-expect-error no has-many relation from "user" to "team", named on the field
@@ -438,13 +435,24 @@ export function wrongModelValues(
   void userFactory.has(postFactory);
 
   // The messages the bullets quote, read off the methods themselves: a field slot typed as a message
-  // takes that message.
+  // takes that message, and the unnamed form's parent slot is the message once the parent's type is
+  // fixed.
   void postFactory.for(teamRow, 'ERROR: no belongs-to relation from "post" to "team"');
   void postFactory.for(
     { id: 1 },
     "ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row",
   );
   void userFactory.has(teamRow, 'ERROR: no has-many relation from "user" to "team"');
+  type ForUser = typeof postFactory.for<Row<TestClient, "user">>;
+  expectTypeOf<
+    Parameters<ForUser>[0]
+  >().toEqualTypeOf<'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"'>();
+  type ForPoster = typeof commentFactory.for<Factory<TestClient, "user">>;
+  expectTypeOf<Parameters<ForPoster>[0]>().toEqualTypeOf<'ERROR: no belongs-to relation from "comment" to "user"'>();
+  type HasPosts = typeof userFactory.has<Factory<TestClient, "post">>;
+  expectTypeOf<
+    Parameters<HasPosts>[0]
+  >().toEqualTypeOf<'ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"'>();
   // @ts-expect-error a factory of a model the belongs-to relation does not point at
   void postFactory.create({ author: teamFactory });
   // @ts-expect-error a factory of a model the has-many relation does not point at
