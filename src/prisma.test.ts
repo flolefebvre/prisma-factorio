@@ -36,7 +36,18 @@ type Batched<M extends ModelName<TestClient>> = Factory<TestClient, M, Row<TestC
 
 test("a model name is a delegate the client carries", () => {
   expectTypeOf<ModelName<TestClient>>().toEqualTypeOf<
-    "user" | "post" | "comment" | "tag" | "team" | "membership" | "badge" | "venue" | "customer" | "booking" | "invite"
+    | "user"
+    | "post"
+    | "comment"
+    | "tag"
+    | "team"
+    | "membership"
+    | "badge"
+    | "venue"
+    | "customer"
+    | "booking"
+    | "invite"
+    | "category"
   >();
 });
 

@@ -127,6 +127,17 @@ model Customer {
   @@unique([id, venueId])
 }
 
+// The one model relating to itself: both sides of the `tree` pairing sit on it, so the inverse of
+// either side is the other and never the field itself. `path` is a scalar no other model declares,
+// which keeps a row of this model resolvable.
+model Category {
+  id       Int        @id @default(autoincrement())
+  path     String
+  parent   Category?  @relation("tree", fields: [parentId], references: [id])
+  parentId Int?
+  children Category[] @relation("tree")
+}
+
 // The one model whose two relations share a foreign key column: `venueId` belongs to both `venue` and
 // the composite `customer` key, so relation defaults that each build their own venue disagree on it.
 // Only a parent shared between them — a recycled venue — gives both legs the same value. `seat` is a scalar no other model declares.

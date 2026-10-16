@@ -47,8 +47,8 @@ function relating(fields: Field[]): unknown {
   });
 }
 
-// The scratch schema holds no model relating to itself, the one shape putting both sides of a
-// pairing on one model.
+// A schema declares a self-relation with exactly two sides, so a pairing holding three relation
+// fields under one name is a shape no schema can declare, and needs a stand-in.
 function selfRelating(...names: string[]): unknown {
   return clientWith({ Node: names.map((name) => ({ name, kind: "object", type: "Node", relationName: "tree" })) });
 }
@@ -594,11 +594,11 @@ test("a relation field nothing on the target model pairs with is rejected", () =
   );
 });
 
-test("a self-relation pairs each of its two sides with the other rather than with itself", () => {
-  const client = selfRelating("parent", "children");
+test("a self-relation pairs each of its two sides with the other rather than with itself", async () => {
+  const prisma = await disposableClient();
 
-  expect(inverseRelationField(client, "node", "children")).toBe("parent");
-  expect(inverseRelationField(client, "node", "parent")).toBe("children");
+  expect(inverseRelationField(prisma, "category", "children")).toBe("parent");
+  expect(inverseRelationField(prisma, "category", "parent")).toBe("children");
 });
 
 test("more than one relation field pairing with the one the lookup starts from is rejected, naming them", () => {
