@@ -95,6 +95,6 @@ if (factories.instantiations > budget) {
 
 if (factories.instantiations * 1.2 < budget) {
   console.log(
-    `The cost sits more than 20% under the budget of ${String(budget)}: lower scripts/bench-types/budget.json to ${String(Math.round(factories.instantiations * 1.2))}.`,
+    `The budget of ${String(budget)} in scripts/bench-types/budget.json can be lowered to ${String(Math.round(factories.instantiations * 1.2))}: the cost is ${String(factories.instantiations)}.`,
   );
 }
