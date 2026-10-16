@@ -365,7 +365,7 @@ export const bookingFactory = prismaFactorio.define("booking", {
 });
 ```
 
-`bookingFactory.create()` succeeds, but the booking lands on the customer's venue and the venue its `venue` default created is left orphaned; list `customer` before `venue` and Prisma raises `Foreign key constraint violated` instead — the definition's field order picks between the two ([#100](https://github.com/flolefebvre/prisma-factorio/issues/100)). Create the shared parent first and recycle it, and both legs draw the same venue, in either order:
+`bookingFactory.create()` rejects with a `TypeError` before the booking reaches Prisma: the relation fields `venue` and `customer` disagree on the foreign key column `venueId`, the message naming the venue each holds. The venue and customer the defaults created are already written by then; under `.using(tx)` the rejection leaves your transaction callback and they roll back. The check covers every row the library holds in such a field — one created for it, handed over or drawn from a pool — and leaves native relation input to Prisma. Create the shared parent first and recycle it, and both legs draw the same venue, in either order:
 
 ```ts
 const venue = await venueFactory.create();
