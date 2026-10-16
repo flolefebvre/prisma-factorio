@@ -1134,20 +1134,28 @@ function stale(field: string, model: string, code: string): { message: string; c
   };
 }
 
+// A user row read before its record changed, beside the factory a post is created through.
+async function staleUser(
+  attributes: { meta?: { a: number } } = {},
+): Promise<{ postFactory: Factory<TestClient, "post">; ada: Row<TestClient, "user"> }> {
+  const { prisma, postFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create(attributes);
+
+  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+
+  return { postFactory, ada };
+}
+
 // The row's scalars go into the `where`, so every field beyond the unique one narrows it: a row read
 // before the record changed no longer matches anything.
 test("connecting a row that has since changed fails rather than reaching the record it became", async () => {
-  const { prisma, postFactory, userFactory } = await factorioHarness();
-  const ada = await userFactory.create();
-  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+  const { postFactory, ada } = await staleUser();
 
   await expect(postFactory.create({ author: ada })).rejects.toMatchObject(stale("author", "post", "P2025"));
 });
 
 test("a stale row handed to for() fails naming the relation field it stood in", async () => {
-  const { prisma, postFactory, userFactory } = await factorioHarness();
-  const ada = await userFactory.create();
-  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+  const { postFactory, ada } = await staleUser();
 
   await expect(postFactory.for(ada, "author").create()).rejects.toMatchObject(stale("author", "post", "P2025"));
 });
@@ -1155,9 +1163,7 @@ test("a stale row handed to for() fails naming the relation field it stood in", 
 // A row the caller pools is matched like one it hands over, so changing its record before the draw
 // leaves it as stale.
 test("a pooled row whose record changed before the draw fails as a stale row", async () => {
-  const { prisma, postFactory, userFactory } = await factorioHarness();
-  const ada = await userFactory.create();
-  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+  const { postFactory, ada } = await staleUser();
 
   await expect(postFactory.recycle("user", ada).create()).rejects.toMatchObject(stale("author", "post", "P2025"));
 });
@@ -1203,10 +1209,7 @@ test("a row whose Json column holds a value connects, through for, an attribute 
 // Leaving the Json column out narrows the match by nothing else: a row read before the record
 // changed still fails loudly rather than connecting to what the record has become.
 test("a stale row whose Json column holds a value still fails to connect", async () => {
-  const { prisma, postFactory, userFactory } = await factorioHarness();
-  const ada = await userFactory.create({ meta: { a: 1 } });
-
-  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+  const { postFactory, ada } = await staleUser({ meta: { a: 1 } });
 
   await expect(postFactory.for(ada, "author").create()).rejects.toMatchObject(stale("author", "post", "P2025"));
 });
