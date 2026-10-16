@@ -18,11 +18,14 @@ context7.json     What Context7 indexes for consumers, and the rules it serves t
 prisma.config.ts  Prisma CLI configuration (required by Prisma 7)
 prisma/
   schema.prisma   Scratch schema for this library's own tests
+  postgres.prisma Scratch schema for the Postgres lane: what SQLite cannot declare
 src/
   index.ts        Package root export
   datamodel.ts    Relation and uniqueness metadata off the client; the only reader of `_runtimeDataModel` and the inline schema
   tests/          Shared test helpers (never published)
     generated/    Generated scratch client and its DDL (gitignored, never published)
+    postgres/     The Postgres lane's client helper and the global setup that provides its server
+      generated/  Generated Postgres client and its DDL (gitignored, never published)
 scripts/
   check-pack.ts   Asserts what `npm publish` would ship; the last gate
   bench-types/    Type-level compile-cost benchmark on a synthetic 100-model schema, and its budget
@@ -42,8 +45,9 @@ All via pnpm.
 
 ```
 pnpm gates          Full validation: generate, typecheck, lint, format check, duplicates, test, build, packed contents
-pnpm generate       Regenerate the scratch Prisma client and its DDL; gates runs it first
+pnpm generate       Regenerate both scratch Prisma clients and their DDLs; gates runs it first
 pnpm test           Run the test suite once (vitest run)
+pnpm test:postgres  Run the Postgres lane once; needs Docker running, or POSTGRES_URL naming a server
 pnpm typecheck      Type-check without emitting (tsc --noEmit)
 pnpm lint           ESLint
 pnpm build          Compile to dist/ (tsconfig.build.json)
@@ -56,6 +60,8 @@ pnpm bench:types    Regenerate the synthetic schema and type-check a factory per
 
 `pnpm bench:types` is not part of `pnpm gates`; CI runs it as its own job. It prints the instantiation count, check time and memory of the factory file beside a control that only constructs the client, and fails when the factory file's instantiations exceed `scripts/bench-types/budget.json` (the measured baseline plus 20%). A change that lowers the count lowers the budget; a change that raises it past the budget states the measured cost in its pull request body.
 
+`pnpm test:postgres` is not part of `pnpm gates`, which needs no Docker; CI runs it as its own job. It starts a `postgres:17-alpine` container through Testcontainers, unless `POSTGRES_URL` holds a connection string on a role allowed to create and drop databases, in which case that server is used instead. With neither, it fails naming both.
+
 Each script echoes a `--<name> OK--` marker on success.
 A fresh clone runs `pnpm install` and `pnpm generate` before a bare `pnpm test` or `pnpm typecheck`; both need the generated test client, and only `pnpm gates` supplies it on its own.
 Run `pnpm format` after making changes so the diff stays limited to what you actually touched.
@@ -67,6 +73,8 @@ Run `pnpm format` after making changes so the diff stays limited to what you act
 The project uses [Vitest](https://vitest.dev), Node-only. Tests are colocated with the code they cover as `*.test.ts` next to the source file; shared test helpers live in `src/tests/`. Test files are excluded from the published build. The project is developed with TDD.
 
 Tests run against the scratch client generated from `prisma/schema.prisma` into `src/tests/generated/`, on a throwaway in-memory SQLite database opened through `@prisma/adapter-better-sqlite3`; `src/tests/client.ts` provides that client. Run `pnpm generate` after changing the scratch schema.
+
+The Postgres lane covers what SQLite cannot: scalar lists, native enums, `@db.*` native types, and the transactions and reads Postgres counts per build. Its tests sit beside the code they cover as `*.postgres.test.ts`, which `vitest.config.ts` excludes and `vitest.postgres.config.ts` alone includes. They run against the client generated from `prisma/postgres.prisma` into `src/tests/postgres/generated/`; `src/tests/postgres/client.ts` creates a database of its own per client on the lane's server, applies the Postgres DDL, and drops it on dispose.
 
 Type-level assertions (`expectTypeOf`, `@ts-expect-error`) sit in the same test files and are enforced by the `typecheck` gate, so they need no extra Vitest configuration.
 
