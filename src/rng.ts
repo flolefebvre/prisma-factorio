@@ -73,7 +73,7 @@ export interface ReseedablePicker {
   /** The one picker handed out, whichever seed it currently draws from. */
   pick: Picker;
   /** Restarts the stream behind `pick` as a fresh `createPicker(seed)` would start it. */
-  reseed(seed?: number | undefined): void;
+  reseed: (seed?: number) => void;
 }
 
 /**
@@ -90,7 +90,7 @@ export interface ReseedablePicker {
  * pick(["ada", "grace", "alan"]); // "grace"
  * ```
  */
-export function createReseedablePicker(seed?: number | undefined): ReseedablePicker {
+export function createReseedablePicker(seed?: number): ReseedablePicker {
   let current = createPicker(seed);
 
   return {
