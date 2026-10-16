@@ -4,7 +4,7 @@
   "format": ["typescript"],
   "path": ["src"],
   "pattern": "**/*.ts",
-  "ignore": ["**/node_modules/**", "dist/**", "src/tests/generated/**"],
+  "ignore": ["**/node_modules/**", "dist/**", "src/tests/generated/**", "src/tests/postgres/generated/**"],
   "gitignore": true,
   "absolute": true,
   "minLines": 3,

@@ -3,3 +3,7 @@ allowBuilds:
   better-sqlite3: true
   esbuild: true
   prisma: true
+  # Optional native accelerators and a postinstall script pulled in by Testcontainers, which runs without them.
+  cpu-features: false
+  protobufjs: false
+  ssh2: false
