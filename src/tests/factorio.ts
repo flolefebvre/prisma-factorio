@@ -13,6 +13,7 @@ import { createTestClient, disposeTestClient, type TestClient } from "./client.j
  * `inviteFactory` carry a relation default, so creating any of them walks the chain of factories
  * behind it: a comment brings a post, which brings a user; a membership brings a user and a team
  * both; a badge brings a whole membership; a customer brings a venue; and an invite brings a team.
+ * `categoryFactory` carries none: a self-relation default in its own definition recurses without end.
  *
  * @example
  * ```ts
@@ -32,6 +33,7 @@ export interface Harness {
   venueFactory: Factory<TestClient, "venue">;
   customerFactory: Factory<TestClient, "customer">;
   inviteFactory: Factory<TestClient, "invite">;
+  categoryFactory: Factory<TestClient, "category">;
 }
 
 /**
@@ -95,6 +97,7 @@ export async function factorioHarness(options: FactorioOptions = {}): Promise<Ha
   const inviteFactory = prismaFactorio.define("invite", {
     definition: ({ uid }) => ({ code: uid, team: teamFactory }),
   });
+  const categoryFactory = prismaFactorio.define("category", { definition: ({ uid }) => ({ path: uid }) });
 
   return {
     prisma,
@@ -109,5 +112,6 @@ export async function factorioHarness(options: FactorioOptions = {}): Promise<Ha
     venueFactory,
     customerFactory,
     inviteFactory,
+    categoryFactory,
   };
 }
