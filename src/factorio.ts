@@ -1,12 +1,5 @@
 import { createFakerProvider, type FactorioOptions } from "./faker.js";
-import {
-  createFactory,
-  declaredStates,
-  type DeclaredStates,
-  type Factory,
-  type FactoryConfig,
-  type StateMap,
-} from "./factory.js";
+import { createFactory, declaredStates, type DeclaredStates, type Factory, type FactoryConfig } from "./factory.js";
 import type { ModelName, Row } from "./prisma.js";
 import { createReseedablePicker } from "./rng.js";
 
@@ -33,7 +26,7 @@ export interface Factorio<C> {
    * const userFactory = prismaFactorio.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });
    * ```
    */
-  define<M extends ModelName<C>, D, S extends StateMap<C, M> & DeclaredStates<C, M, S> = Record<never, never>>(
+  define<M extends ModelName<C>, D, S extends DeclaredStates<C, M, S> = object>(
     model: M,
     config: FactoryConfig<C, M, D, S>,
   ): Factory<C, M, Row<C, M>, S>;

@@ -233,7 +233,7 @@ test("a relation field takes no object that is neither native relation input nor
   expectTypeOf<Row<TestClient, "team">>().not.toExtend<Author>();
   expectTypeOf<{ totallyBogus: number }>().not.toExtend<Author>();
   expectTypeOf<{ email: string; name: string }>().not.toExtend<Author>();
-  expectTypeOf<Record<never, never>>().not.toExtend<Author>();
+  expectTypeOf<object>().not.toExtend<Author>();
 });
 
 test("a relation field holding many records takes a factory, a row, an array of rows, or native input", () => {
@@ -260,7 +260,7 @@ test("a relation field holding many records takes no wrong-model row, no list of
   expectTypeOf<Factory<TestClient, "team">[]>().not.toExtend<Posts>();
   expectTypeOf<Factory<TestClient, "post">[]>().not.toExtend<Posts>();
   expectTypeOf<{ totallyBogus: number }>().not.toExtend<Posts>();
-  expectTypeOf<Record<never, never>>().not.toExtend<Posts>();
+  expectTypeOf<object>().not.toExtend<Posts>();
 });
 
 test("create() is typed as the model's row and count(n).create() as an array of them", async () => {

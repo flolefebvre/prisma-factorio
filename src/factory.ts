@@ -426,7 +426,7 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
  * const rows = await adminFactory.using(tx).create({ name: "Ada" });
  * ```
  */
-export type Factory<C, M extends ModelName<C>, R = Row<C, M>, S = Record<never, never>> = FactoryMethods<C, M, R, S> & {
+export type Factory<C, M extends ModelName<C>, R = Row<C, M>, S = object> = FactoryMethods<C, M, R, S> & {
   [K in keyof S]: () => Factory<C, M, R, S>;
 };
 
