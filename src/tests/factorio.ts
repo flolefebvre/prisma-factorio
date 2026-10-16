@@ -9,10 +9,11 @@ import { createTestClient, disposeTestClient, type TestClient } from "./client.j
  * `Booking`: its two relation defaults disagree on the `venueId` they share, so the tests that need
  * one declare it themselves.
  *
- * `postFactory`, `commentFactory`, `membershipFactory`, `badgeFactory`, `customerFactory` and
- * `inviteFactory` carry a relation default, so creating any of them walks the chain of factories
- * behind it: a comment brings a post, which brings a user; a membership brings a user and a team
- * both; a badge brings a whole membership; a customer brings a venue; and an invite brings a team.
+ * `postFactory`, `commentFactory`, `membershipFactory`, `badgeFactory`, `customerFactory`,
+ * `inviteFactory` and `profileFactory` carry a relation default, so creating any of them walks the
+ * chain of factories behind it: a comment brings a post, which brings a user; a membership brings a
+ * user and a team both; a badge brings a whole membership; a customer brings a venue; an invite
+ * brings a team; and a profile brings a user.
  * `categoryFactory` carries none: a self-relation default in its own definition recurses without end.
  *
  * @example
@@ -34,6 +35,7 @@ export interface Harness {
   customerFactory: Factory<TestClient, "customer">;
   inviteFactory: Factory<TestClient, "invite">;
   categoryFactory: Factory<TestClient, "category">;
+  profileFactory: Factory<TestClient, "profile">;
 }
 
 /**
@@ -98,6 +100,9 @@ export async function factorioHarness(options: FactorioOptions = {}): Promise<Ha
     definition: ({ uid }) => ({ code: uid, team: teamFactory }),
   });
   const categoryFactory = prismaFactorio.define("category", { definition: ({ uid }) => ({ path: uid }) });
+  const profileFactory = prismaFactorio.define("profile", {
+    definition: ({ uid }) => ({ bio: uid, user: userFactory }),
+  });
 
   return {
     prisma,
@@ -113,5 +118,6 @@ export async function factorioHarness(options: FactorioOptions = {}): Promise<Ha
     customerFactory,
     inviteFactory,
     categoryFactory,
+    profileFactory,
   };
 }

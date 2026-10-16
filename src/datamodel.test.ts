@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   foreignKeyOf,
+  inverseForeignKeyOf,
   holdsManyRecords,
   inverseRelationField,
   namedRelationField,
@@ -88,7 +89,7 @@ test("every relation field a model declares is read off the client, and none of 
   const prisma = await disposableClient();
 
   expect(relationFieldsOf(prisma, "post")).toEqual(["author", "editor", "comments", "tags"]);
-  expect(relationFieldsOf(prisma, "user")).toEqual(["posts", "edited", "memberships"]);
+  expect(relationFieldsOf(prisma, "user")).toEqual(["posts", "edited", "memberships", "profile"]);
   expect(relationFieldsOf(prisma, "comment")).toEqual(["post"]);
   expect(relationFieldsOf(prisma, "psot")).toEqual([]);
 });
@@ -198,7 +199,7 @@ test("a name the model declares as no relation field is rejected, naming it and 
 
   for (const name of ["illustrated", "email"]) {
     expect(() => namedRelationField(prisma, "user", name)).toThrow(
-      `The model "user" has no relation field "${name}". Relation fields on "user": "posts", "edited", "memberships".`,
+      `The model "user" has no relation field "${name}". Relation fields on "user": "posts", "edited", "memberships", "profile".`,
     );
   }
 });
@@ -430,8 +431,8 @@ test("a name the model declares as no relation field has no foreign key to read"
   expect(foreignKeyOf(prisma, "post", "illustrator")).toBeUndefined();
 });
 
-// The scratch schema holds no one-to-one, so a stand-in carries one: `Holder` keeps the foreign key,
-// `Owner` sits at the far end of it, and the schema text is the only part a test varies.
+// A stand-in carries a one-to-one whose schema text a test varies: `Holder` keeps the foreign key,
+// `Owner` sits at the far end of it.
 function keyedClient(inlineSchema?: string): unknown {
   const client = clientWith({
     Owner: [...scalars("id", "code"), { name: "held", kind: "object", type: "Holder", relationName: "holding" }],
@@ -492,6 +493,39 @@ test("a field declared twice in one model yields no answer for it", () => {
 test("a client carrying no schema text yields no answer for any relation field", () => {
   expect(foreignKeyOf(keyedClient(), "holder", "owner")).toBeUndefined();
   expect(foreignKeyOf(keyedClient(), "owner", "held")).toBeUndefined();
+});
+
+test("the inverse foreign key is the one the target model holds for the field pairing with the one asked", async () => {
+  const prisma = await disposableClient();
+
+  expect(inverseForeignKeyOf(prisma, "user", "posts")).toStrictEqual({ fields: ["authorId"], references: ["id"] });
+  expect(inverseForeignKeyOf(prisma, "user", "profile")).toStrictEqual({ fields: ["userId"], references: ["id"] });
+});
+
+test("a self-relation reads the inverse foreign key off its other side", async () => {
+  const prisma = await disposableClient();
+
+  expect(inverseForeignKeyOf(prisma, "category", "children")).toStrictEqual({
+    fields: ["parentId"],
+    references: ["id"],
+  });
+});
+
+test("the inverse of a field holding the key, or of an implicit many-to-many, holds none", async () => {
+  const prisma = await disposableClient();
+
+  expect(inverseForeignKeyOf(prisma, "post", "author")).toBeNull();
+  expect(inverseForeignKeyOf(prisma, "post", "tags")).toBeNull();
+});
+
+test("a field the target model pairs with nothing yields no inverse foreign key rather than throwing", async () => {
+  const prisma = await disposableClient();
+
+  expect(inverseForeignKeyOf(prisma, "post", "title")).toBeUndefined();
+  expect(
+    inverseForeignKeyOf(relating([{ name: "posts", kind: "object", type: "Post" }]), "user", "posts"),
+  ).toBeUndefined();
+  expect(inverseForeignKeyOf(keyedClient(), "owner", "held")).toBeUndefined();
 });
 
 // `include` hands back the loaded relation alongside the scalars, and the relation it names belongs
@@ -556,7 +590,7 @@ test("a field the model does not declare is rejected, naming the relation fields
   const prisma = await disposableClient();
 
   expect(() => inverseRelationField(prisma, "user", "psots")).toThrow(
-    'The model "user" declares no field "psots". Relation fields on "user": "posts", "edited", "memberships".',
+    'The model "user" declares no field "psots". Relation fields on "user": "posts", "edited", "memberships", "profile".',
   );
 });
 
@@ -564,7 +598,7 @@ test("a field the model declares as something other than a relation is rejected"
   const prisma = await disposableClient();
 
   expect(() => inverseRelationField(prisma, "user", "email")).toThrow(
-    'The field "email" on the model "user" is not a relation field. Relation fields on "user": "posts", "edited", "memberships".',
+    'The field "email" on the model "user" is not a relation field. Relation fields on "user": "posts", "edited", "memberships", "profile".',
   );
 });
 

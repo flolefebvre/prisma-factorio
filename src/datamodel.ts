@@ -187,6 +187,17 @@ export function namedRelationField(client: unknown, model: string, relationField
   return relationField;
 }
 
+// A model relating to itself carries both sides of one pairing, so the field the lookup starts from
+// answers that pairing alongside the inverse being looked for.
+function pairedWith(client: unknown, model: string, field: DataModelField): string[] {
+  const target = delegateKey(field.type);
+
+  return relationFields(client, target)
+    .filter((candidate) => candidate.relationName === field.relationName)
+    .map((candidate) => candidate.name)
+    .filter((name) => target !== model || name !== field.name);
+}
+
 /**
  * The relation field a model reaches back through the relation another one of its own points along.
  *
@@ -230,12 +241,7 @@ export function inverseRelationField(
         fieldListing(client, target),
     );
 
-  const paired = relationFields(client, target)
-    .filter((candidate) => candidate.relationName === field.relationName)
-    .map((candidate) => candidate.name);
-  // A model relating to itself carries both sides of one pairing, so the field the lookup starts from
-  // answers that pairing alongside the inverse being looked for.
-  const candidates = target === model ? paired.filter((name) => name !== relationField) : paired;
+  const candidates = pairedWith(client, model, field);
   const [only, ...rest] = candidates;
 
   if (only === undefined)
@@ -720,6 +726,37 @@ export function foreignKeyOf(client: unknown, model: string, relationField: stri
     key.references.every((field) => scalarNames(models, target).includes(field));
 
   return held ? key : undefined;
+}
+
+/**
+ * The foreign key the model a relation field points at holds for the relation field pairing with it,
+ * read off the schema text the client carries.
+ *
+ * The model is named by its delegate key, the relation field by the name it carries on that model. A
+ * key in the answer means connecting a row through the field rewrites that row's own columns. The
+ * answer is `null` where the paired field holds no key — the model asked about holds it, or neither
+ * side does, as in an implicit many-to-many — and `undefined` where there is no telling: everything
+ * {@link foreignKeyOf} answers so for, and a field paired with no single relation field on the target
+ * model, which {@link inverseRelationField} would throw for.
+ *
+ * @example
+ * ```ts
+ * inverseForeignKeyOf(prisma, "user", "posts"); // { fields: ["authorId"], references: ["id"] }
+ * inverseForeignKeyOf(prisma, "post", "author"); // null
+ * ```
+ */
+export function inverseForeignKeyOf(
+  client: unknown,
+  model: string,
+  relationField: string,
+): ForeignKey | null | undefined {
+  const field = relationFields(client, model).find((candidate) => candidate.name === relationField);
+
+  if (field?.relationName === undefined) return undefined;
+
+  const [only, ...rest] = pairedWith(client, model, field);
+
+  return only === undefined || rest.length > 0 ? undefined : foreignKeyOf(client, delegateKey(field.type), only);
 }
 
 /**
