@@ -15,17 +15,20 @@ import type { FakerInstance, FakerProvider } from "./faker.js";
 import { mergedPool, recycledPool, type Pool } from "./pool.js";
 import type {
   Attributes,
+  NamedChildField,
   ChildModel,
   ChildValue,
   CreateInput,
-  HasManyArgs,
   ModelName,
   Overrides,
+  NamedParentField,
   ParentModel,
   ParentValue,
   PartialAttributes,
-  RelationArgs,
+  RelationsTo,
   Row,
+  SoleChild,
+  SoleParent,
 } from "./prisma.js";
 import type { Picker } from "./rng.js";
 import { nextUid } from "./uid.js";
@@ -225,6 +228,20 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   // parameter, an optional one being a union with `undefined` that splits the value branch by
   // branch, so the call without overrides, and a helper forwarding its own optional overrides, take
   // the second signature.
+  /**
+   * Creates the records this factory stands for, the overrides merged last.
+   *
+   * A field the overrides name that the model does not declare is reported against a type naming
+   * that field and the model; a declared field of the wrong type is reported against `never`. Either
+   * arrives under `No overload matches this call`, one line per signature. README ›
+   * [Typing edges](https://github.com/flolefebvre/prisma-factorio#typing-edges) › "Error shape"
+   * reads both.
+   *
+   * @example
+   * ```ts
+   * const ada = await userFactory.create({ name: "Ada" });
+   * ```
+   */
   create<O>(overrides: O & Overrides<C, M, O>): Promise<R>;
   create<O>(overrides?: Overrides<C, M, O>): Promise<R>;
   count(records: number): Factory<C, M, Row<C, M>[], S>;
@@ -256,34 +273,59 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   // takes its shape through a naked `V` as well, as `create` does, and bars a function, whose empty
   // `keyof` would otherwise satisfy `Overrides` and swallow every closure before the first signature
   // checked it.
+  /**
+   * Layers attributes over the definition, as an object or as a closure returning one.
+   *
+   * A field the state names that the model does not declare is reported against a type naming that
+   * field and the model; a declared field of the wrong type is reported against `never`. Either
+   * arrives under `No overload matches this call`, one line per signature. README ›
+   * [Typing edges](https://github.com/flolefebvre/prisma-factorio#typing-edges) › "Error shape"
+   * reads both.
+   *
+   * @example
+   * ```ts
+   * const suspendedFactory = userFactory.state({ name: "Suspended" });
+   * ```
+   */
   state<V extends (context: StateContext<C, M>) => unknown>(state: V & ExactState<C, M, V>): Factory<C, M, R, S>;
   state<V extends Record<string, unknown>>(state: V & Overrides<C, M, V>): Factory<C, M, R, S>;
   /**
    * Connects every record this factory creates to one parent, named by a factory of the parent model
    * or by a row of it.
    *
-   * The relation field may be left out where the model pair shares exactly one belongs-to relation,
-   * and must be named where it shares several. A parent factory is evaluated once per `create` call,
-   * so a batch connects to one record rather than to one each. The relation field merges at the
-   * position `for` was called: a state applied after it wins that field, a state applied before it
-   * loses, and `create`'s overrides win over both.
+   * A named relation field is one of the belongs-to fields pointing at the parent's model; where there
+   * is none, or where the parent stands for no record of any model — a hand-built partial object is no
+   * row — the field reads as a message saying which. The field may be left out where the model pair
+   * shares exactly one belongs-to relation; where it shares several, or none, the parent parameter
+   * reads as a message naming the pair — and, for several, the fields to pick from. A parent factory
+   * is evaluated once per `create` call, so a batch connects to one record rather than to one each.
+   * The relation field merges at the position `for` was called: a state applied after it wins that
+   * field, a state applied before it loses, and `create`'s overrides win over both.
    *
    * @example
    * ```ts
    * const drafts = await postFactory.count(3).for(userFactory, "author").create();
+   * const comment = await commentFactory.for(post).create();
    * ```
    */
-  for<T extends ParentValue<C>>(parent: T, ...args: RelationArgs<C, M, ParentModel<C, T>>): Factory<C, M, R, S>;
+  for<T extends object>(parent: T, relationField: NamedParentField<C, M, T>): Factory<C, M, R, S>;
+  for<T extends ParentValue<C>>(
+    parent: SoleParent<C, M, T>,
+    relationField?: RelationsTo<C, M, ParentModel<C, T>>,
+  ): Factory<C, M, R, S>;
   /**
    * Fills a relation field this model holds many records in, alongside every record it creates.
    *
-   * The relation field may be left out where the model pair shares exactly one has-many relation, and
-   * must be named where it shares several. Rows are connected as they stand, no record of the child
-   * model being created for them; a child factory creates records of its own per parent record and
-   * reaches back through the inverse relation field, which `inverse` names where the client's metadata
-   * pairs the two sides down to more than one. Every child of one record is created before the next
-   * record of a batch is, layer by layer in the order the calls were made, and each one reads the
-   * record it was created for through `parent`.
+   * A named relation field is one of the has-many fields pointing at the children's model; where there
+   * is none, or where the children stand for no records of any model, the field reads as a message
+   * saying which. The field may be left out where the model pair shares exactly one has-many
+   * relation; where it shares several, or none, the children parameter reads as a message naming the
+   * pair — and, for several, the fields to pick from. Rows are connected as they stand, no record of
+   * the child model being created for them; a child factory creates records of its own per parent
+   * record and reaches back through the inverse relation field, which `inverse` names where the
+   * client's metadata pairs the two sides down to more than one. Every child of one record is created
+   * before the next record of a batch is, layer by layer in the order the calls were made, and each
+   * one reads the record it was created for through `parent`.
    *
    * `has` adds to the relation field rather than replacing it: two calls on one field both apply, and
    * a call made after a state adds to what that state left standing. Every other layer — a definition
@@ -292,11 +334,19 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * @example
    * ```ts
    * const author = await userFactory.has(postFactory.count(3), "posts").create();
+   * const post = await postFactory.has(commentFactory.count(2)).create();
    * ```
    */
-  has<T extends ChildValue<C>>(
+  has<T extends object>(
     children: T,
-    ...args: HasManyArgs<C, M, ChildModel<C, T>, HasOptions>
+    relationField: NamedChildField<C, M, T>,
+    options?: HasOptions,
+  ): Factory<C, M, R, S>;
+  has<T extends ChildValue<C>>(
+    children: SoleChild<C, M, T>,
+    ...args:
+      | [options?: HasOptions]
+      | [relationField: RelationsTo<C, M, ChildModel<C, T>, true> | undefined, options?: HasOptions]
   ): Factory<C, M, R, S>;
   /**
    * Pools existing rows of one model, so that a factory of that model standing in a relation field
@@ -1301,10 +1351,10 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
     state(state: unknown): Factory<C, M, R, S> {
       return derive(step(state));
     },
-    for(parent: object, relationField?: string): Factory<C, M, R, S> {
+    for(parent: unknown, relationField?: string): Factory<C, M, R, S> {
       return derive({ parent: parent as Record<string, unknown>, relationField });
     },
-    has(children: object, ...args: unknown[]): Factory<C, M, R, S> {
+    has(children: unknown, ...args: unknown[]): Factory<C, M, R, S> {
       const [first] = args;
       // Read off the tail rather than off a position: a relation field the model pair leaves skippable
       // may still be passed, valued `undefined`, with the options behind it.
@@ -1312,7 +1362,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
       const options = (typeof tail === "object" ? tail : undefined) as HasOptions | null | undefined;
 
       return derive({
-        children,
+        children: children as object,
         relationField: typeof first === "string" ? first : undefined,
         inverse: options?.inverse,
       });

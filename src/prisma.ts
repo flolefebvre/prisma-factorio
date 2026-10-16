@@ -79,27 +79,80 @@ type IsUnion<U> = [U] extends [UnionToIntersection<U>] ? false : true;
 
 type Side<List extends boolean> = List extends true ? "has-many" : "belongs-to";
 
+type LastOf<U> =
+  UnionToIntersection<U extends unknown ? (member: U) => void : never> extends (member: infer L) => void ? L : never;
+
+type Quoted<U, L = LastOf<U>> = [Exclude<U, L>] extends [never]
+  ? `"${L & string}"`
+  : `${Quoted<Exclude<U, L>>} | "${L & string}"`;
+
+type Neither<List extends boolean> = List extends true
+  ? "ERROR: the children are neither a factory nor full rows of any model; a partial object is not a row"
+  : "ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row";
+
+type NoRelation<
+  MC,
+  MP,
+  List extends boolean,
+> = `ERROR: no ${Side<List>} relation from "${MC & string}" to "${MP & string}"`;
+
+// Ordered: `IsUnion<never>` is `false`, so a pair sharing no relation at this arity reaches the sole
+// branch and satisfies every call unless the second branch catches it. A value no model answers for
+// has `T` fall back to its constraint, which no model answers for either. `MP` is constrained here and
+// in `Named` rather than intersected with `ModelName<C>` at each use: the intersection is a fresh type
+// per parent model and more than doubles the checker's memory on a large schema.
+type Sole<C, MC extends ModelName<C>, MP extends ModelName<C>, List extends boolean, T> = [MP] extends [never]
+  ? Neither<List>
+  : [RelationsTo<C, MC, MP, List>] extends [never]
+    ? NoRelation<MC, MP, List>
+    : IsUnion<RelationsTo<C, MC, MP, List>> extends true
+      ? `ERROR: "${MC & string}" has several ${Side<List>} relations to "${MP & string}": name one of ${Quoted<RelationsTo<C, MC, MP, List>>}`
+      : T;
+
+type Named<C, MC extends ModelName<C>, MP extends ModelName<C>, List extends boolean> = [MP] extends [never]
+  ? Neither<List>
+  : [RelationsTo<C, MC, MP, List>] extends [never]
+    ? NoRelation<MC, MP, List>
+    : RelationsTo<C, MC, MP, List>;
+
 /**
- * How a relation is selected between a child model and a parent model, at one arity: the relation
- * field may be left out where the pair shares exactly one, must be named where it shares several,
- * and no value satisfies the parameter where it shares none.
- *
- * `List` reads the same side {@link RelationsTo} reads: the belongs-to side by default, the fields
- * holding many records when `true`.
+ * The relation fields a `for` call may name for a parent: the belongs-to fields `M` holds pointing
+ * at the parent's model, or a message no field satisfies where it holds none, or where the parent
+ * stands for no record of any model.
  *
  * @example
  * ```ts
- * type Args = RelationArgs<PrismaClient, "post", "user">; // [relationField: "author" | "editor"]
+ * type Fields = NamedParentField<PrismaClient, "post", Row<PrismaClient, "user">>; // "author" | "editor"
  * ```
  */
-export type RelationArgs<C, MC extends ModelName<C>, MP extends ModelName<C>, List extends boolean = false> =
-  // Ordered: `IsUnion<never>` is `false`, so a pair sharing no relation at this arity reaches the
-  // optional branch and satisfies every call unless this branch catches it first.
-  [RelationsTo<C, MC, MP, List>] extends [never]
-    ? [relationField: `ERROR: no ${Side<List>} relation from "${MC & string}" to "${MP & string}"`]
-    : IsUnion<RelationsTo<C, MC, MP, List>> extends true
-      ? [relationField: RelationsTo<C, MC, MP, List>]
-      : [relationField?: RelationsTo<C, MC, MP, List>];
+export type NamedParentField<C, M extends ModelName<C>, T> = Named<C, M, ParentModel<C, T>, false>;
+
+/**
+ * The relation fields a `has` call may name for children: the has-many fields `M` holds pointing at
+ * the children's model, or a message no field satisfies where it holds none, or where the children
+ * stand for no records of any model.
+ *
+ * @example
+ * ```ts
+ * type Fields = NamedChildField<PrismaClient, "user", Factory<PrismaClient, "post">>; // "posts" | "edited"
+ * ```
+ */
+export type NamedChildField<C, M extends ModelName<C>, T> = Named<C, M, ChildModel<C, T>, true>;
+
+/**
+ * What a `for` call leaving its relation field out takes as the parent: the value itself where the
+ * model `M` shares exactly one belongs-to relation with the parent's model, and a message no value
+ * satisfies where it shares several or none, naming the pair and, for several, the fields to pick
+ * from. A value standing for no record of any model reads as a message saying what a parent is.
+ *
+ * @example
+ * ```ts
+ * type Ok = SoleParent<PrismaClient, "comment", Row<PrismaClient, "post">>; // the row itself
+ * type Named = SoleParent<PrismaClient, "post", Row<PrismaClient, "user">>;
+ * // 'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"'
+ * ```
+ */
+export type SoleParent<C, M extends ModelName<C>, T> = Sole<C, M, ParentModel<C, T>, false, T>;
 
 /**
  * What stands for one record of a model: a factory of it, or a row of it.
@@ -177,30 +230,20 @@ export type ChildValue<C> = Child<C, ModelName<C>>;
  */
 export type ChildModel<C, T> = { [P in ModelName<C>]: [T] extends [Child<C, P>] ? P : never }[ModelName<C>];
 
-// A relation field the pair leaves optional is skippable, so the options object stands alone as well;
-// where the field has to be named — or where no field satisfies the parameter at all — it does not.
-// Appending the options to the spread alone would bar the options-only call, which the tuple reaches
-// by position and never by shape.
-type WithOptions<A extends unknown[], Options> = [] extends A
-  ? [...A, options?: Options] | [options: Options]
-  : [...A, options?: Options];
-
 /**
- * How the has-many relation from `M` to `MC` is selected, and the options object trailing it.
- *
- * The field selected is the one `M` declares, so the pair is read in the order {@link RelationArgs}
- * reads it — the model holding the field first — at the arity holding many records.
+ * What a `has` call leaving its relation field out takes as the children: the value itself where the
+ * model `M` holds exactly one has-many relation to the children's model, and a message no value
+ * satisfies where it holds several or none, naming the pair and, for several, the fields to pick
+ * from. A value standing for no records of any model reads as a message saying what children are.
  *
  * @example
  * ```ts
- * type Args = HasManyArgs<PrismaClient, "user", "post", { inverse?: string }>;
- * // [relationField: "posts" | "edited", options?: { inverse?: string }]
+ * type Ok = SoleChild<PrismaClient, "post", Factory<PrismaClient, "comment">>; // the factory itself
+ * type Named = SoleChild<PrismaClient, "user", Factory<PrismaClient, "post">>;
+ * // 'ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"'
  * ```
  */
-export type HasManyArgs<C, M extends ModelName<C>, MC extends ModelName<C>, Options> = WithOptions<
-  RelationArgs<C, M, MC, true>,
-  Options
->;
+export type SoleChild<C, M extends ModelName<C>, T> = Sole<C, M, ChildModel<C, T>, true, T>;
 
 // Read at one arity, the way {@link RelationsTo} reads one: a relation field whose arity is not the
 // one asked for keeps Prisma's own input.
@@ -245,8 +288,19 @@ export type CreateInput<C, M extends ModelName<C>> = WidenRelations<Types.Public
 
 // TypeScript drops excess property checking when an object literal reaches its target through a
 // function's contextual return type, which is where every definition sits, so plain assignability
-// accepts a field the model never declares.
-type Exact<T, U> = { [K in keyof T]: K extends keyof U ? T[K] : never } & U;
+// accepts a field the model never declares. The message is a key rather than a string literal: a
+// literal value inferred into `T` would meet a literal here and collapse the property to `never`.
+type Exact<T, U, M> = {
+  [K in keyof T]: K extends keyof U
+    ? T[K]
+    : IsAny<T[K]> extends true
+      ? never
+      : K extends string | number
+        ? Record<`ERROR: "${K}" is not a field of "${M & string}"`, true>
+        : never;
+} & U;
+
+type IsAny<T> = 0 extends 1 & T ? true : false;
 
 /**
  * What a definition may return: the model's create input, and nothing beyond it.
@@ -260,7 +314,7 @@ type Exact<T, U> = { [K in keyof T]: K extends keyof U ? T[K] : never } & U;
  * });
  * ```
  */
-export type Attributes<C, M extends ModelName<C>, D> = Exact<D, CreateInput<C, M>>;
+export type Attributes<C, M extends ModelName<C>, D> = Exact<D, CreateInput<C, M>, M>;
 
 type Skippable<T> = { [K in keyof T]?: T[K] | undefined };
 
@@ -290,4 +344,4 @@ export type PartialAttributes<C, M extends ModelName<C>> = Skippable<CreateInput
  * }
  * ```
  */
-export type Overrides<C, M extends ModelName<C>, O> = Exact<O, PartialAttributes<C, M>>;
+export type Overrides<C, M extends ModelName<C>, O> = Exact<O, PartialAttributes<C, M>, M>;

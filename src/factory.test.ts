@@ -2439,12 +2439,9 @@ test("the options stand alone where the relation field may be left out, the look
   );
 });
 
-// The cast is what `exactOptionalPropertyTypes` costs: this package compiles under it, so the slot a
-// skippable relation field leaves takes no explicit `undefined` here. A caller compiling without it —
-// the default — or compiling nothing at all reaches this call as written.
 test("a relation field passed as undefined leaves the options at the tail, the lookup never reached", async () => {
   await commentedWithoutTheLookup(({ commentFactory, postFactory }) =>
-    postFactory.has(commentFactory, undefined as unknown as "comments", { inverse: "post" }),
+    postFactory.has(commentFactory, undefined, { inverse: "post" }),
   );
 });
 
@@ -4071,6 +4068,8 @@ export function relationsCheckedByTheCompiler(
   tagRow: Row<TestClient, "tag">,
   teamFactory: Factory<TestClient, "team">,
   membershipFactory: Factory<TestClient, "membership">,
+  badgeFactory: Factory<TestClient, "badge">,
+  teamRow: Row<TestClient, "team">,
 ): void {
   void postFactory.for(userFactory, "author").create();
   void postFactory.for(userRow, "editor").create();
@@ -4100,6 +4099,22 @@ export function relationsCheckedByTheCompiler(
   void postFactory.for(42, "author");
   // @ts-expect-error a batched factory creates a row each, so it stands for no one parent
   void postFactory.for(userFactory.count(3), "author");
+  // @ts-expect-error a hand-built partial object is no row, so no field is named for it
+  void postFactory.for({ id: 1 }, "author");
+  // @ts-expect-error a named field has to point at the parent row's model
+  void postFactory.for(commentRow, "author");
+  // @ts-expect-error a named field has to point at the parent factory's model
+  void postFactory.for(commentFactory, "editor");
+  // @ts-expect-error a field union spanning two models takes no parent of just one of them
+  void ((field: "membership" | "sponsor"): unknown => badgeFactory.for(teamRow, field));
+
+  // A helper forwarding an optional relation field reaches the call with the field typed as possibly
+  // `undefined`, which a pair sharing one relation takes.
+  const attach = (field?: "post"): Factory<TestClient, "comment"> => commentFactory.for(postRow, field);
+  void attach();
+  void commentFactory.for(postFactory, undefined).create();
+  // @ts-expect-error the forwarded field still has to be one the pair shares
+  void ((field?: "author"): Factory<TestClient, "comment"> => commentFactory.for(postRow, field));
 
   void userFactory.has(postFactory, "posts").create();
   void userFactory.has(draftable, "posts").create();
@@ -4140,6 +4155,19 @@ export function relationsCheckedByTheCompiler(
   void userFactory.has(postFactory, "posts", { inverze: "author" });
   // @ts-expect-error the options stand alone only where the relation field may be left out
   void userFactory.has(postFactory, { inverse: "author" });
+  // @ts-expect-error a hand-built partial object is no row, so no field is named for it
+  void userFactory.has({ id: 1 }, "posts");
+  // @ts-expect-error a named field has to point at the children factory's model
+  void userFactory.has(commentFactory, "edited");
+
+  // A helper forwarding an optional relation field reaches the call with the field typed as possibly
+  // `undefined`, which a pair sharing one relation takes, the options trailing it.
+  const attachComments = (field?: "comments"): Factory<TestClient, "post"> =>
+    postFactory.has(commentFactory, field, { inverse: "post" });
+  void attachComments();
+  void postFactory.has(commentRow, undefined).create();
+  // @ts-expect-error the forwarded field still has to be one the pair shares
+  void ((field?: "posts"): Factory<TestClient, "post"> => postFactory.has(commentFactory, field));
 
   void postFactory.has(tagFactory).create();
   void postFactory.has(tagFactory.count(3), "tags").create();
