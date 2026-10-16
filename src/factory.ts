@@ -564,9 +564,10 @@ function isCreated(value: object): value is Created {
   return created in value;
 }
 
-// The rows this build created for the relation fields of one create, keyed by relation field: rows
-// that cannot have gone stale, and so may be written as the foreign key they stand for.
-type Fresh = Map<string, Written>;
+// The rows standing in the relation fields of one create, keyed by relation field: every row the
+// library holds there, handed over, drawn from a pool or created by this build. Only a row this build
+// created is `fresh`: it cannot have gone stale, and so may be written as the foreign key it stands for.
+type Held = Map<string, { row: Written; fresh: boolean }>;
 
 function isAttached(value: unknown): value is Attached {
   return typeof value === "object" && value !== null && attached in value;
@@ -714,12 +715,13 @@ async function embodied(
   value: Embedded,
   pending: Pending[],
   explicit: boolean,
-  fresh: Fresh | undefined,
+  held: Held | undefined,
 ): Promise<Written> {
   if (!(await holdsManyRecords(wiring.client, model, field))) {
     const picked = pooled(value, wiring, explicit);
 
     if (picked !== undefined) {
+      held?.set(field, { row: picked, fresh: false });
       wiring.matchedInto.push(field);
       return matching(wiring.client, model, field, picked);
     }
@@ -730,7 +732,7 @@ async function embodied(
     // Prisma to refuse rather than being mangled into a match.
     if (Array.isArray(row)) return { connect: row };
 
-    fresh?.set(field, row as Written);
+    held?.set(field, { row: row as Written, fresh: true });
 
     return {
       connect: freshWhere(wiring.client, model, field, foreignKeyOf(wiring.client, model, field), row as Written),
@@ -758,7 +760,7 @@ async function embodied(
   return {};
 }
 
-// `fresh` collects the rows created for this create's own relation fields; a caller with no create of
+// `held` collects the rows standing in this create's own relation fields; a caller with no create of
 // its own to rewrite — the base a `has` layer gathers on — passes none.
 async function connected(
   wiring: Wiring,
@@ -767,7 +769,7 @@ async function connected(
   value: Standing,
   pending: Pending[],
   explicit = false,
-  fresh?: Fresh,
+  held?: Held,
 ): Promise<Written> {
   if (Array.isArray(value)) {
     if (value.length > 0) wiring.matchedInto.push(field);
@@ -775,16 +777,17 @@ async function connected(
     return matchingAll(wiring.client, model, field, value);
   }
 
-  if (isFactory(value)) return embodied(wiring, model, field, value, pending, explicit, fresh);
+  if (isFactory(value)) return embodied(wiring, model, field, value, pending, explicit, held);
 
   if (isCreated(value)) {
-    fresh?.set(field, value[created]);
+    held?.set(field, { row: value[created], fresh: true });
 
     return { connect: value.connect };
   }
 
   if (native(value)) return value;
 
+  held?.set(field, { row: value, fresh: false });
   wiring.matchedInto.push(field);
 
   return matching(wiring.client, model, field, value);
@@ -876,7 +879,7 @@ async function resolved(
   const relations = relationFieldsOf(wiring.client, model);
   const pending: Pending[] = [];
   const written: Written = { ...data };
-  const fresh: Fresh = new Map();
+  const held: Held = new Map();
 
   for (const [key, value] of embedded) {
     if (!relations.includes(key)) continue;
@@ -884,7 +887,7 @@ async function resolved(
 
     const input = isAttached(value)
       ? await attaching(wiring, model, key, value, pending)
-      : await connected(wiring, model, key, value, pending, explicit.has(key), fresh);
+      : await connected(wiring, model, key, value, pending, explicit.has(key), held);
 
     // What the parent's own create has nothing to say about — a list holding no row, children created
     // once the parent row exists, and none at all — leaves the relation field unwritten rather than
@@ -894,22 +897,72 @@ async function resolved(
 
   const settled = given(written);
 
+  agreed(wiring.client, model, settled, held);
+
   return {
-    data: keyed(wiring.client, model, settled, fresh),
+    data: keyed(wiring.client, model, settled, held),
     pending: pending.sort((one, next) => one.order - next.order),
   };
 }
 
+// Two foreign keys sharing a column write one value there, which Prisma takes from whichever relation
+// field comes last, or refuses outright: rows the library holds in both are told apart before then. A
+// referenced value a row does not hold, and native relation input, which carries no row, are Prisma's
+// to settle.
+function agreed(client: unknown, model: string, data: Written, held: Held): void {
+  const claims = new Map<string, { field: string; value: unknown }>();
+
+  for (const field of Object.keys(data)) {
+    const row = held.get(field)?.row;
+    const key = row === undefined ? undefined : foreignKeyOf(client, model, field);
+
+    if (row === undefined || key === null || key === undefined) continue;
+
+    for (const [at, column] of key.fields.entries()) {
+      const value = row[key.references[at] ?? ""];
+      const claim = claims.get(column);
+
+      if (value === null || value === undefined) continue;
+
+      if (claim === undefined) claims.set(column, { field, value });
+      else if (!same(claim.value, value))
+        throw new TypeError(
+          `The relation fields "${claim.field}" and "${field}" on the model "${model}" disagree on the foreign ` +
+            `key column "${column}": "${claim.field}" holds ${shown(claim.value)} and "${field}" holds ` +
+            `${shown(value)}. Pool the shared parent with recycle(), or hand the same row to both fields.`,
+        );
+    }
+  }
+}
+
+// A foreign key references an id, so a value is a number, a bigint or a string; an object one — a
+// date, a decimal, bytes — is a fresh instance per read, compared by what it serialises to.
+function same(one: unknown, other: unknown): boolean {
+  return typeof one === "object" && typeof other === "object"
+    ? JSON.stringify(one) === JSON.stringify(other)
+    : one === other;
+}
+
+function shown(value: unknown): string {
+  return typeof value === "bigint" ? String(value) : JSON.stringify(value);
+}
+
 // The foreign key columns a fresh row stands for in one relation field, or nothing where any of them
-// cannot be written: a referenced value the row does not hold, or a column some other key of the
-// create already fills.
-function columnsOf(key: ForeignKey, row: Written, filled: Written): Written | undefined {
+// cannot be written: a referenced value the row does not hold, a column the caller wrote, or one some
+// other key of the create already fills with another value. A column another key fills with the same
+// value is written once, by that key.
+function columnsOf(key: ForeignKey, row: Written, data: Written, filled: Written): Written | undefined {
   const columns: Written = {};
 
   for (const [at, column] of key.fields.entries()) {
     const value = row[key.references[at] ?? ""];
 
-    if (value === null || value === undefined || column in filled || column in columns) return undefined;
+    if (value === null || value === undefined || column in data || column in columns) return undefined;
+
+    if (column in filled) {
+      if (!same(filled[column], value)) return undefined;
+      continue;
+    }
 
     columns[column] = value;
   }
@@ -924,23 +977,24 @@ function columnsOf(key: ForeignKey, row: Written, filled: Written): Written | un
 // every relation field holding a key is filled by a row this build created, and every relation
 // otherwise goes on `connect`, the columns the caller wrote among them: a row the caller handed over or
 // a pool drew may have gone stale, and matching it on every scalar is what makes that fail loudly.
-function keyed(client: unknown, model: string, data: Written, fresh: Fresh): Written {
-  const columns = columnsFor(client, model, data, fresh);
+function keyed(client: unknown, model: string, data: Written, held: Held): Written {
+  const columns = columnsFor(client, model, data, held);
 
   return columns ?? reconnected(client, model, data);
 }
 
-function columnsFor(client: unknown, model: string, data: Written, fresh: Fresh): Written | undefined {
+function columnsFor(client: unknown, model: string, data: Written, held: Held): Written | undefined {
   const replaced = new Map<string, Written>();
-  const filled: Written = { ...data };
+  const filled: Written = {};
 
   for (const field of relationFieldsOf(client, model).filter((name) => name in data)) {
     const key = foreignKeyOf(client, model, field);
 
     if (key === null) continue;
 
-    const row = fresh.get(field);
-    const columns = key === undefined || row === undefined ? undefined : columnsOf(key, row, filled);
+    const entry = held.get(field);
+    const row = entry?.fresh === true ? entry.row : undefined;
+    const columns = key === undefined || row === undefined ? undefined : columnsOf(key, row, data, filled);
 
     if (columns === undefined) return undefined;
 

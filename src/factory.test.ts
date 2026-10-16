@@ -517,10 +517,10 @@ test("state returns a new factory rather than changing the one it was called on"
 });
 
 // Everything a transaction client answers to that a factory of this harness reaches.
-type Transaction = Pick<TestClient, "user" | "post" | "comment" | "badge">;
+type Transaction = Pick<TestClient, "user" | "post" | "comment" | "badge" | "venue" | "customer" | "booking">;
 
 type Delegates = Record<
-  "user" | "post" | "badge",
+  "user" | "post" | "badge" | "booking",
   { create: (args: { data: Record<string, unknown> }) => Promise<unknown> }
 >;
 
@@ -537,7 +537,7 @@ function filled(row: object): Record<string, unknown> {
 
 // The recorded delegate hangs off a real client, which is where relation metadata is read from: a
 // bare object of delegates carries none.
-function recording(base: Transaction, model: "user" | "post" | "badge"): Recording {
+function recording(base: Transaction, model: keyof Delegates): Recording {
   const written: Record<string, unknown>[] = [];
   const source = (base as unknown as Delegates)[model];
   const delegate = Object.create(source) as Delegates["user"];
@@ -1092,15 +1092,16 @@ function rekeyed(client: Transaction, from: string, to: string): Transaction {
   return Object.create(client, { _engineConfig: { value: { inlineSchema: schema.replace(from, to) } } }) as Transaction;
 }
 
-// Two relations naming one column would write it twice, from two rows, so neither is written.
-test("two fresh rows writing one foreign key column keep the whole create on connect", async () => {
+// Two relations naming one column would write it twice, from two rows holding different values.
+test("two fresh rows writing different values to one foreign key column reject before Prisma", async () => {
   const { prisma, postFactory, userFactory } = await factorioHarness();
   const { client, written } = recording(prisma, "post");
   const shared = rekeyed(client, "fields: [editorId]", "fields: [authorId]");
 
-  await postFactory.using(shared).create({ editor: userFactory });
-
-  expect(written.map((data) => Object.keys(data))).toStrictEqual([["title", "author", "editor"]]);
+  await expect(postFactory.using(shared).create({ editor: userFactory })).rejects.toThrow(
+    'The relation fields "author" and "editor" on the model "post" disagree on the foreign key column "authorId"',
+  );
+  expect(written).toStrictEqual([]);
 });
 
 test("a fresh row holding null where its key references keeps the whole create on connect", async () => {
@@ -2656,8 +2657,7 @@ interface Booked {
 }
 
 // `Booking.venueId` belongs to both the `venue` key and the composite `customer` key, and each relation
-// default brings a venue of its own. Both relations reach Prisma as `connect`, in the definition's field
-// order, and Prisma keeps the venue of the later one.
+// default brings a venue of its own, so the two disagree on it whichever field the definition lists first.
 async function booked(order: "venue first" | "customer first"): Promise<Booked> {
   const harness = await factorioHarness();
   const { venueFactory, customerFactory } = harness;
@@ -2671,27 +2671,106 @@ async function booked(order: "venue first" | "customer first"): Promise<Booked> 
   return { harness, bookingFactory };
 }
 
-test("relation defaults disagreeing on a shared foreign key column put the booking on the later field's venue", async () => {
+function disagreement(first: string, held: unknown, second: string, other: unknown): TypeError {
+  return new TypeError(
+    `The relation fields "${first}" and "${second}" on the model "booking" disagree on the foreign key column ` +
+      `"venueId": "${first}" holds ${String(held)} and "${second}" holds ${String(other)}. Pool the shared parent ` +
+      "with recycle(), or hand the same row to both fields.",
+  );
+}
+
+// A fresh database numbers venues from 1 in creation order: the default listed first creates its venue
+// first, the customer's default creating the venue it belongs to.
+test.each([
+  ["venue first", disagreement("venue", 1, "customer", 2)],
+  ["customer first", disagreement("customer", 1, "venue", 2)],
+] as const)(
+  "relation defaults disagreeing on a shared foreign key column reject before Prisma, leaving their parents (%s)",
+  async (order, error) => {
+    const { harness, bookingFactory } = await booked(order);
+    const { prisma } = harness;
+
+    await expect(bookingFactory.create()).rejects.toStrictEqual(error);
+    await expect(prisma.booking.count()).resolves.toBe(0);
+    await expect(prisma.venue.count()).resolves.toBe(2);
+    await expect(prisma.customer.count()).resolves.toBe(1);
+  },
+);
+
+test("relation defaults disagreeing on a shared foreign key column under using(tx) roll their parents back", async () => {
   const { harness, bookingFactory } = await booked("venue first");
   const { prisma } = harness;
 
-  const booking = await bookingFactory.create();
-  const customer = await prisma.customer.findUniqueOrThrow({ where: { id: booking.customerId } });
-  const orphans = await prisma.venue.findMany({ where: { bookings: { none: {} }, customers: { none: {} } } });
+  const outcome: unknown = await prisma
+    .$transaction((tx) => bookingFactory.using(tx).create())
+    .catch((error: unknown) => error);
 
-  expect(booking.venueId).toBe(customer.venueId);
-  await expect(prisma.venue.count()).resolves.toBe(2);
-  expect(orphans).toHaveLength(1);
-  expect(orphans[0]?.id).not.toBe(booking.venueId);
+  expect(outcome).toBeInstanceOf(TypeError);
+  await expect(prisma.venue.count()).resolves.toBe(0);
+  await expect(prisma.customer.count()).resolves.toBe(0);
 });
 
-test("relation defaults disagreeing on a shared foreign key column violate it when the composite key comes first", async () => {
-  const { bookingFactory } = await booked("customer first");
+test("a handed-over row disagreeing with a fresh one on a shared foreign key column rejects", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const other = await harness.venueFactory.create();
 
-  const created = bookingFactory.create();
+  await expect(bookingFactory.create({ venue: other })).rejects.toStrictEqual(
+    disagreement("venue", other.id, "customer", other.id + 1),
+  );
+});
 
-  await expect(created).rejects.toThrow("Foreign key constraint violated");
-  await expect(created).rejects.toMatchObject({ code: "P2003" });
+test("a pooled row disagreeing with a fresh one on a shared foreign key column rejects", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const customer = await harness.customerFactory.create();
+
+  await expect(bookingFactory.recycle("customer", customer).create()).rejects.toStrictEqual(
+    disagreement("venue", customer.venueId + 1, "customer", customer.venueId),
+  );
+});
+
+// Native relation input carries no row to compare, so the shared column is Prisma's to settle: here the
+// later connect wins it, and the booking lands on the customer's venue.
+test("native relation input on one leg of a shared foreign key column is not checked, Prisma deciding", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const other = await harness.venueFactory.create();
+
+  const booking = await bookingFactory.create({ venue: { connect: { id: other.id } } });
+  const customer = await harness.prisma.customer.findUniqueOrThrow({ where: { id: booking.customerId } });
+
+  expect(booking.venueId).toBe(customer.venueId);
+  expect(booking.venueId).not.toBe(other.id);
+});
+
+test("a handed-over row agreeing with a fresh one on a shared foreign key column connects both", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const { prisma, venueFactory, customerFactory } = harness;
+  const venue = await venueFactory.create();
+  const { client, written } = recording(prisma, "booking");
+
+  const booking = await bookingFactory
+    .using(client)
+    .for(venue, "venue")
+    .create({ customer: customerFactory.for(venue, "venue") });
+
+  expect([booking.venueId, written[0]?.venue]).toStrictEqual([venue.id, { connect: filled(venue) }]);
+  await expect(prisma.venue.count()).resolves.toBe(1);
+});
+
+// Two rows this build created that agree on the shared column write it once, as the foreign key both
+// stand for: the booking's parent venue, and a customer the state hangs off that same venue.
+test("fresh rows agreeing on a shared foreign key column write it once as a raw column", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const { prisma, venueFactory, customerFactory } = harness;
+  const { client, written } = recording(prisma, "booking");
+  const sharedFactory = bookingFactory.state(({ parent }) => ({
+    customer: customerFactory.for(parent as Row<TestClient, "venue">, "venue"),
+  }));
+
+  const venue = await venueFactory.using(client).has(sharedFactory, "bookings").create();
+  const [booking] = await prisma.booking.findMany();
+
+  expect(written).toStrictEqual([{ seat: booking?.seat, venueId: venue.id, customerId: booking?.customerId }]);
+  await expect(prisma.venue.count()).resolves.toBe(1);
 });
 
 test.each(["venue first", "customer first"] as const)(
