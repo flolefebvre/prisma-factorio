@@ -86,18 +86,56 @@ type Quoted<U, L = LastOf<U>> = [Exclude<U, L>] extends [never]
   ? `"${L & string}"`
   : `${Quoted<Exclude<U, L>>} | "${L & string}"`;
 
-type Standing<List extends boolean> = List extends true ? "a row, a list of rows or a factory" : "a row or a factory";
+type Neither<List extends boolean> = List extends true
+  ? "ERROR: the children are neither a factory nor full rows of any model; a partial object is not a row"
+  : "ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row";
+
+type NoRelation<
+  MC,
+  MP,
+  List extends boolean,
+> = `ERROR: no ${Side<List>} relation from "${MC & string}" to "${MP & string}"`;
 
 // Ordered: `IsUnion<never>` is `false`, so a pair sharing no relation at this arity reaches the sole
 // branch and satisfies every call unless the second branch catches it. A value no model answers for
 // has `T` fall back to its constraint, which no model answers for either.
 type Sole<C, MC extends ModelName<C>, MP, List extends boolean, T> = [MP] extends [never]
-  ? `ERROR: not ${Standing<List>} of any model`
+  ? Neither<List>
   : [RelationsTo<C, MC, MP & ModelName<C>, List>] extends [never]
-    ? `ERROR: no ${Side<List>} relation from "${MC & string}" to "${MP & string}"`
+    ? NoRelation<MC, MP, List>
     : IsUnion<RelationsTo<C, MC, MP & ModelName<C>, List>> extends true
       ? `ERROR: "${MC & string}" has several ${Side<List>} relations to "${MP & string}": name one of ${Quoted<RelationsTo<C, MC, MP & ModelName<C>, List>>}`
       : T;
+
+type Named<C, MC extends ModelName<C>, MP, List extends boolean> = [MP] extends [never]
+  ? Neither<List>
+  : [RelationsTo<C, MC, MP & ModelName<C>, List>] extends [never]
+    ? NoRelation<MC, MP, List>
+    : RelationsTo<C, MC, MP & ModelName<C>, List>;
+
+/**
+ * The relation fields a `for` call may name for a parent: the belongs-to fields `M` holds pointing
+ * at the parent's model, or a message no field satisfies where it holds none, or where the parent
+ * stands for no record of any model.
+ *
+ * @example
+ * ```ts
+ * type Fields = NamedParentField<PrismaClient, "post", Row<PrismaClient, "user">>; // "author" | "editor"
+ * ```
+ */
+export type NamedParentField<C, M extends ModelName<C>, T> = Named<C, M, ParentModel<C, T>, false>;
+
+/**
+ * The relation fields a `has` call may name for children: the has-many fields `M` holds pointing at
+ * the children's model, or a message no field satisfies where it holds none, or where the children
+ * stand for no records of any model.
+ *
+ * @example
+ * ```ts
+ * type Fields = NamedChildField<PrismaClient, "user", Factory<PrismaClient, "post">>; // "posts" | "edited"
+ * ```
+ */
+export type NamedChildField<C, M extends ModelName<C>, T> = Named<C, M, ChildModel<C, T>, true>;
 
 /**
  * What a `for` call leaving its relation field out takes as the parent: the value itself where the
@@ -154,18 +192,6 @@ export type ParentValue<C> = Parent<C, ModelName<C>>;
 export type ParentModel<C, T> = { [P in ModelName<C>]: [T] extends [Parent<C, P>] ? P : never }[ModelName<C>];
 
 /**
- * What each belongs-to relation field of `M` takes as its parent, keyed by the field.
- *
- * @example
- * ```ts
- * const author: ParentsOf<PrismaClient, "post">["author"] = userFactory;
- * ```
- */
-export type ParentsOf<C, M extends ModelName<C>> = {
-  [K in RelationsTo<C, M, ModelName<C>>]: Parent<C, TargetModel<C, M, K>>;
-};
-
-/**
  * What stands for the records a model holds many of: a factory of it, batched or not, a row of it, or
  * an array of rows.
  *
@@ -201,18 +227,6 @@ export type ChildValue<C> = Child<C, ModelName<C>>;
  * ```
  */
 export type ChildModel<C, T> = { [P in ModelName<C>]: [T] extends [Child<C, P>] ? P : never }[ModelName<C>];
-
-/**
- * What each has-many relation field of `M` takes as its children, keyed by the field.
- *
- * @example
- * ```ts
- * const written: ChildrenOf<PrismaClient, "user">["posts"] = postFactory.count(3);
- * ```
- */
-export type ChildrenOf<C, M extends ModelName<C>> = {
-  [K in RelationsTo<C, M, ModelName<C>, true>]: Child<C, TargetModel<C, M, K>>;
-};
 
 /**
  * What a `has` call leaving its relation field out takes as the children: the value itself where the
@@ -275,7 +289,11 @@ export type CreateInput<C, M extends ModelName<C>> = WidenRelations<Types.Public
 // accepts a field the model never declares. The message is a key rather than a string literal: a
 // literal value inferred into `T` would meet a literal here and collapse the property to `never`.
 type Exact<T, U, M> = {
-  [K in keyof T]: K extends keyof U ? T[K] : Record<`ERROR: "${K & string}" is not a field of "${M & string}"`, true>;
+  [K in keyof T]: K extends keyof U
+    ? T[K]
+    : K extends string | number
+      ? Record<`ERROR: "${K}" is not a field of "${M & string}"`, true>
+      : never;
 } & U;
 
 /**

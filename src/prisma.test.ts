@@ -4,11 +4,10 @@ import type { Factory } from "./factory.js";
 import type {
   Child,
   ChildModel,
-  ChildrenOf,
+  NamedChildField,
   CreateInput,
   ModelName,
-  Parent,
-  ParentsOf,
+  NamedParentField,
   PartialAttributes,
   RelationKey,
   RelationsTo,
@@ -144,7 +143,7 @@ test("the children a has() call takes read the has-many side, naming that side i
   >().toEqualTypeOf<'ERROR: no has-many relation from "comment" to "post"'>();
   expectTypeOf<
     SoleChild<TestClient, "user", { id: number }[]>
-  >().toEqualTypeOf<"ERROR: not a row, a list of rows or a factory of any model">();
+  >().toEqualTypeOf<"ERROR: the children are neither a factory nor full rows of any model; a partial object is not a row">();
 });
 
 // Left to itself the no-relation case degrades to the value standing as it is: `IsUnion<never>` is
@@ -161,14 +160,32 @@ test("a pair with no belongs-to relation takes a parent no value satisfies", () 
 test("a value no model answers for takes a parent no value satisfies, naming what a parent is", () => {
   expectTypeOf<
     SoleParent<TestClient, "post", { id: number }>
-  >().toEqualTypeOf<"ERROR: not a row or a factory of any model">();
+  >().toEqualTypeOf<"ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row">();
 });
 
-test("each relation field is keyed to what it takes, at the arity it holds", () => {
-  expectTypeOf<keyof ParentsOf<TestClient, "post">>().toEqualTypeOf<"author" | "editor">();
-  expectTypeOf<ParentsOf<TestClient, "post">["author"]>().toEqualTypeOf<Parent<TestClient, "user">>();
-  expectTypeOf<keyof ChildrenOf<TestClient, "post">>().toEqualTypeOf<"comments" | "tags">();
-  expectTypeOf<ChildrenOf<TestClient, "post">["comments"]>().toEqualTypeOf<Child<TestClient, "comment">>();
+test("a named field is one pointing at the value's model, at the arity the call reads", () => {
+  expectTypeOf<NamedParentField<TestClient, "post", Row<TestClient, "user">>>().toEqualTypeOf<"author" | "editor">();
+  expectTypeOf<NamedParentField<TestClient, "comment", Factory<TestClient, "post">>>().toEqualTypeOf<"post">();
+  expectTypeOf<NamedChildField<TestClient, "user", Factory<TestClient, "post">>>().toEqualTypeOf<"posts" | "edited">();
+  expectTypeOf<NamedChildField<TestClient, "post", Row<TestClient, "comment">[]>>().toEqualTypeOf<"comments">();
+});
+
+test("a named field reads as a message where the pair shares none, or the value stands for no record", () => {
+  expectTypeOf<
+    NamedParentField<TestClient, "post", Row<TestClient, "team">>
+  >().toEqualTypeOf<'ERROR: no belongs-to relation from "post" to "team"'>();
+  expectTypeOf<
+    NamedParentField<TestClient, "post", { id: number }>
+  >().toEqualTypeOf<"ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row">();
+  expectTypeOf<
+    NamedParentField<TestClient, "post", Factory<TestClient, "user", Row<TestClient, "user">[]>>
+  >().toEqualTypeOf<"ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row">();
+  expectTypeOf<
+    NamedChildField<TestClient, "comment", Factory<TestClient, "post">>
+  >().toEqualTypeOf<'ERROR: no has-many relation from "comment" to "post"'>();
+  expectTypeOf<
+    NamedChildField<TestClient, "user", { id: number }>
+  >().toEqualTypeOf<"ERROR: the children are neither a factory nor full rows of any model; a partial object is not a row">();
 });
 
 test("a child value is a factory of the model, batched or not, a row of it, or an array of rows", () => {
