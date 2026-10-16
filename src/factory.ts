@@ -253,8 +253,9 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   // `Overrides` with the state's own shape inferred into it, which is what makes a field the model
   // does not declare an error. The closure form takes its return type through `ExactState`, the
   // same route a declared state takes, so both accept exactly the same states. The object form
-  // takes its shape through a naked `V` as well, as `create` does, and bars a function, whose empty `keyof` would otherwise satisfy `Overrides` and swallow every
-  // closure before the first signature checked it.
+  // takes its shape through a naked `V` as well, as `create` does, and bars a function, whose empty
+  // `keyof` would otherwise satisfy `Overrides` and swallow every closure before the first signature
+  // checked it.
   state<V extends (context: StateContext<C, M>) => unknown>(state: V & ExactState<C, M, V>): Factory<C, M, R, S>;
   state<V extends Record<string, unknown>>(state: V & Overrides<C, M, V>): Factory<C, M, R, S>;
   /**
