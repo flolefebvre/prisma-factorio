@@ -16,16 +16,16 @@ There is a single entry point, ESM only:
 
 Every type is read off the client type and a model name; `Client` below is `typeof prisma`.
 
-| To type                                       | Use                                                                        |
-| --------------------------------------------- | -------------------------------------------------------------------------- |
-| The row `create()` returns                    | `Row<Client, "post">`, or `Row<Client, "post">[]` under `count()`          |
-| A helper's overrides, forwarded to `create()` | a generic `function makePost<O>(overrides?: Overrides<Client, "post", O>)` |
-| A plain value a helper reads or builds        | `PartialAttributes<Client, "post">`, best applied with `satisfies`         |
-| A reusable `afterCreating` callback           | `AfterCreating<Client, "user">`                                            |
-| The whole create input, relations widened     | `CreateInput<Client, "post">`                                              |
-| Any model name the client carries             | `ModelName<Client>`                                                        |
-| A factory held in a variable or a parameter   | `Factory<Client, "user">`                                                  |
-| A bootstrap held in a variable or a parameter | `Factorio<Client>`                                                         |
+| To type                                       | Use                                                                                                                                                                                                                                                          |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The row `create()` returns                    | `Row<Client, "post">`, or `Row<Client, "post">[]` under `count()`                                                                                                                                                                                            |
+| A helper's overrides, forwarded to `create()` | a generic `function makePost<O>(overrides?: Overrides<Client, "post", O>)`                                                                                                                                                                                   |
+| A plain value a helper reads or builds        | `PartialAttributes<Client, "post">`, best applied with `satisfies`                                                                                                                                                                                           |
+| A reusable `afterCreating` callback           | `AfterCreating<Client, "user">`                                                                                                                                                                                                                              |
+| The whole create input, relations widened     | `CreateInput<Client, "post">`                                                                                                                                                                                                                                |
+| Any model name the client carries             | `ModelName<Client>`                                                                                                                                                                                                                                          |
+| A factory held in a variable or a parameter   | `Factory<Client, "user">` is a single-row factory with no states; `Factory<Client, "user", R, S>` takes a counted or stated one, `R` being what `create()` returns (`Row<Client, "user">[]` under `count()`) and `S` the `states` object it was defined with |
+| A bootstrap held in a variable or a parameter | `Factorio<Client>`                                                                                                                                                                                                                                           |
 
 Do not type a helper with `Parameters<typeof postFactory.create>[0]`: it behaves as `PartialAttributes<Client, "post"> | undefined` but prints as an `Overrides<…, unknown>` that says nothing of what it holds. See [Types](../README.md#types).
 
