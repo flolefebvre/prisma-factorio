@@ -32,7 +32,9 @@ export default async function setup(project: TestProject): Promise<(() => Promis
   let container: StartedPostgreSqlContainer;
 
   try {
-    container = await new PostgreSqlContainer(IMAGE).start();
+    // An autovacuum worker visiting a test database between two stats flushes adds commits to the
+    // exact counts the lane asserts.
+    container = await new PostgreSqlContainer(IMAGE).withCommand(["postgres", "-c", "autovacuum=off"]).start();
   } catch (error) {
     throw new Error(
       `The Postgres lane found no server. Start Docker so Testcontainers can run ${IMAGE}, or set POSTGRES_URL ` +

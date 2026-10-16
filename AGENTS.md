@@ -60,7 +60,7 @@ pnpm bench:types    Regenerate the synthetic schema and type-check a factory per
 
 `pnpm bench:types` is not part of `pnpm gates`; CI runs it as its own job. It prints the instantiation count, check time and memory of the factory file beside a control that only constructs the client, and fails when the factory file's instantiations exceed `scripts/bench-types/budget.json` (the measured baseline plus 20%). A change that lowers the count lowers the budget; a change that raises it past the budget states the measured cost in its pull request body.
 
-`pnpm test:postgres` is not part of `pnpm gates`, which needs no Docker; CI runs it as its own job. It starts a `postgres:17-alpine` container through Testcontainers, unless `POSTGRES_URL` holds a connection string on a role allowed to create and drop databases, in which case that server is used instead. With neither, it fails naming both.
+`pnpm test:postgres` is not part of `pnpm gates`, which needs no Docker; CI runs it as its own job. It starts a `postgres:17-alpine` container through Testcontainers, with autovacuum off, unless `POSTGRES_URL` holds a connection string, in which case that server is used instead. With neither, it fails naming both. `POSTGRES_URL` must name Postgres 15 or later (`pg_stat_force_next_flush()`), on a role allowed to create and drop databases; on a server with autovacuum on, the exact commit-count tests can see one extra commit.
 
 Each script echoes a `--<name> OK--` marker on success.
 A fresh clone runs `pnpm install` and `pnpm generate` before a bare `pnpm test` or `pnpm typecheck`; both need the generated test client, and only `pnpm gates` supplies it on its own.
