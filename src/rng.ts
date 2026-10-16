@@ -59,3 +59,44 @@ export function createPicker(seed: number = randomSeed()): Picker {
   return <T>(list: readonly T[]): T | undefined =>
     list.length < 2 ? list[0] : list[Math.floor(random() * list.length)];
 }
+
+/**
+ * A picker whose stream can be restarted on a new seed, and the means to restart it.
+ *
+ * @example
+ * ```ts
+ * const { pick, reseed } = createReseedablePicker(1234);
+ * reseed(5678);
+ * ```
+ */
+export interface ReseedablePicker {
+  /** The one picker handed out, whichever seed it currently draws from. */
+  pick: Picker;
+  /** Restarts the stream behind `pick` as a fresh `createPicker(seed)` would start it. */
+  reseed(seed?: number | undefined): void;
+}
+
+/**
+ * Builds a picker that keeps its identity across reseeds, so a holder of `pick` draws from the new
+ * stream without being handed a new picker.
+ *
+ * After `reseed(seed)`, `pick` draws exactly the sequence a fresh `createPicker(seed)` draws, whatever
+ * it drew before; without a seed, the new stream is seeded at random.
+ *
+ * @example
+ * ```ts
+ * const { pick, reseed } = createReseedablePicker(1234);
+ * reseed(1234);
+ * pick(["ada", "grace", "alan"]); // "grace"
+ * ```
+ */
+export function createReseedablePicker(seed?: number | undefined): ReseedablePicker {
+  let current = createPicker(seed);
+
+  return {
+    pick: (list) => current(list),
+    reseed: (next) => {
+      current = createPicker(next);
+    },
+  };
+}
