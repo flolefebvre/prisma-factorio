@@ -3362,14 +3362,14 @@ test("a pooled has() child is drawn per parent record, the whole batch of them",
 // The whole error a stale pooled draw is retold as: the entire message, and the raw Prisma error
 // standing behind it as the cause — `toMatchObject` reads the pair as a subset, leaving the cause's
 // other fields free.
-function singleUse(field: string, model: string): { message: string; cause: { code: string } } {
+function singleUse(field: string, model: string, code = "P2018"): { message: string; cause: { code: string } } {
   return {
     message:
       `A pooled row drawn into "${field}" on the model "${model}" no longer matches the database: ` +
       "a connect into a relation field backed by a required foreign key re-homes the record, " +
       "rewriting the column the pooled copy still carries, so a pooled row fills such a relation once. " +
       "Pool one row per parent record, or pass native relation input.",
-    cause: { code: "P2018" },
+    cause: { code },
   };
 }
 
@@ -3421,6 +3421,31 @@ test("a pooled has() child drawn again by a later create() fails in the pool's o
 
   await expect(authorFactory.has(harness.postFactory, "posts").create()).rejects.toMatchObject(
     singleUse("posts", "user"),
+  );
+});
+
+// A one-to-one whose required foreign key sits on the child re-homes a pooled child as a to-many
+// relation does, and Prisma answers the next record's connect with `P2025` rather than `P2018`: the
+// failure is the pool's own all the same.
+test("a pooled one-to-one default fails the second parent record in the pool's own terms", async () => {
+  const { userFactory, profileFactory } = await factorioHarness();
+  const profile = await profileFactory.create();
+
+  await expect(
+    userFactory.count(2).recycle("profile", profile).state({ profile: profileFactory }).create(),
+  ).rejects.toMatchObject(singleUse("profile", "user", "P2025"));
+});
+
+// An implicit many-to-many writes its join table and leaves the rows it pairs alone, so a pooled tag
+// that matches nothing went stale by the caller's own doing, never by the pool's.
+test("a pooled many-to-many child whose record changed fails as a stale row, not a single-use one", async () => {
+  const { prisma, postFactory, tagFactory } = await factorioHarness();
+  const tag = await tagFactory.create();
+
+  await prisma.tag.update({ where: { id: tag.id }, data: { label: "Changed" } });
+
+  await expect(postFactory.recycle("tag", tag).has(tagFactory).create()).rejects.toMatchObject(
+    stale("tags", "post", "P2025"),
   );
 });
 

@@ -2,6 +2,7 @@ import {
   foreignKeyOf,
   type ForeignKey,
   holdsManyRecords,
+  inverseForeignKeyOf,
   inverseRelationField,
   type InverseAdvice,
   namedRelationField,
@@ -545,14 +546,17 @@ interface Embedded {
 // What resolving a relation takes beyond the value standing in it: the client the records are written
 // through, and the pool a record of a pooled model is drawn from in place of being created. One wiring
 // serves a whole `create()` call, so the fields it records span the batch — which is the span a stale
-// row can fail over, a row one record connected going stale for the next. `drawnInto` holds the
-// relation fields holding many records that pooled rows were drawn into; `matchedInto` every relation
-// field a row the caller handed over or a pool drew was matched into, whatever its arity.
+// row can fail over, a row one record connected going stale for the next. `rehomedInto` holds the
+// relation fields a pooled row was drawn into whose foreign key the drawn row's own model holds, so
+// that the connect rewrites a column the pooled copy still carries; `matchedInto` every relation
+// field a row the caller handed over or a pool drew was matched into, whatever its arity. Where the
+// schema text leaves the inverse key unread, a field holding many records counts as re-homing and
+// one holding a single record does not.
 interface Wiring {
   client: unknown;
   pool: Pool;
   pick: Picker;
-  drawnInto: string[];
+  rehomedInto: string[];
   matchedInto: string[];
 }
 
@@ -685,6 +689,13 @@ function pooled(value: Embedded, { pool, pick }: Wiring, explicit: boolean): Rec
   return rows === undefined ? undefined : (pick(rows) as Record<string, unknown>);
 }
 
+function recordDraw(wiring: Wiring, model: string, field: string, many: boolean): void {
+  const key = inverseForeignKeyOf(wiring.client, model, field);
+
+  if (many ? key !== null : key !== null && key !== undefined) wiring.rehomedInto.push(field);
+  wiring.matchedInto.push(field);
+}
+
 // Every scalar of the row `targetScalars` keeps goes into the `where`, plus a compound selector for
 // every unique constraint the row can name whole — the one match a model whose only unique
 // constraint is compound answers to. The runtime datamodel marks no field unique, so no subset of the scalars is
@@ -772,7 +783,7 @@ async function embodied(
 
     if (picked !== undefined) {
       held?.set(field, { row: picked, fresh: false });
-      wiring.matchedInto.push(field);
+      recordDraw(wiring, model, field, false);
       return matching(wiring.client, model, field, picked);
     }
 
@@ -792,8 +803,7 @@ async function embodied(
   const picks = drawn(value, wiring, explicit);
 
   if (picks !== undefined) {
-    wiring.drawnInto.push(field);
-    wiring.matchedInto.push(field);
+    recordDraw(wiring, model, field, true);
     return matchingAll(wiring.client, model, field, picks);
   }
 
@@ -895,8 +905,7 @@ async function attaching(
         continue;
       }
 
-      wiring.drawnInto.push(field);
-      wiring.matchedInto.push(field);
+      recordDraw(wiring, model, field, true);
       for (const row of picks) rows.push(targetWhere(wiring.client, model, field, row));
       continue;
     }
@@ -1131,28 +1140,30 @@ function quoted(fields: readonly string[]): string {
   return [...new Set(fields)].map((field) => `"${field}"`).join(" or ");
 }
 
-// A create that drew pooled rows into a to-many relation field is the one whose connect can fail by the
-// pool's own doing: a required foreign key rewritten by an earlier record's connect leaves the pooled
-// copy matching nothing, which is retold in the pool's terms. Any other connect that matched nothing
-// while a handed or pooled row stood in the call is retold as a stale row, naming every field such a
-// row stood in across the call rather than the one that failed. Prisma's error stands behind either
-// as the cause; a create no such row reached passes its failure through untouched.
+// A create that drew pooled rows into a relation field whose foreign key the drawn rows hold is the one
+// whose connect can fail by the pool's own doing, whatever the field's arity: a key rewritten by an
+// earlier record's connect leaves the pooled copy matching nothing, which is retold in the pool's
+// terms. Any other connect that matched nothing while a handed or pooled row stood in the call is
+// retold as a stale row, naming every field such a row stood in across the call rather than the one
+// that failed. Prisma's error stands behind either as the cause; a create no such row reached passes
+// its failure through untouched.
 async function persisted(delegate: CreateDelegate, data: Written, wiring: Wiring, model: string): Promise<unknown> {
   try {
     return await delegate.create({ data });
   } catch (error) {
     const code = (error as { code?: unknown } | null | undefined)?.code;
+    const unmatched = code === unmatchedConnect || code === unmatchedRecord;
 
-    if (code === unmatchedConnect && wiring.drawnInto.length > 0)
+    if (unmatched && wiring.rehomedInto.length > 0)
       throw new Error(
-        `A pooled row drawn into ${quoted(wiring.drawnInto)} on the model "${model}" ` +
+        `A pooled row drawn into ${quoted(wiring.rehomedInto)} on the model "${model}" ` +
           "no longer matches the database: a connect into a relation field backed by a required foreign key " +
           "re-homes the record, rewriting the column the pooled copy still carries, so a pooled row fills " +
           "such a relation once. Pool one row per parent record, or pass native relation input.",
         { cause: error },
       );
 
-    if ((code === unmatchedConnect || code === unmatchedRecord) && wiring.matchedInto.length > 0)
+    if (unmatched && wiring.matchedInto.length > 0)
       throw new Error(
         `A row connected into ${quoted(wiring.matchedInto)} on the model "${model}" no longer matches the ` +
           "database: it was read before its record changed, and every non-null scalar is matched on, so a " +
@@ -1261,7 +1272,7 @@ async function write<C, M extends ModelName<C>>(
   const faker = await chain.faker();
   const client = chain.client();
   const model = String(chain.model);
-  const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick, drawnInto: [], matchedInto: [] };
+  const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick, rehomedInto: [], matchedInto: [] };
   // Every model the client carries, which is what a callback reaches a second one through. `using`
   // asks for a single delegate, so a chain redirected to a stub carrying fewer stands on the caller.
   const reached = { client: client as Pick<C, ModelName<C>> };
