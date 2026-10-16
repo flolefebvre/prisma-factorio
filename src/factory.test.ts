@@ -603,6 +603,16 @@ test("a factory embedded in a state creates the parent, and the layer it replace
   await expect(prisma.user.findMany()).resolves.toMatchObject([{ name: "Ada" }]);
 });
 
+test("a self-relation default in a state creates one level of parent, which carries none of its own", async () => {
+  const { prisma, categoryFactory } = await factorioHarness();
+
+  const child = await categoryFactory.state({ parent: categoryFactory }).create();
+  const parent = await prisma.category.findUniqueOrThrow({ where: { id: child.parentId ?? -1 } });
+
+  expect(parent.parentId).toBeNull();
+  await expect(prisma.category.count()).resolves.toBe(2);
+});
+
 test("a factory embedded in create() overrides creates the parent and connects the record to it", async () => {
   const { prisma, prismaFactorio } = await factorioHarness();
   const authorFactory = prismaFactorio.define("user", {
@@ -1571,6 +1581,16 @@ test("for(row) connects to a record that already exists rather than creating one
   await expect(prisma.user.count()).resolves.toBe(1);
 });
 
+test("for(row) across a self-relation connects the record to a row of its own model", async () => {
+  const { prisma, categoryFactory } = await factorioHarness();
+  const root = await categoryFactory.create();
+
+  const child = await categoryFactory.for(root, "parent").create();
+
+  expect(child.parentId).toBe(root.id);
+  await expect(prisma.category.count()).resolves.toBe(2);
+});
+
 test("for(factory) resolves the one relation the model pair shares when the name is left out", async () => {
   const { prisma, commentFactory, postFactory } = await factorioHarness();
 
@@ -2146,6 +2166,15 @@ test("has(factory) creates the children through their own factory and connects t
 
   await expect(authoredBy(prisma, user.id)).resolves.toHaveLength(1);
   await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("has(factory) across a self-relation hangs the children off the parent, its inverse read off the client", async () => {
+  const { prisma, categoryFactory } = await factorioHarness();
+
+  const root = await categoryFactory.has(categoryFactory.count(2), "children").create();
+
+  await expect(prisma.category.count({ where: { parentId: root.id } })).resolves.toBe(2);
+  expect(root.parentId).toBeNull();
 });
 
 // The deliberate opposite of `for`, where one parent is shared by the whole batch.
@@ -2954,6 +2983,17 @@ test("the model a factory creates is never drawn from its own pool", async () =>
 
   expect(second.id).not.toBe(first.id);
   await expect(prisma.comment.count()).resolves.toBe(2);
+});
+
+test("a factory pooling its own model across a self-relation draws the parent and creates the record", async () => {
+  const { prisma, categoryFactory } = await factorioHarness();
+  const root = await categoryFactory.create();
+
+  const child = await categoryFactory.state({ parent: categoryFactory }).recycle("category", root).create();
+
+  expect(child.parentId).toBe(root.id);
+  expect(child.id).not.toBe(root.id);
+  await expect(prisma.category.count()).resolves.toBe(2);
 });
 
 // A slot the call named outright creates a record of its own — the second user row of the graph —
