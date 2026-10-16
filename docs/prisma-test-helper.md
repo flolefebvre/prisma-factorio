@@ -1,6 +1,6 @@
 # Using prisma-factorio with @flefebvre/prisma-test-helper
 
-[`@flefebvre/prisma-test-helper`](https://github.com/flolefebvre/prisma-test-helper) is a Postgres test harness for Prisma + Vitest: one throwaway container per run, one database per worker, and tests that commit for real. This guide covers its 1.0.0 lifecycle. Before a file's first test, and after every test, the harness's Reset empties every table and rewinds every sequence. Paired with prisma-factorio, factories build their whole graph through your own client, and the Reset is the cleanup.
+[`@flefebvre/prisma-test-helper`](https://github.com/flolefebvre/prisma-test-helper) is a Postgres test harness for Prisma + Vitest: one throwaway container per run, one database per worker, and tests that commit for real. This guide covers its 1.0.0 lifecycle. Before a file's first test, and after every test, the harness's Reset returns every table to its Baseline: empty, except for the rows that migrations and the global-setup seed inserted, which it restores. Every sequence is rewound. Paired with prisma-factorio, factories build their whole graph through your own client, and the Reset is the cleanup.
 
 The pairing needs no adapter and no extra wiring. The harness takes the client your app already uses, `setupDatabase(db)`, and wraps nothing. prisma-factorio reads relation metadata off that same client and issues its queries through it, so every factory write is an ordinary committed write.
 

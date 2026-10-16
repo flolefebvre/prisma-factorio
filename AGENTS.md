@@ -33,6 +33,8 @@ scripts/
 .github/
   workflows/      CI on every push and pull request, release on a `v*` tag
 docs/
+  for-agents.md   Entry page for coding agents in consumer projects (shipped in the package)
+  prisma-test-helper.md  Pairing guide for @flefebvre/prisma-test-helper (shipped in the package)
   adr/            Architectural decision records
   agents/         Agent workflow docs (issue tracker, labels, domain)
   releasing.md    How a version reaches npm, and the one-time npm setup
@@ -92,6 +94,12 @@ One dialect, in documentation and in code alike.
 - The suffix earns its place by telling a factory from data of the same noun, so it is dropped where it cannot: a binding already named `factory`, and one holding either a factory or rows — `children` — which the suffix would misdescribe half the time.
 
 This governs the repository — its README, its JSDoc examples and its tests. It is not imposed on consumers, who name their own variables.
+
+## Shipped docs
+
+The package ships `README.md`, `docs/for-agents.md` and `docs/prisma-test-helper.md`; `package.json` `files` lists the two pages by name, and `pnpm pack:check` fails on any other `docs/` file in the tarball or on a relative link in a shipped page that resolves to no shipped file. A shipped page links repo-internal paths — `CONTEXT.md`, `docs/adr/`, `docs/releasing.md` — by absolute GitHub URL.
+
+When the public API, the README or a shipped page changes, update `docs/for-agents.md`'s import map, Rules and By-task table where affected. Its Rules section and `context7.json`'s `rules` carry the same rules in the same order, one numbered rule per entry: a change to one is a change to both.
 
 ## Language
 
