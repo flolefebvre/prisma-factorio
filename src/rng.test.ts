@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { createPicker, randomSeed, type Picker } from "./rng.js";
+import { createPicker, createReseedablePicker, randomSeed, type Picker } from "./rng.js";
 
 const SEED = 1234;
 const LIST = ["a", "b", "c", "d"];
@@ -59,4 +59,30 @@ test("an empty list draws nothing either", () => {
 
 test("two seeds drawn at random differ", () => {
   expect(randomSeed()).not.toBe(randomSeed());
+});
+
+test("a reseedable picker hands out one picker however often it is reseeded", () => {
+  const reseedable = createReseedablePicker(SEED);
+  const { pick } = reseedable;
+
+  reseedable.reseed(SEED + 1);
+
+  expect(reseedable.pick).toBe(pick);
+});
+
+test("a reseeded picker replays a fresh picker on the new seed, whatever it drew before", () => {
+  const { pick, reseed } = createReseedablePicker(SEED);
+
+  void draw(3, pick, LIST);
+  reseed(SEED + 1);
+
+  expect(draw(10, pick, LIST)).toStrictEqual(draw(10, createPicker(SEED + 1), LIST));
+});
+
+test("a picker reseeded without a seed parts company with the seed it held", () => {
+  const { pick, reseed } = createReseedablePicker(SEED);
+
+  reseed();
+
+  expect(draw(10, pick, LIST)).not.toStrictEqual(draw(10, createPicker(SEED), LIST));
 });

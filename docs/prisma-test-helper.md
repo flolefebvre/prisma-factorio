@@ -68,7 +68,7 @@ Every row the graph created is committed, and the Reset removes it when the test
 
 ## Determinism
 
-The harness runs every hook given to `registerResetHook` in each `beforeEach`, handing it `{ testName, seed }`. `seed` is derived from the test name alone, so rerunning one test with `-t` hands it the same seed a full-suite run did. prisma-factorio takes its `seed` once, at `initPrismaFactorio`, and exposes no way to reseed a bootstrap. So seed it per test by bootstrapping again from the hook, with the factories defined in a function of the seed:
+The harness runs every hook given to `registerResetHook` in each `beforeEach`, handing it `{ testName, seed }`. `seed` is derived from the test name alone, so rerunning one test with `-t` hands it the same seed a full-suite run did. Hand it to the bootstrap with one line in the factories module:
 
 ```ts
 // tests/factories.ts
@@ -76,25 +76,13 @@ import { initPrismaFactorio } from "@flefebvre/prisma-factorio";
 import { registerResetHook } from "@flefebvre/prisma-test-helper";
 import { db } from "../src/db/client.js";
 
-function defineFactories(seed?: number) {
-  const prismaFactorio = initPrismaFactorio(() => db, { seed });
+const prismaFactorio = initPrismaFactorio(() => db);
 
-  const userFactory = prismaFactorio.define("user", {
-    definition: ({ faker, uid }) => ({ email: `user-${uid}@example.com`, name: faker.person.fullName() }),
-  });
+registerResetHook(({ seed }) => prismaFactorio.reseed(seed));
 
-  const postFactory = prismaFactorio.define("post", {
-    definition: ({ faker }) => ({ title: faker.lorem.sentence(), author: userFactory }),
-  });
-
-  return { userFactory, postFactory };
-}
-
-export let factories = defineFactories();
-
-registerResetHook(({ seed }) => {
-  factories = defineFactories(seed);
+export const userFactory = prismaFactorio.define("user", {
+  definition: ({ faker, uid }) => ({ email: `user-${uid}@example.com`, name: faker.person.fullName() }),
 });
 ```
 
-Read the factories off `factories` inside the test, as in `factories.userFactory.create()`, rather than destructuring them at import time, which would keep the bootstrap the module started with. The seed pins faker's values and the recycle picks. It does not pin `uid`, which draws a fresh random prefix in every process, so never assert on a `uid`-derived column.
+`reseed` restarts the bootstrap's streams in place, so every factory it defined — before the hook ran or after — draws from the test's seed, and test files import and destructure the factories as usual. The seed pins faker's values and the recycle picks. It does not pin `uid`, which draws a fresh random prefix in every process, so never assert on a `uid`-derived column.
