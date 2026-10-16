@@ -93,3 +93,37 @@ model Badge {
   sponsor    Team?      @relation("sponsored", fields: [sponsorId], references: [id])
   sponsorId  Int?
 }
+
+// The parent two relations of `Booking` must agree on. `city` is a scalar no other model declares,
+// which keeps a row of this model resolvable.
+model Venue {
+  id        Int        @id @default(autoincrement())
+  city      String
+  customers Customer[]
+  bookings  Booking[]
+}
+
+// Its compound unique `(id, venueId)` exists only to be referenced: it is what lets `Booking` point at
+// a customer and that customer's venue through one key. `phone` is a scalar no other model declares.
+model Customer {
+  id       Int       @id @default(autoincrement())
+  phone    String
+  venue    Venue     @relation(fields: [venueId], references: [id])
+  venueId  Int
+  bookings Booking[]
+
+  @@unique([id, venueId])
+}
+
+// The one model whose two relations share a foreign key column: `venueId` belongs to both `venue` and
+// the composite `customer` key, so relation defaults that each build their own venue disagree on it,
+// and Prisma keeps one of the two by field order. Only a parent shared between them — a recycled
+// venue — gives both legs the same value. `seat` is a scalar no other model declares.
+model Booking {
+  id         Int      @id @default(autoincrement())
+  seat       String
+  venue      Venue    @relation(fields: [venueId], references: [id])
+  venueId    Int
+  customer   Customer @relation(fields: [customerId, venueId], references: [id, venueId])
+  customerId Int
+}
