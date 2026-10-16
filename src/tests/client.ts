@@ -82,32 +82,48 @@ export function statementsOf(script: string): string[] {
 }
 
 const REBUILD = "Run `pnpm generate` to rebuild the test harness.";
+const repositoryRoot = new URL("../../", import.meta.url);
 
 function isMissingFile(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
-// `src/tests/generated/` is gitignored, so on a fresh clone the DDL is absent rather than stale.
-async function mtimeOf(path: URL, name: string): Promise<number> {
+// The generated directories are gitignored, so on a fresh clone the DDL is absent rather than stale.
+async function mtimeOf(path: URL): Promise<number> {
   try {
     return (await stat(path)).mtimeMs;
   } catch (error) {
     if (!isMissingFile(error)) throw error;
-    throw new Error(`${name} is missing. ${REBUILD}`, { cause: error });
+    throw new Error(`${nameOf(path)} is missing. ${REBUILD}`, { cause: error });
   }
 }
 
-async function readSchemaStatements(): Promise<string[]> {
-  const [schema, ddl] = await Promise.all([
-    mtimeOf(schemaPath, "prisma/schema.prisma"),
-    mtimeOf(ddlPath, "src/tests/generated/schema.sql"),
-  ]);
+function nameOf(path: URL): string {
+  return path.href.startsWith(repositoryRoot.href) ? path.href.slice(repositoryRoot.href.length) : path.href;
+}
 
-  if (schema > ddl) {
-    throw new Error(`src/tests/generated/schema.sql is older than prisma/schema.prisma. ${REBUILD}`);
+/**
+ * Reads the statements of the DDL `pnpm generate` emitted from a scratch schema.
+ *
+ * Rejects, naming `pnpm generate`, when the schema or the DDL is missing or the DDL predates the
+ * schema it was emitted from.
+ *
+ * @example
+ * ```ts
+ * const statements = await readSchemaStatements(
+ *   new URL("../../prisma/schema.prisma", import.meta.url),
+ *   new URL("./generated/schema.sql", import.meta.url),
+ * );
+ * ```
+ */
+export async function readSchemaStatements(schema: URL, ddl: URL): Promise<string[]> {
+  const [schemaTime, ddlTime] = await Promise.all([mtimeOf(schema), mtimeOf(ddl)]);
+
+  if (schemaTime > ddlTime) {
+    throw new Error(`${nameOf(ddl)} is older than ${nameOf(schema)}. ${REBUILD}`);
   }
 
-  return statementsOf(await readFile(ddlPath, "utf8"));
+  return statementsOf(await readFile(ddl, "utf8"));
 }
 
 let schemaStatements: Promise<string[]> | undefined;
@@ -129,7 +145,7 @@ let schemaStatements: Promise<string[]> | undefined;
  * ```
  */
 export async function createTestClient(): Promise<TestClient> {
-  schemaStatements ??= readSchemaStatements();
+  schemaStatements ??= readSchemaStatements(schemaPath, ddlPath);
   const statements = await schemaStatements;
   const client = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: ":memory:" }) });
 

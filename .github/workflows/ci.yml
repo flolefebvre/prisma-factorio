@@ -103,6 +103,35 @@ jobs:
       - name: Test
         run: pnpm test
 
+  # Not part of `pnpm gates`, which stays Docker-free: the `*.postgres.test.ts` lane against
+  # a Postgres container Testcontainers starts on the runner's Docker.
+  test-postgres:
+    name: test-postgres
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate scratch Prisma clients
+        run: pnpm generate
+
+      - name: Test on Postgres
+        run: pnpm test:postgres
+
   # Not part of `pnpm gates`: fails when the generated factory file's instantiation
   # count exceeds `scripts/bench-types/budget.json`.
   bench-types:

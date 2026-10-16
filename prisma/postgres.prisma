@@ -1,0 +1,66 @@
+// Scratch schema for this library's Postgres lane (`pnpm test:postgres`); never published. It holds
+// the column types SQLite cannot declare, beside the relation shapes a row connects through.
+
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/tests/postgres/generated"
+}
+
+// A native enum: Postgres stores it as a type of its own, which Prisma casts every value to.
+enum Role {
+  OWNER
+  MEMBER
+}
+
+// Every Postgres-only column sits on the one model the other models point at, so a row of it reaches
+// `connect` carrying all of them. `tags` is the scalar list and `meta` the Json column, both typed as
+// filters in `WhereUniqueInput`, so neither may stand in a connect where-clause. `token` is the
+// native type: a `@db.Uuid` value is cast where it is matched.
+model User {
+  id          Int          @id @default(autoincrement())
+  email       String       @unique
+  token       String       @db.Uuid
+  role        Role
+  tags        String[]
+  meta        Json?
+  posts       Post[]
+  memberships Membership[]
+}
+
+// The belongs-to side of the one has-many in the schema.
+model Post {
+  id       Int    @id @default(autoincrement())
+  title    String
+  author   User   @relation(fields: [authorId], references: [id])
+  authorId Int
+}
+
+model Team {
+  id          Int          @id @default(autoincrement())
+  slug        String
+  memberships Membership[]
+}
+
+// The explicit many-to-many, keyed on both of its foreign keys.
+model Membership {
+  user   User    @relation(fields: [userId], references: [id])
+  userId Int
+  team   Team    @relation(fields: [teamId], references: [id])
+  teamId Int
+  badges Badge[]
+
+  @@id([userId, teamId])
+}
+
+// The to-one leg onto the compound key: a membership row reaches `connect` here on both columns.
+model Badge {
+  id         Int        @id @default(autoincrement())
+  note       String
+  membership Membership @relation(fields: [userId, teamId], references: [userId, teamId])
+  userId     Int
+  teamId     Int
+}
