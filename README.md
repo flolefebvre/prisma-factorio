@@ -54,6 +54,7 @@ The feature set is a port of [Laravel's model factories](https://laravel.com/doc
 - [Callbacks](#callbacks)
 - [Seeding](#seeding)
 - [Transactional tests](#transactional-tests)
+- [AI coding agents](#ai-coding-agents)
 - [Types](#types)
 - [Deviations from Laravel](#deviations-from-laravel)
 - [Gotchas](#gotchas)
@@ -466,6 +467,18 @@ The sentinel is what commits nothing: the transaction callback only ever leaves 
 > [!NOTE]
 > An interactive transaction is capped in duration. A graph large enough to outrun the cap aborts and rolls back rather than merely running slow; `prisma.$transaction(fn, { timeout })` raises it. That cap is why a large seed is better run bare.
 
+For a suite that commits for real instead, on a Postgres harness that resets the database between tests, see [Using prisma-factorio with prisma-test-helper](docs/prisma-test-helper.md): the wiring, the lifecycle rules a factory graph must follow under a Reset, and a seed per test.
+
+## AI coding agents
+
+The docs ship inside the package, so an agent working in your project can read them at the installed version under `node_modules/@flefebvre/prisma-factorio/docs/`. The entry page for agents is [docs/for-agents.md](docs/for-agents.md): the model, the import map, the rules, and which section to read for which task.
+
+Point your agent at it once by adding this line to your project's `AGENTS.md` (or `CLAUDE.md`, `.cursorrules`, …):
+
+```md
+Before writing or changing Prisma factories, seeds or test data built with prisma-factorio, read `node_modules/@flefebvre/prisma-factorio/docs/for-agents.md`.
+```
+
 ## Types
 
 A helper wrapping a factory — a test fixture, a seed step — names the factory's types itself. The package exports them, each read off your client type and a model name, so there is nothing to generate:
@@ -568,9 +581,9 @@ pnpm test       # vitest, against an in-memory SQLite database
 pnpm gates      # full validation: generate, typecheck, lint, format, duplicates, test, build, packed contents
 ```
 
-The project is developed test-first; tests sit next to the source they cover as `*.test.ts`. The domain vocabulary lives in [`CONTEXT.md`](CONTEXT.md) and the binding architecture decisions in [`docs/adr/`](docs/adr) — worth a read before proposing a change of direction. A pull request should pass `pnpm gates`.
+The project is developed test-first; tests sit next to the source they cover as `*.test.ts`. The domain vocabulary lives in [`CONTEXT.md`](https://github.com/flolefebvre/prisma-factorio/blob/main/CONTEXT.md) and the binding architecture decisions in [`docs/adr/`](https://github.com/flolefebvre/prisma-factorio/tree/main/docs/adr) — worth a read before proposing a change of direction. A pull request should pass `pnpm gates`.
 
-Releases are cut from a version tag; [`docs/releasing.md`](docs/releasing.md) has the procedure.
+Releases are cut from a version tag; [`docs/releasing.md`](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/releasing.md) has the procedure.
 
 ## License
 

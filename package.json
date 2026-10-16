@@ -34,6 +34,8 @@
   },
   "files": [
     "dist",
+    "docs/for-agents.md",
+    "docs/prisma-test-helper.md",
     "LICENSE"
   ],
   "engines": {
