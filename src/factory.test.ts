@@ -1763,6 +1763,18 @@ test("for() and has() on a model the client carries no delegate for name it and 
   await expect(ghostFactoryOf(prismaFactorio).has(postFactory, "posts").create()).rejects.toThrow(undelegated);
 });
 
+test("for() and has() toward a model the client knows nothing of name it and suggest regenerating", async () => {
+  const { prisma, prismaFactorio, postFactory, userFactory } = await factorioHarness();
+  const unknown =
+    'The client knows no model "ghost". ' +
+    "Regenerate the client if the model was added to the schema after it was generated.";
+  const ghostPostFactory = ghostFactoryOf(prismaFactorio) as unknown as Factory<TestClient, "post">;
+
+  await expect(postFactory.for(ghostFactoryOf(prismaFactorio), "author").create()).rejects.toThrow(unknown);
+  await expect(userFactory.has(ghostPostFactory, "posts").create()).rejects.toThrow(unknown);
+  await expect(prisma.user.count()).resolves.toBe(0);
+});
+
 test("for() hands create the relation field as connect and never a foreign key column", async () => {
   const { prisma, postFactory, userFactory } = await factorioHarness();
   const { client, written } = recording(prisma, "post");
