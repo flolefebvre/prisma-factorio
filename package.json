@@ -36,6 +36,9 @@
     "dist",
     "docs/for-agents.md",
     "docs/prisma-test-helper.md",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/tests",
     "LICENSE"
   ],
   "engines": {
