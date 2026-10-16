@@ -2976,8 +2976,10 @@ test("a pool naming a model the graph never creates draws nothing and creates no
   const { prisma, postFactory, tagFactory } = await factorioHarness();
   const tag = await tagFactory.create();
 
-  await postFactory.recycle("tag", tag).create();
+  const post = await postFactory.recycle("tag", tag).create();
+  const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
 
+  expect(joined.tags).toStrictEqual([]);
   await expect(prisma.tag.count()).resolves.toBe(1);
   await expect(prisma.post.count()).resolves.toBe(1);
 });
