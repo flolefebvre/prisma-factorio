@@ -270,7 +270,9 @@ type Skippable<T> = { [K in keyof T]?: T[K] | undefined };
  *
  * @example
  * ```ts
- * const attributes: PartialAttributes<PrismaClient, "user"> = { name: "Ada" };
+ * function withName(name: string): PartialAttributes<PrismaClient, "user"> {
+ *   return { name };
+ * }
  * ```
  */
 export type PartialAttributes<C, M extends ModelName<C>> = Skippable<CreateInput<C, M>>;
@@ -283,7 +285,9 @@ export type PartialAttributes<C, M extends ModelName<C>> = Skippable<CreateInput
  *
  * @example
  * ```ts
- * const overrides: Overrides<PrismaClient, "user", { name: string }> = { name: "Ada" };
+ * async function makeUser<O>(overrides?: Overrides<PrismaClient, "user", O>): Promise<Row<PrismaClient, "user">> {
+ *   return userFactory.create(overrides);
+ * }
  * ```
  */
 export type Overrides<C, M extends ModelName<C>, O> = Exact<O, PartialAttributes<C, M>>;

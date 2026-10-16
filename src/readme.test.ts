@@ -5,6 +5,8 @@ import {
   type Factorio,
   type FactorioOptions,
   type Factory,
+  type Overrides,
+  type PartialAttributes,
   type Row,
 } from "./index.js";
 import type { TestClient } from "./tests/client.js";
@@ -372,6 +374,51 @@ declare const created: CreateInput<TestClient, "user">;
 export function createInputIsNotPrismas(prisma: TestClient): void {
   // @ts-expect-error the widened relation keys leave no branch of Prisma's input assignable
   void prisma.user.create({ data: created });
+}
+
+// README "Types", the `helpers.ts` and `posts.test.ts` blocks and the bullets under them: each exported
+// type in the role the bullet gives it, a `satisfies`-checked value forwarding like a literal, the
+// excess-key check surviving the generic helper, and `Parameters<>` yielding no usable overrides type.
+export async function typesSection({ userFactory, postFactory }: ReadmeFactories): Promise<void> {
+  async function makeAuthors(): Promise<Row<TestClient, "user">[]> {
+    return userFactory.count(3).create();
+  }
+
+  async function makePost<O>(overrides?: Overrides<TestClient, "post", O>): Promise<Row<TestClient, "post">> {
+    return postFactory.create(overrides);
+  }
+
+  const drafted = { title: "Draft" } satisfies PartialAttributes<TestClient, "post">;
+
+  const draft = await makePost(drafted);
+
+  expectTypeOf(draft).toEqualTypeOf<Row<TestClient, "post">>();
+  expectTypeOf(draft).toEqualTypeOf<Awaited<ReturnType<typeof postFactory.create>>>();
+  expectTypeOf(userFactory.count(3).create()).resolves.toEqualTypeOf<Row<TestClient, "user">[]>();
+  void makeAuthors();
+  void makePost();
+
+  // @ts-expect-error a field the model never declares, through the generic helper
+  void makePost({ titel: "Draft" });
+  // @ts-expect-error `Parameters<>` instantiates the free `O` with no caller object, leaving `never`
+  const viaParameters: Parameters<typeof postFactory.create>[0] = { title: "Draft" };
+  void viaParameters;
+}
+
+// README "Types", the `PartialAttributes` bullet's interim pending #94: a value annotated with that
+// type, unlike one merely checked with `satisfies`, reaches `create()` and `state()` only through an
+// explicit type argument. The directives fail the gate once the value
+// is accepted as-is, which is when the sentence documenting the interim goes.
+export function partialAttributesForwarding(
+  postFactory: Factory<TestClient, "post">,
+  attrs: PartialAttributes<TestClient, "post">,
+): void {
+  void postFactory.create<PartialAttributes<TestClient, "post">>(attrs);
+
+  // @ts-expect-error a `PartialAttributes` value is not accepted by `create()` as-is
+  void postFactory.create(attrs);
+  // @ts-expect-error nor by `state()`
+  void postFactory.state(attrs);
 }
 
 // README "Transactional tests", the `posts.test.ts` block — run rather than merely compiled, the
