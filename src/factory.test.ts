@@ -789,6 +789,7 @@ test("an array in a relation field holding a single record reaches Prisma, which
   const ada = await userFactory.create();
 
   for (const editor of [[], [ada]]) {
+    // @ts-expect-error a list stands for no record in a field holding one
     await expect(postFactory.create({ editor })).rejects.toThrow(
       "Argument `editor`: Invalid value provided. Expected UserCreateNestedOneWithoutEditedInput",
     );
@@ -1109,7 +1110,9 @@ test("a has() child of another package instance reaches its parent through the c
   const foreignFactory = {
     [Symbol.for("prisma-factorio.factory")]: "post",
     create: (overrides: { author: object }) =>
-      postFactory.create({ author: Object.fromEntries(Object.entries(overrides.author)) }),
+      postFactory.create({
+        author: Object.fromEntries(Object.entries(overrides.author)) as { connect: { id: number } },
+      }),
   } as unknown as Factory<TestClient, "post">;
 
   const user = await userFactory.has(foreignFactory, "posts").create();
@@ -1181,38 +1184,6 @@ test("a fresh row whose nullable unique column is null connects, alone or beside
     handle: null,
   });
   expect(beside.editorId).toBe(grace.id);
-});
-
-// The same filter read the other way: a row is cut down to the target model's scalar names before it
-// stands in the `where`, so a `Team` row `{ id, slug }` collapses to `{ id }`, which a `User` satisfies
-// as readily. Ids start at 1 per model, so a wrong-model row the type system let through finds a record
-// to connect rather than failing. The README bullet "A wrong-model row in a relation attribute is not
-// caught" rests on this test and the one under it for what happens at runtime; `readme.test.ts` pins
-// the half the compiler answers for.
-test("a wrong-model row in a belongs-to attribute connects the record that shares its id", async () => {
-  const { postFactory, teamFactory, userFactory } = await factorioHarness();
-  const ada = await userFactory.create();
-  const team = await teamFactory.create();
-  expect(team.id).toBe(ada.id);
-
-  const post = await postFactory.create({ author: team });
-
-  expect(post.authorId).toBe(ada.id);
-});
-
-// The same collapse at the other arity, where the connect rewrites a foreign key the record already
-// carries: the wrong-model row re-homes a post that belonged to somebody else.
-test("a wrong-model row in a has-many attribute re-homes the record that shares its id", async () => {
-  const { prisma, postFactory, teamFactory, userFactory } = await factorioHarness();
-  const post = await postFactory.create();
-  const team = await teamFactory.create();
-  expect(team.id).toBe(post.id);
-
-  const stranger = await userFactory.create({ posts: team });
-
-  await expect(prisma.post.findUniqueOrThrow({ where: { id: post.id } })).resolves.toMatchObject({
-    authorId: stranger.id,
-  });
 });
 
 test("a factory carrying no value that could stand in a relation field never reads the relation metadata", async () => {

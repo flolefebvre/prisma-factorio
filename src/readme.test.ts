@@ -320,25 +320,35 @@ export function explicitIdAndRelation(postFactory: Factory<TestClient, "post">):
   void postFactory.create({ id: 7, author: { connect: { id: 1 } } });
 }
 
-// README "Good to know", the bullet "A wrong-model row in a relation attribute is not caught". The
-// seven calls without a directive are that hole: they compile, and a directive on any of them would
-// fail this gate until the hole is closed (#48). A row rides through at both arities and by every route
-// an attribute is reached by; a factory rides through inside a list alone. What the bullet says *is*
-// caught follows them, and what a row that compiles then does to the database is pinned in
-// `factory.test.ts`.
+// README "Relations", the paragraph "Such a value is a factory, an existing row, or Prisma's own
+// relation input": every value a relation field takes is checked against the model it points at, at
+// both arities and by every route an attribute is reached by, and relation input naming none of its
+// keys stands for nothing. The `for()` and `has()` calls pin the bullet "The relation field is checked
+// against the pair of models".
 export function wrongModelValues(
   userFactory: Factory<TestClient, "user">,
   postFactory: Factory<TestClient, "post">,
   teamFactory: Factory<TestClient, "team">,
   teamRow: Row<TestClient, "team">,
 ): void {
+  // @ts-expect-error a row of a model the belongs-to relation does not point at
   void postFactory.create({ author: teamRow });
+  // @ts-expect-error a row of a model the has-many relation does not point at
   void userFactory.create({ posts: teamRow });
+  // @ts-expect-error a list of rows of a model the has-many relation does not point at
   void userFactory.create({ posts: [teamRow] });
+  // @ts-expect-error a row of a model the belongs-to relation does not point at, through a state
   void postFactory.state({ author: teamRow });
+  // @ts-expect-error a list holding a factory, which stands for no row
   void userFactory.create({ posts: [teamFactory] });
+  // @ts-expect-error a list holding a batched factory, which stands for no row either
   void userFactory.create({ posts: [teamFactory.count(2)] });
+  // @ts-expect-error a list holding a factory, through a state
   void userFactory.state({ posts: [teamFactory] });
+  // @ts-expect-error a row-shaped object names no key of the relation input
+  void postFactory.create({ author: { email: "x@y.z", name: "X" } });
+  // @ts-expect-error an empty relation input names none of its keys
+  void postFactory.create({ author: {} });
 
   // @ts-expect-error no belongs-to relation from "post" to "team"
   void postFactory.for(teamRow, "author");

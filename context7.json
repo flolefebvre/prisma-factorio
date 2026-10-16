@@ -31,7 +31,7 @@
     "create() persists through the client and returns the real database row — or an array of rows when the factory carries count(n).",
     "Definitions are checked against the model's Prisma create input, nested relation input included. A misspelled field or a state that does not exist is a compile error, not a runtime surprise.",
     "States declared in the config become typed methods on the factory: a `suspended` state gives `userFactory.suspended()`. Add one on the chain with .state().",
-    "Attach a parent with for(), children with has(), or put a factory or row directly in a relation field of the definition. Prefer for() and has(): a wrong-model row in a relation attribute is not type-checked.",
+    "Attach a parent with for(), children with has(), or put a factory, a row or Prisma's nested input (`{ connect }`, `{ create }`) directly in a relation field. Each is type-checked against the model the field points at.",
     "The library opens no transaction of its own — atomicity is the caller's. Route a whole graph through one with `prisma.$transaction((tx) => factory.using(tx).create())`.",
     "A definition receives { faker, index, uid } and is evaluated once per record, so count(n) yields n distinct records rather than n copies.",
     "seed pins faker's values and recycle's picks, but does not make a run reproducible: uid draws a fresh random prefix per process, so never snapshot uid-derived columns.",

@@ -213,6 +213,10 @@ type RelationValue<C, M extends ModelName<C>, K, List extends boolean = false> =
       : never
     : never;
 
+// Prisma's nested relation input leaves every key optional, and weak type detection lapses in a
+// union holding a non-weak member, so beside a row that input would take any object at all.
+type NamingOneKey<T> = T extends object ? { [P in keyof T]-?: Record<P, T[P]> & T }[keyof T] : T;
+
 // Distributed over the mutually exclusive branches Prisma's create input holds, each of which pads
 // the keys the other owns with `?: never`: a padded key is left alone, so naming a raw foreign key
 // and its relation field at once stays an error. Both arities are read because a relation field
@@ -221,7 +225,9 @@ type WidenRelations<T, C, M extends ModelName<C>> = T extends object
   ? {
       [K in keyof T]: [Exclude<T[K], undefined>] extends [never]
         ? T[K]
-        : T[K] | RelationValue<C, M, K> | RelationValue<C, M, K, true>;
+        : K extends RelationKey<C, M>
+          ? NamingOneKey<T[K]> | RelationValue<C, M, K> | RelationValue<C, M, K, true>
+          : T[K];
     }
   : T;
 
