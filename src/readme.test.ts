@@ -21,7 +21,7 @@ import { factorioHarness, userDefinition } from "./tests/factorio.js";
 // is the test harness's client. A block's module-scope `export const` declarations are locals of the
 // function that mirrors it, and a declaration a later block leans on is that function's parameter.
 //
-// Never invoked, save for the test at the foot of the file: these calls exist for `pnpm typecheck`,
+// Never invoked, save for the tests at the foot of the file: these calls exist for `pnpm typecheck`,
 // which reads this file. Each directive fails the gate the moment the type it names stops rejecting —
 // or stops accepting — what it is given.
 
@@ -349,6 +349,26 @@ export function explicitIdAndRelation(
   void inviteFactory.create({ id: "3f2c9e1a-0b7d-4c55-9a8e-6d1f2b3c4d5e", team: teamRow });
 }
 
+// README "Runtime edges", the bullet "A compound unique key over a few values collides across calls":
+// the recipe for the full set under one parent, a team's roster over a fixed list of users. The test
+// at the foot of the file runs it.
+export async function compoundKeyRoster(
+  userFactory: Factory<TestClient, "user">,
+  teamFactory: Factory<TestClient, "team">,
+  membershipFactory: Factory<TestClient, "membership">,
+): Promise<Row<TestClient, "membership">[]> {
+  const team = await teamFactory.create();
+  const users = await userFactory.count(3).create();
+
+  const roster = await membershipFactory
+    .count(users.length)
+    .for(team, "team")
+    .state(({ index }) => ({ user: users[index] }))
+    .create();
+
+  return roster;
+}
+
 // README "Typing edges", the bullet "Error shape": a misspelled field is reported on the offending
 // property against a type naming it, so each directive sits on that property's line rather than on
 // the call's. A declared field of the wrong type still reads `never`.
@@ -515,6 +535,23 @@ export function partialAttributesForwarding(
   expectTypeOf(postFactory.create(attrs)).resolves.toEqualTypeOf<Row<TestClient, "post">>();
   expectTypeOf(postFactory.state(attrs)).toEqualTypeOf<Factory<TestClient, "post">>();
 }
+
+// README "Runtime edges", the compound-key roster: one batch under one team gives every user on the list
+// a membership of their own, where a second call for the same team would collide on the key.
+test("a roster batch writes one membership per listed user under the one team, each key distinct", async () => {
+  const { prisma, userFactory, teamFactory, membershipFactory } = await factorioHarness();
+
+  const roster = await compoundKeyRoster(userFactory, teamFactory, membershipFactory);
+
+  const [team] = await prisma.team.findMany();
+  const users = await prisma.user.findMany({ orderBy: { id: "asc" } });
+  const written = await prisma.membership.findMany({ orderBy: { userId: "asc" } });
+  expect(await prisma.team.count()).toBe(1);
+  expect(users).toHaveLength(3);
+  expect(roster).toHaveLength(3);
+  expect(written.map(({ userId, teamId }) => [userId, teamId])).toEqual(users.map(({ id }) => [id, team?.id]));
+  expect(new Set(written.map(({ userId, teamId }) => `${String(userId)}:${String(teamId)}`)).size).toBe(3);
+});
 
 // README "Transactional tests", the `posts.test.ts` block — run rather than merely compiled, the
 // recipe being the one the section tells a reader to copy. The sentinel is what commits nothing.
