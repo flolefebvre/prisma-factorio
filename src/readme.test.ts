@@ -242,8 +242,9 @@ export async function recycleSharedParentSection(
 }
 
 // README "Recycle", the block declaring `postFactory` and `commentFactory` with two user legs, the Children block
-// below it, and the bullets: the pool never stands in for the record asked for, successive calls merge
-// per model, and a row loaded with `include` is accepted where one missing a required scalar is not.
+// below it, and the bullets: the pool never stands in for the record asked for, a model the graph never
+// creates and native relation input draw nothing from it, successive calls merge per model, and a row
+// loaded with `include` is accepted where one missing a required scalar is not.
 export async function recycleSection(
   prismaFactorio: Factorio<TestClient>,
   userFactory: Factory<TestClient, "user">,
@@ -252,6 +253,7 @@ export async function recycleSection(
   loaded: Row<TestClient, "user"> & { posts: Row<TestClient, "post">[] },
   existingPosts: Row<TestClient, "post">[],
   onePost: Row<TestClient, "post">,
+  tag: Row<TestClient, "tag">,
 ): Promise<void> {
   /* jscpd:ignore-start — a transcription of the document restates what the suite declares; that is this file's purpose, not duplication to refactor away. */
   const postFactory = prismaFactorio.define("post", {
@@ -269,6 +271,11 @@ export async function recycleSection(
   void commentFactory.recycle("comment", comment);
   void commentFactory.recycle("user", ada).recycle("user", grace);
   void commentFactory.recycle("user", loaded);
+  void postFactory.recycle("tag", tag).create();
+  void postFactory
+    .state({ author: { create: { email: "grace@example.com", name: "Grace" } } })
+    .recycle("user", ada)
+    .create();
 
   await userFactory.recycle("post", existingPosts).has(postFactory.count(3), "posts").create();
 
