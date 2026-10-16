@@ -297,10 +297,10 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * is none, or where the parent stands for no record of any model — a hand-built partial object is no
    * row — the field reads as a message saying which. The field may be left out where the model pair
    * shares exactly one belongs-to relation; where it shares several, or none, the parent parameter
-   * reads as a message naming the pair — and, for several, the fields to pick from. A parent factory is evaluated once per `create` call, so a batch connects to one record
-   * rather than to one each. The relation field merges at the position `for` was called: a state
-   * applied after it wins that field, a state applied before it loses, and `create`'s overrides win
-   * over both.
+   * reads as a message naming the pair — and, for several, the fields to pick from. A parent factory
+   * is evaluated once per `create` call, so a batch connects to one record rather than to one each.
+   * The relation field merges at the position `for` was called: a state applied after it wins that
+   * field, a state applied before it loses, and `create`'s overrides win over both.
    *
    * @example
    * ```ts
@@ -318,14 +318,14 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    *
    * A named relation field is one of the has-many fields pointing at the children's model; where there
    * is none, or where the children stand for no records of any model, the field reads as a message
-   * saying which. The field may be left out where the model pair shares exactly one has-many relation; where it shares several, or
-   * none, the children parameter reads as a message naming the pair — and, for several, the fields to
-   * pick from. Rows are connected as they stand, no record of the child
-   * model being created for them; a child factory creates records of its own per parent record and
-   * reaches back through the inverse relation field, which `inverse` names where the client's metadata
-   * pairs the two sides down to more than one. Every child of one record is created before the next
-   * record of a batch is, layer by layer in the order the calls were made, and each one reads the
-   * record it was created for through `parent`.
+   * saying which. The field may be left out where the model pair shares exactly one has-many
+   * relation; where it shares several, or none, the children parameter reads as a message naming the
+   * pair — and, for several, the fields to pick from. Rows are connected as they stand, no record of
+   * the child model being created for them; a child factory creates records of its own per parent
+   * record and reaches back through the inverse relation field, which `inverse` names where the
+   * client's metadata pairs the two sides down to more than one. Every child of one record is created
+   * before the next record of a batch is, layer by layer in the order the calls were made, and each
+   * one reads the record it was created for through `parent`.
    *
    * `has` adds to the relation field rather than replacing it: two calls on one field both apply, and
    * a call made after a state adds to what that state left standing. Every other layer — a definition
