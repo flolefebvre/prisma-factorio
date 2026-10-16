@@ -425,7 +425,7 @@ export function statesCheckedByTheCompiler(prismaFactorio: Factorio<TestClient>,
   });
 
   // @ts-expect-error a state the config does not declare
-  void userFactory.suspndd;
+  expectTypeOf(userFactory.suspndd);
   // @ts-expect-error a state naming a field the model does not have
   prismaFactorio.define("user", { definition: userDefinition, states: { bad: { nmae: "Ada" } } });
   // @ts-expect-error a state giving a field the wrong value type
@@ -452,7 +452,7 @@ export function statesCheckedByTheCompiler(prismaFactorio: Factorio<TestClient>,
   void userFactory.state(({ index }) => (index === 0 ? { name: "Ada" } : { nmae: "Grace" }));
   // @ts-expect-error a config annotated without its state names carries no states
   const annotated: FactoryConfig<TestClient, "user"> = { definition: userDefinition, states: { bad: held } };
-  void annotated;
+  expectTypeOf(annotated);
 
   // @ts-expect-error an inline state naming a field the model does not have
   void userFactory.state({ nmae: "Ada" });
@@ -4206,7 +4206,7 @@ export function relationsCheckedByTheCompiler(
   // @ts-expect-error a named field has to point at the parent factory's model
   void postFactory.for(commentFactory, "editor");
   // @ts-expect-error a field union spanning two models takes no parent of just one of them
-  void ((field: "membership" | "sponsor"): unknown => badgeFactory.for(teamRow, field));
+  expectTypeOf((field: "membership" | "sponsor"): unknown => badgeFactory.for(teamRow, field));
 
   // A helper forwarding an optional relation field reaches the call with the field typed as possibly
   // `undefined`, which a pair sharing one relation takes.
@@ -4214,7 +4214,7 @@ export function relationsCheckedByTheCompiler(
   void attach();
   void commentFactory.for(postFactory, undefined).create();
   // @ts-expect-error the forwarded field still has to be one the pair shares
-  void ((field?: "author"): Factory<TestClient, "comment"> => commentFactory.for(postRow, field));
+  expectTypeOf((field?: "author"): Factory<TestClient, "comment"> => commentFactory.for(postRow, field));
 
   void userFactory.has(postFactory, "posts").create();
   void userFactory.has(draftable, "posts").create();
@@ -4267,7 +4267,7 @@ export function relationsCheckedByTheCompiler(
   void attachComments();
   void postFactory.has(commentRow, undefined).create();
   // @ts-expect-error the forwarded field still has to be one the pair shares
-  void ((field?: "posts"): Factory<TestClient, "post"> => postFactory.has(commentFactory, field));
+  expectTypeOf((field?: "posts"): Factory<TestClient, "post"> => postFactory.has(commentFactory, field));
 
   void postFactory.has(tagFactory).create();
   void postFactory.has(tagFactory.count(3), "tags").create();

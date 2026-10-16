@@ -92,7 +92,7 @@ export function statesSection(prismaFactorio: Factorio<TestClient>): void {
   // Read rather than called: a call on a member the compiler could not resolve is unsafe, and the
   // member is where the error the README claims already lands.
   // @ts-expect-error a state the config never declared
-  void userFactory.suspnded;
+  expectTypeOf(userFactory.suspnded);
   // @ts-expect-error a state named after a method the factory already answers to
   prismaFactorio.define("user", { definition: userDefinition, states: { create: { name: "Ada" } } });
   // @ts-expect-error a state named `then`, which would leave the factory thenable
@@ -527,7 +527,7 @@ export async function typesSection({ userFactory, postFactory }: ReadmeFactories
 
   type ViaParameters = Parameters<typeof postFactory.create>[0];
   const viaParameters: ViaParameters = { title: "Draft" };
-  void viaParameters;
+  expectTypeOf(viaParameters);
   expectTypeOf<ViaParameters>().toExtend<PartialAttributes<TestClient, "post"> | undefined>();
   expectTypeOf<PartialAttributes<TestClient, "post"> | undefined>().toExtend<ViaParameters>();
 }
