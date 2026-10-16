@@ -2650,6 +2650,65 @@ test("a pooled join-model row fills a single-record field on its compound key", 
   await expect(harness.prisma.membership.count()).resolves.toBe(1);
 });
 
+interface Booked {
+  harness: Harness;
+  bookingFactory: Factory<TestClient, "booking">;
+}
+
+// `Booking.venueId` belongs to both the `venue` key and the composite `customer` key, and each relation
+// default brings a venue of its own. Both relations reach Prisma as `connect`, in the definition's field
+// order, and Prisma keeps the venue of the later one.
+async function booked(order: "venue first" | "customer first"): Promise<Booked> {
+  const harness = await factorioHarness();
+  const { venueFactory, customerFactory } = harness;
+  const bookingFactory = harness.prismaFactorio.define("booking", {
+    definition: ({ uid }) =>
+      order === "venue first"
+        ? { seat: uid, venue: venueFactory, customer: customerFactory }
+        : { seat: uid, customer: customerFactory, venue: venueFactory },
+  });
+
+  return { harness, bookingFactory };
+}
+
+test("relation defaults disagreeing on a shared foreign key column put the booking on the later field's venue", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const { prisma } = harness;
+
+  const booking = await bookingFactory.create();
+  const customer = await prisma.customer.findUniqueOrThrow({ where: { id: booking.customerId } });
+  const orphans = await prisma.venue.findMany({ where: { bookings: { none: {} }, customers: { none: {} } } });
+
+  expect(booking.venueId).toBe(customer.venueId);
+  await expect(prisma.venue.count()).resolves.toBe(2);
+  expect(orphans).toHaveLength(1);
+  expect(orphans[0]?.id).not.toBe(booking.venueId);
+});
+
+test("relation defaults disagreeing on a shared foreign key column violate it when the composite key comes first", async () => {
+  const { bookingFactory } = await booked("customer first");
+
+  const created = bookingFactory.create();
+
+  await expect(created).rejects.toThrow("Foreign key constraint violated");
+  await expect(created).rejects.toMatchObject({ code: "P2003" });
+});
+
+test.each(["venue first", "customer first"] as const)(
+  "recycle() hands relation defaults sharing a foreign key column one venue (%s)",
+  async (order) => {
+    const { harness, bookingFactory } = await booked(order);
+    const { prisma, venueFactory } = harness;
+    const venue = await venueFactory.create();
+
+    const booking = await bookingFactory.recycle("venue", venue).create();
+    const customer = await prisma.customer.findUniqueOrThrow({ where: { id: booking.customerId } });
+
+    expect([booking.venueId, customer.venueId]).toStrictEqual([venue.id, venue.id]);
+    await expect(prisma.venue.count()).resolves.toBe(1);
+  },
+);
+
 // Pending children reach back to the row that now exists through the same where-clause: badges hung
 // off a membership by a `has` layer name it on the compound selector.
 test("has() children of a compound-keyed parent reach back on its compound key", async () => {

@@ -346,6 +346,32 @@ const ada = await userFactory.has(membershipFactory.count(2).state({ role: "admi
 
 ## Recycle
 
+Each relation default builds a graph of its own, so two relations that must agree on one parent never agree by themselves. Here a booking's customer belongs to a venue, and the composite key holds the booking to that same venue:
+
+```prisma
+model Booking {
+  id         Int      @id @default(autoincrement())
+  seat       String
+  venue      Venue    @relation(fields: [venueId], references: [id])
+  venueId    Int
+  customer   Customer @relation(fields: [customerId, venueId], references: [id, venueId])
+  customerId Int
+}
+```
+
+```ts
+export const bookingFactory = prismaFactorio.define("booking", {
+  definition: ({ uid }) => ({ seat: uid, venue: venueFactory, customer: customerFactory }), // customerFactory brings its own venue
+});
+```
+
+`bookingFactory.create()` succeeds, but the booking lands on the customer's venue and the venue its `venue` default created is left orphaned; list `customer` before `venue` and Prisma raises `Foreign key constraint violated` instead — the definition's field order picks between the two ([#100](https://github.com/flolefebvre/prisma-factorio/issues/100)). Create the shared parent first and recycle it, and both legs draw the same venue, in either order:
+
+```ts
+const venue = await venueFactory.create();
+const booking = await bookingFactory.recycle("venue", venue).create();
+```
+
 `recycle()` pools rows that already exist: anywhere the graph would otherwise create a record of a pooled model, it connects a pooled row instead. The model is named outright — a row carries nothing that says which model it belongs to — and the name is a key of your client's models, so the row is checked against that model: one missing a required scalar is a compile error, and one loaded with `include` is accepted.
 
 Here `Post.author` and `Post.editor` both point at `User`, and a comment reaches a user through its post:
@@ -557,6 +583,7 @@ Sharp edges worth knowing before they find you. The linked issues and ADRs carry
 
 ### Runtime edges
 
+- **Relation defaults never share a parent on their own.** Each builds a graph of its own, so a booking whose `venue` and `customer` must agree on one venue builds two of them; [recycle](#recycle) the shared parent to hand both legs the same row.
 - **An explicit database-generated `id` meets a belongs-to relation field only through a parent the build creates.** Where the database generates the id — `@default(autoincrement())` — Prisma's _checked_ create input carries no `id`, so naming one forces the record into the _unchecked_ branch, which drops every relation field whose foreign key the model itself holds and takes those raw columns instead. A client-side default (`uuid()`, `cuid()`) or a bare `@id` keeps `id` in the checked input, and none of this applies ([#60](https://github.com/flolefebvre/prisma-factorio/issues/60)). Under a database-generated id, a parent the factory creates in the same build is written as its raw foreign key ([ADR 0005](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/adr/0005-fresh-rows-as-foreign-keys.md)), so `postFactory.create({ id: 7 })` succeeds while the definition's `author: userFactory` creates the author. A parent handed over as a row, drawn from a recycle pool or given as native relation input stays a `connect`, which the unchecked branch refuses: `postFactory.create({ id: 7, author: { connect: { id: 1 } } })` is a compile error, and the same parent arriving through the definition or a state type-checks, then fails at runtime with Prisma's `Unknown argument \`id\``.
 - **A parent the build creates is written as its foreign key; an existing row is connected on its scalar fields.** A row a relation default or a `for(factory)` call creates, and the parent a `has()` child reaches back to, cannot have gone stale, so it reaches Prisma as the raw foreign key column — `authorId` rather than `author: { connect: … }` — which spares the implicit transaction and existence read Prisma runs for every nested `connect`. Prisma takes one create either way or the other, never both, so a create where any relation holding a key is filled by a row handed over, a pooled row or native relation input keeps every relation on `connect`, as does a client whose schema text the library cannot read ([ADR 0005](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/adr/0005-fresh-rows-as-foreign-keys.md)). Where it must connect at all, a row the build creates connects on its key alone — the fields the foreign key references, joined by Prisma's compound selector where that key is compound — wherever the library can read that key, so a record changed since the build created it, by an `afterCreating` callback say, is still reached. A row parent's non-null scalars are splatted into the `connect` where-clause — a `null` is left out, Prisma refusing one under a nullable unique column; so is a `Json` or scalar-list column (`String[]`, `Int[]`, an enum list), which Prisma types in `WhereUniqueInput` as a filter a raw value is no valid match for, a list being recognised only where the client carries its schema text; and so is a relation the row was loaded with, as `include` hands back — because the runtime datamodel marks no field unique and no subset of a row is knowably the one Prisma would match on. A compound unique constraint the row can name whole joins them as Prisma's generated selector — `{ userId_teamId: { … } }` — read off the schema text the client carries, which is what lets a model whose only unique constraint is compound connect at all. Every field still narrows the match, so a row read _before_ the record changed fails loudly rather than silently connecting to whatever the record has since become — a changed `updatedAt` is enough. The library's error names the model and the relation field(s) the row stood in and says to re-read the row or pass native relation input, Prisma's not-found error standing behind it as `cause`.
 - **Reading a relation field's arity costs one query, once.** Prisma 7 publishes no arity at runtime, so the first time a factory or a list of rows stands in a given relation field the library puts the question to the query API instead. A field holding a single record answers for nothing — Prisma refuses the probe's filter before it reaches the database — and one holding many costs a single `SELECT … LIMIT 1`. The answer is held per field and per client, so the rest of the graph asks nothing, and a `.using(tx)` client asks once of its own ([ADR 0003](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/adr/0003-arity-through-the-query-surface.md)).
