@@ -9,10 +9,10 @@ import { createTestClient, disposeTestClient, type TestClient } from "./client.j
  * `Booking`: its two relation defaults disagree on the `venueId` they share, so the tests that need
  * one declare it themselves.
  *
- * `postFactory`, `commentFactory`, `membershipFactory`, `badgeFactory` and `customerFactory` carry a
- * relation default, so creating any of them walks the chain of factories behind it: a comment brings
- * a post, which brings a user; a membership brings a user and a team both; a badge brings a whole
- * membership; and a customer brings a venue.
+ * `postFactory`, `commentFactory`, `membershipFactory`, `badgeFactory`, `customerFactory` and
+ * `inviteFactory` carry a relation default, so creating any of them walks the chain of factories
+ * behind it: a comment brings a post, which brings a user; a membership brings a user and a team
+ * both; a badge brings a whole membership; a customer brings a venue; and an invite brings a team.
  *
  * @example
  * ```ts
@@ -31,6 +31,7 @@ export interface Harness {
   badgeFactory: Factory<TestClient, "badge">;
   venueFactory: Factory<TestClient, "venue">;
   customerFactory: Factory<TestClient, "customer">;
+  inviteFactory: Factory<TestClient, "invite">;
 }
 
 /**
@@ -91,6 +92,9 @@ export async function factorioHarness(options: FactorioOptions = {}): Promise<Ha
   const customerFactory = prismaFactorio.define("customer", {
     definition: ({ uid }) => ({ phone: uid, venue: venueFactory }),
   });
+  const inviteFactory = prismaFactorio.define("invite", {
+    definition: ({ uid }) => ({ code: uid, team: teamFactory }),
+  });
 
   return {
     prisma,
@@ -104,5 +108,6 @@ export async function factorioHarness(options: FactorioOptions = {}): Promise<Ha
     badgeFactory,
     venueFactory,
     customerFactory,
+    inviteFactory,
   };
 }

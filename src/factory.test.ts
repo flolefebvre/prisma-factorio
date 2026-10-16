@@ -517,10 +517,13 @@ test("state returns a new factory rather than changing the one it was called on"
 });
 
 // Everything a transaction client answers to that a factory of this harness reaches.
-type Transaction = Pick<TestClient, "user" | "post" | "comment" | "badge" | "venue" | "customer" | "booking">;
+type Transaction = Pick<
+  TestClient,
+  "user" | "post" | "comment" | "badge" | "venue" | "customer" | "booking" | "team" | "invite"
+>;
 
 type Delegates = Record<
-  "user" | "post" | "badge" | "booking",
+  "user" | "post" | "badge" | "booking" | "invite",
   { create: (args: { data: Record<string, unknown> }) => Promise<unknown> }
 >;
 
@@ -962,6 +965,34 @@ test("an explicit id beside a handed-over parent is refused, the parent staying 
   const ada = await userFactory.create();
 
   await expect(postFactory.state({ author: ada }).create({ id: 7 })).rejects.toThrow("Unknown argument `id`");
+});
+
+// An id the client generates stays in the checked create input, so a handed-over parent connects
+// beside it and a fresh one is written as its key beside it: neither path refuses the explicit id.
+test("an explicit client-generated id beside a handed-over or a fresh parent persists with its foreign key", async () => {
+  const harness = await factorioHarness();
+  const { prisma, inviteFactory, teamFactory } = harness;
+  const { client, written } = recording(prisma, "invite");
+  const team = await teamFactory.create();
+  const handedId = "0b6f3a52-7c1e-4d8a-9f20-5e4b3c2a1d00";
+  const freshId = "0b6f3a52-7c1e-4d8a-9f20-5e4b3c2a1d01";
+
+  const handed = await inviteFactory.using(client).create({ id: handedId, team });
+  const fresh = await inviteFactory.using(client).create({ id: freshId, team: teamFactory });
+  const freshTeam = await prisma.team.findFirstOrThrow({ where: { id: { not: team.id } } });
+
+  expect(written).toStrictEqual([
+    { id: handedId, code: handed.code, team: { connect: filled(team) } },
+    { id: freshId, code: fresh.code, teamId: freshTeam.id },
+  ]);
+  expect([handed, fresh]).toMatchObject([
+    { id: handedId, teamId: team.id },
+    { id: freshId, teamId: freshTeam.id },
+  ]);
+  await expect(prisma.invite.findMany({ orderBy: { id: "asc" } })).resolves.toStrictEqual([
+    { id: handedId, code: handed.code, teamId: team.id },
+    { id: freshId, code: fresh.code, teamId: freshTeam.id },
+  ]);
 });
 
 // A relation field and the foreign key columns backing it are one key to the merge: a later layer
@@ -2207,7 +2238,7 @@ test("a child factory's own has() reaches the level below it", async () => {
 
 // `parent` spans every model the client carries, and the join model declares no `id` of its own, so
 // a closure reading one narrows before it reaches the column.
-function parentId(parent: Row<TestClient, ModelName<TestClient>> | undefined): number | undefined {
+function parentId(parent: Row<TestClient, ModelName<TestClient>> | undefined): number | string | undefined {
   return parent !== undefined && "id" in parent ? parent.id : undefined;
 }
 
@@ -2227,7 +2258,7 @@ test("a child state closure reads the created parent row through parent", async 
 // they declared: a record it goes on to create for no one reads the record of a run already over.
 test("a child factory reused after a has() chain reads no parent of its own", async () => {
   const { prisma, prismaFactorio, userFactory } = await factorioHarness();
-  const seen: (number | undefined)[] = [];
+  const seen: (number | string | undefined)[] = [];
   const creditedFactory = prismaFactorio.define("post", {
     definition: ({ uid }) => ({ title: uid, author: userFactory }),
     states: {

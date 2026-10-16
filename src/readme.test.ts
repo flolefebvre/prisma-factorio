@@ -328,15 +328,25 @@ export async function withoutSequence(userFactory: Factory<TestClient, "user">):
 // README "Runtime edges", the bullet "An explicit database-generated `id` meets a belongs-to relation
 // field only through a parent the build creates". Prisma's checked create input carries no `id` the
 // database generates, so naming one forces the record into the unchecked branch, which drops every
-// relation field whose foreign key the model holds and takes the raw column instead. A Prisma release
-// reshaping either branch falsifies the bullet, and these three lines are what says so; the runtime
-// half is pinned in `factory.test.ts`.
-export function explicitIdAndRelation(postFactory: Factory<TestClient, "post">): void {
+// relation field whose foreign key the model holds and takes the raw column instead. An id the client
+// generates stays in the checked input, so on `invite` the same pairing compiles. A Prisma release
+// reshaping either branch falsifies the bullet, and these lines are what says so; the runtime half is
+// pinned in `factory.test.ts`.
+export function explicitIdAndRelation(
+  postFactory: Factory<TestClient, "post">,
+  inviteFactory: Factory<TestClient, "invite">,
+  teamFactory: Factory<TestClient, "team">,
+  teamRow: Row<TestClient, "team">,
+): void {
   void postFactory.create({ id: 7 });
   void postFactory.create({ id: 7, authorId: 1 });
 
   // @ts-expect-error no branch of the create input survives an id beside a belongs-to relation field
   void postFactory.create({ id: 7, author: { connect: { id: 1 } } });
+
+  void inviteFactory.create({ id: "3f2c9e1a-0b7d-4c55-9a8e-6d1f2b3c4d5e", team: { connect: { id: 1 } } });
+  void inviteFactory.create({ id: "3f2c9e1a-0b7d-4c55-9a8e-6d1f2b3c4d5e", team: teamFactory });
+  void inviteFactory.create({ id: "3f2c9e1a-0b7d-4c55-9a8e-6d1f2b3c4d5e", team: teamRow });
 }
 
 // README "Typing edges", the bullet "Error shape": a misspelled field is reported on the offending

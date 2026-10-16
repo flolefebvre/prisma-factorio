@@ -36,7 +36,7 @@ type Batched<M extends ModelName<TestClient>> = Factory<TestClient, M, Row<TestC
 
 test("a model name is a delegate the client carries", () => {
   expectTypeOf<ModelName<TestClient>>().toEqualTypeOf<
-    "user" | "post" | "comment" | "tag" | "team" | "membership" | "badge" | "venue" | "customer" | "booking"
+    "user" | "post" | "comment" | "tag" | "team" | "membership" | "badge" | "venue" | "customer" | "booking" | "invite"
   >();
 });
 
@@ -260,6 +260,8 @@ export function checkedByTheCompiler(
   statefulFactory: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
   commentFactory: Factory<TestClient, "comment">,
   commentRows: Row<TestClient, "comment">[],
+  teamFactory: Factory<TestClient, "team">,
+  inviteFactory: Factory<TestClient, "invite">,
 ): void {
   prismaFactorio.define("user", {
     definition: ({ uid }) => ({ email: `${uid}@example.com`, posts: { create: { title: "t" } } }),
@@ -315,6 +317,10 @@ export function checkedByTheCompiler(
   void userFactory.create({ name: 42 });
   // @ts-expect-error overrides naming both halves of a mutually exclusive relation input
   void postFactory.create({ authorId: 1, author: { connect: { id: 1 } } });
+  // @ts-expect-error both halves under an id the client generates, which keeps the checked input open
+  void inviteFactory.create({ teamId: 1, team: { connect: { id: 1 } } });
+  // @ts-expect-error both halves beside an explicit client-generated id
+  void inviteFactory.create({ id: "3f2c9e1a-0b7d-4c55-9a8e-6d1f2b3c4d5e", teamId: 1, team: { connect: { id: 1 } } });
   // @ts-expect-error a plain object carries no delegate
   void userFactory.using({});
 
@@ -330,6 +336,8 @@ export function checkedByTheCompiler(
   prismaFactorio.define("post", { definition: () => ({ title: userFactory, author: userFactory }) });
   // @ts-expect-error a factory on the relation half while the raw foreign key holds the other
   prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, authorId: 1, author: userFactory }) });
+  // @ts-expect-error the same clash on a model whose id the client generates
+  prismaFactorio.define("invite", { definition: ({ uid }) => ({ code: uid, teamId: 1, team: teamFactory }) });
   // @ts-expect-error a state naming a relation field of a model the relation does not point at
   void postFactory.state({ author: postFactory });
   // @ts-expect-error a batched factory creates a row each, so it stands for no one record
