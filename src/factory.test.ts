@@ -2970,6 +2970,33 @@ test("recycle(model, []) leaves the graph creating the related records it always
   await expect(prisma.user.count()).resolves.toBe(2);
 });
 
+// The pool stands in for records the graph would create, so one naming a model the graph never
+// reaches has nothing to stand in for: legal, and inert.
+test("a pool naming a model the graph never creates draws nothing and creates nothing", async () => {
+  const { prisma, postFactory, tagFactory } = await factorioHarness();
+  const tag = await tagFactory.create();
+
+  await postFactory.recycle("tag", tag).create();
+
+  await expect(prisma.tag.count()).resolves.toBe(1);
+  await expect(prisma.post.count()).resolves.toBe(1);
+});
+
+// A state loses to the pool where it holds a factory; native relation input is Prisma's own, and the
+// pool has no reading for it.
+test("native relation input under a pool creates its record rather than connecting a pooled row", async () => {
+  const { prisma, postFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create();
+
+  const post = await postFactory
+    .state({ author: { create: { email: "grace@example.com", name: "Grace" } } })
+    .recycle("user", ada)
+    .create();
+
+  expect(post.authorId).not.toBe(ada.id);
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
 // The pool stands for the related records a graph reaches, which the record a create was called for
 // is not: a factory pooling rows of its own model creates all the same.
 test("the model a factory creates is never drawn from its own pool", async () => {
