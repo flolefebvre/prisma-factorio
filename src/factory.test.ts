@@ -893,21 +893,18 @@ test("a row handed over or drawn from a pool reaches create as connect on every 
 
 // Prisma's create input is either the checked shape or the unchecked one, and a foreign key column
 // beside a `connect` on another relation field holding a key fits neither: one handed-over or pooled
-// row keeps every relation of that create on `connect`, the fresh ones included.
+// row keeps every relation of that create on `connect`, the fresh ones included, which match on their
+// key alone.
 test("a fresh row beside a handed-over or pooled one keeps the whole create on connect", async () => {
   const { harness, client, written, ada } = await besideAda();
-  const { prisma, postFactory, userFactory } = harness;
+  const { postFactory, userFactory } = harness;
 
   const handed = await postFactory.using(client).create({ editor: ada });
   const pooled = await postFactory.using(client).recycle("user", ada).create({ editor: userFactory });
-  const [author, editor] = await Promise.all([
-    prisma.user.findUniqueOrThrow({ where: { id: handed.authorId } }),
-    prisma.user.findUniqueOrThrow({ where: { id: pooled.editorId ?? 0 } }),
-  ]);
 
   expect(written).toStrictEqual([
-    { title: handed.title, author: { connect: filled(author) }, editor: { connect: filled(ada) } },
-    { title: pooled.title, author: { connect: filled(ada) }, editor: { connect: filled(editor) } },
+    { title: handed.title, author: { connect: { id: handed.authorId } }, editor: { connect: filled(ada) } },
+    { title: pooled.title, author: { connect: filled(ada) }, editor: { connect: { id: pooled.editorId } } },
   ]);
 });
 
@@ -918,7 +915,7 @@ test("a has() child whose other parent was handed over keeps both relations on c
   const user = await userFactory.using(client).has(postFactory.for(ada, "editor"), "posts").create();
 
   expect(written.map(({ author, editor }) => [author, editor])).toStrictEqual([
-    [{ connect: filled(user) }, { connect: filled(ada) }],
+    [{ connect: { id: user.id } }, { connect: filled(ada) }],
   ]);
 });
 
@@ -1102,6 +1099,18 @@ test("a fresh row holding null where its key references keeps the whole create o
   expect(written.map((data) => Object.keys(data))).toStrictEqual([["title", "author"]]);
 });
 
+// A key-only where-clause would name nothing there, so that row connects on every scalar instead.
+test("a fresh row holding null where its key references connects on its scalars", async () => {
+  const { prisma, postFactory } = await factorioHarness();
+  const { client, written } = recording(prisma, "post");
+  const nullable = rekeyed(client, "fields: [authorId], references: [id]", "fields: [authorId], references: [handle]");
+
+  const post = await postFactory.using(nullable).create();
+  const author = await prisma.user.findUniqueOrThrow({ where: { id: post.authorId } });
+
+  expect(written[0]?.author).toStrictEqual({ connect: filled(author) });
+});
+
 // A child factory of a duplicated package instance knows the brand and nothing of the mark the
 // parent's instance adds, which it drops along with every other symbol key: the `connect` beside the
 // mark is what it reaches back through.
@@ -1177,6 +1186,58 @@ test("a connect from native relation input that matches nothing keeps Prisma's o
 
   await expect(failure).rejects.toMatchObject({ code: "P2025" });
   await expect(failure).rejects.not.toThrow("no longer matches the database");
+});
+
+// A user factory whose own callback changes the record it just created, leaving the row the build
+// holds behind it.
+function renamingUsers(userFactory: Factory<TestClient, "user">): Factory<TestClient, "user"> {
+  return userFactory.afterCreating(async (user, { client }) => {
+    await client.user.update({ where: { id: user.id }, data: { name: `${user.name ?? ""}!` } });
+  });
+}
+
+// A handed row keeps every relation of the create on `connect`, and a row the build created connects
+// there on its key alone, so its own callback changing the record leaves nothing stale (#89).
+test("a fresh row its own callback changed connects beside a handed row", async () => {
+  const { prisma, postFactory, userFactory } = await factorioHarness();
+  const grace = await userFactory.create({ name: "Grace" });
+
+  const post = await postFactory.state({ author: renamingUsers(userFactory) }).create({ editor: grace });
+  const author = await prisma.user.findUniqueOrThrow({ where: { id: post.authorId } });
+
+  expect([author.name, post.editorId]).toStrictEqual(["Ada!", grace.id]);
+});
+
+// A compound key is matched through Prisma's generated selector, which the key-only where-clause still
+// carries.
+test("a fresh row with a compound key connects on that key beside a handed row", async () => {
+  const { prisma, badgeFactory, teamFactory } = await factorioHarness();
+  const { client, written } = recording(prisma, "badge");
+  const team = await teamFactory.create();
+
+  const badge = await badgeFactory.using(client).create({ sponsor: team });
+  const key = { userId: badge.userId, teamId: badge.teamId };
+
+  expect(written[0]?.membership).toStrictEqual({ connect: { ...key, userId_teamId: key } });
+  expect(badge.sponsorId).toBe(team.id);
+});
+
+// A record's own callbacks run once its children exist, so what changes the parent before a later
+// child reaches back is an earlier sibling's callback; the child still connects on the parent's key.
+test("a has() child reaches a parent an earlier sibling's callback changed, beside a handed row", async () => {
+  const { prisma, postFactory, userFactory } = await factorioHarness();
+  const grace = await userFactory.create({ name: "Grace" });
+  const renamingPostFactory = postFactory
+    .count(2)
+    .state({ editor: grace })
+    .afterCreating(async (post, { client }) => {
+      await client.user.update({ where: { id: post.authorId }, data: { name: `renamed by ${post.title}` } });
+    });
+
+  const ada = await userFactory.has(renamingPostFactory, "posts").create();
+  const posts = await prisma.post.findMany({ where: { authorId: ada.id } });
+
+  expect(posts).toHaveLength(2);
 });
 
 // Prisma types a nullable unique column in `WhereUniqueInput` as a bare selector, never a nullable
