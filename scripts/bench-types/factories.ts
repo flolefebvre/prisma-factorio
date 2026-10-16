@@ -49,6 +49,37 @@ function only<T>(found: T | undefined, what: string): T {
   return found;
 }
 
+function belongsToCount(schema: Schema, child: number, parent: number): number {
+  return schema.relations.filter(
+    (relation) => relation.kind === "belongs-to" && relation.child === child && relation.parent === parent,
+  ).length;
+}
+
+// The models `holder` holds many records of, one entry per relation field, so a model reached through
+// two fields appears twice.
+function listTargetsOf(schema: Schema, holder: number): number[] {
+  return schema.relations.flatMap((relation) => {
+    if (relation.kind === "belongs-to") return relation.parent === holder ? [relation.child] : [];
+    if (relation.left === holder) return [relation.right];
+    return relation.right === holder ? [relation.left] : [];
+  });
+}
+
+// The unnamed forms resolve the relation field from the model pair, which is the path a named field
+// skips, so each model also takes one call of each where its pair shares a single relation.
+function unnamedOf(schema: Schema, current: Model): string[] {
+  const parent = belongsToOf(schema, current).find(
+    (relation) => belongsToCount(schema, current.index, relation.parent) === 1,
+  );
+  const targets = listTargetsOf(schema, current.index);
+  const child = targets.find((target) => targets.filter((other) => other === target).length === 1);
+
+  return [
+    ...(parent === undefined ? [] : [`.for(${factoryOf(modelAt(schema, parent.parent))})`]),
+    ...(child === undefined ? [] : [`.has(${factoryOf(modelAt(schema, child))}.count(2))`]),
+  ];
+}
+
 function exerciseOf(schema: Schema, current: Model): string {
   const outgoing = belongsToOf(schema, current);
   const parent = only(
@@ -77,6 +108,7 @@ function exerciseOf(schema: Schema, current: Model): string {
     ...(self === undefined ? [] : [`.for(${factoryOf(current)}, "${self.field}")`]),
     `.has(${factoryOf(modelAt(schema, children.child))}.count(2), "${children.inverse}")`,
     ...peers.map((relation) => `.has(${factoryOf(modelAt(schema, relation.right))}.count(2), "${relation.field}")`),
+    ...unnamedOf(schema, current),
     `.recycle("${parentModel.key}", pooled)`,
     `.state({ ${current.label}: "inline" })`,
     `.create({ ${current.label}: "override" })`,
