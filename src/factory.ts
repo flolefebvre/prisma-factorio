@@ -21,11 +21,14 @@ import type {
   HasManyArgs,
   ModelName,
   Overrides,
+  Parent,
   ParentModel,
   ParentValue,
   PartialAttributes,
-  RelationArgs,
+  RelationsTo,
   Row,
+  SoleParent,
+  TargetModel,
 } from "./prisma.js";
 import type { Picker } from "./rng.js";
 import { nextUid } from "./uid.js";
@@ -262,18 +265,28 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * Connects every record this factory creates to one parent, named by a factory of the parent model
    * or by a row of it.
    *
-   * The relation field may be left out where the model pair shares exactly one belongs-to relation,
-   * and must be named where it shares several. A parent factory is evaluated once per `create` call,
-   * so a batch connects to one record rather than to one each. The relation field merges at the
-   * position `for` was called: a state applied after it wins that field, a state applied before it
-   * loses, and `create`'s overrides win over both.
+   * A named relation field checks the parent against the model that field points at. The field may be
+   * left out where the model pair shares exactly one belongs-to relation; where it shares several, or
+   * none, the parent parameter reads as a message naming the pair — and, for several, the fields to
+   * pick from. A parent factory is evaluated once per `create` call, so a batch connects to one record
+   * rather than to one each. The relation field merges at the position `for` was called: a state
+   * applied after it wins that field, a state applied before it loses, and `create`'s overrides win
+   * over both.
    *
    * @example
    * ```ts
    * const drafts = await postFactory.count(3).for(userFactory, "author").create();
+   * const comment = await commentFactory.for(post).create();
    * ```
    */
-  for<T extends ParentValue<C>>(parent: T, ...args: RelationArgs<C, M, ParentModel<C, T>>): Factory<C, M, R, S>;
+  for<K extends RelationsTo<C, M, ModelName<C>>>(
+    parent: Parent<C, TargetModel<C, M, K>>,
+    relationField: K,
+  ): Factory<C, M, R, S>;
+  for<T extends ParentValue<C>>(
+    parent: SoleParent<C, M, T>,
+    relationField?: RelationsTo<C, M, ParentModel<C, T>>,
+  ): Factory<C, M, R, S>;
   /**
    * Fills a relation field this model holds many records in, alongside every record it creates.
    *
@@ -1301,7 +1314,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
     state(state: unknown): Factory<C, M, R, S> {
       return derive(step(state));
     },
-    for(parent: object, relationField?: string): Factory<C, M, R, S> {
+    for(parent: unknown, relationField?: string): Factory<C, M, R, S> {
       return derive({ parent: parent as Record<string, unknown>, relationField });
     },
     has(children: object, ...args: unknown[]): Factory<C, M, R, S> {

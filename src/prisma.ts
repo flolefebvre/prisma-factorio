@@ -79,6 +79,41 @@ type IsUnion<U> = [U] extends [UnionToIntersection<U>] ? false : true;
 
 type Side<List extends boolean> = List extends true ? "has-many" : "belongs-to";
 
+type LastOf<U> =
+  UnionToIntersection<U extends unknown ? (member: U) => void : never> extends (member: infer L) => void ? L : never;
+
+type Quoted<U, L = LastOf<U>> = [Exclude<U, L>] extends [never]
+  ? `"${L & string}"`
+  : `${Quoted<Exclude<U, L>>} | "${L & string}"`;
+
+type Standing<List extends boolean> = List extends true ? "a row, a list of rows or a factory" : "a row or a factory";
+
+// Ordered: `IsUnion<never>` is `false`, so a pair sharing no relation at this arity reaches the sole
+// branch and satisfies every call unless the second branch catches it. A value no model answers for
+// has `T` fall back to its constraint, which no model answers for either.
+type Sole<C, MC extends ModelName<C>, MP, List extends boolean, T> = [MP] extends [never]
+  ? `ERROR: not ${Standing<List>} of any model`
+  : [RelationsTo<C, MC, MP & ModelName<C>, List>] extends [never]
+    ? `ERROR: no ${Side<List>} relation from "${MC & string}" to "${MP & string}"`
+    : IsUnion<RelationsTo<C, MC, MP & ModelName<C>, List>> extends true
+      ? `ERROR: "${MC & string}" has several ${Side<List>} relations to "${MP & string}": name one of ${Quoted<RelationsTo<C, MC, MP & ModelName<C>, List>>}`
+      : T;
+
+/**
+ * What a `for` call leaving its relation field out takes as the parent: the value itself where the
+ * model `M` shares exactly one belongs-to relation with the parent's model, and a message no value
+ * satisfies where it shares several or none, naming the pair and, for several, the fields to pick
+ * from.
+ *
+ * @example
+ * ```ts
+ * type Ok = SoleParent<PrismaClient, "comment", Row<PrismaClient, "post">>; // the row itself
+ * type Named = SoleParent<PrismaClient, "post", Row<PrismaClient, "user">>;
+ * // 'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"'
+ * ```
+ */
+export type SoleParent<C, M extends ModelName<C>, T> = Sole<C, M, ParentModel<C, T>, false, T>;
+
 /**
  * How a relation is selected between a child model and a parent model, at one arity: the relation
  * field may be left out where the pair shares exactly one, must be named where it shares several,

@@ -179,7 +179,7 @@ const ada = await userFactory.create({ name: "Ada Lovelace" });
 const byAda = await postFactory.for(ada, "author").create();
 ```
 
-- **The relation field is checked against the pair of models.** Leave it out where the two share exactly one belongs-to relation; name it where they share several. Where they share none, no value satisfies it — a `for()` between unrelated models is a compile error.
+- **The relation field is checked against the pair of models.** Leave it out where the two share exactly one belongs-to relation; name it where they share several, or `postFactory.for(ada)` reports `… not assignable to parameter of type '"ERROR: \"post\" has several belongs-to relations to \"user\": name one of \"author\" | \"editor\""'`. Where they share none, no value satisfies it — a `for()` between unrelated models is a compile error, read `ERROR: no belongs-to relation from "comment" to "user"`. A named field checks the parent against the model it points at, so `postFactory.for(teamRow, "author")` is reported against a `user` row or factory alone.
 - **A relation value matches the arity of the field it stands in.** A field holding a single record takes a value standing for one record. A field holding many takes a factory, a row or a list of rows, and treats what stands there as [children](#children) — in a definition, in a state and in `create()` overrides alike. That is `has()`'s own mechanism reached as a value rather than a method, and it sets the field where `has()` adds to it.
 - **`for()` returns a new factory, and states survive it in both chaining directions.** `postFactory.for(userFactory, "author").drafted()` and `postFactory.drafted().for(userFactory, "author")` both apply the state.
 

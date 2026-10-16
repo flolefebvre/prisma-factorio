@@ -4100,6 +4100,20 @@ export function relationsCheckedByTheCompiler(
   void postFactory.for(42, "author");
   // @ts-expect-error a batched factory creates a row each, so it stands for no one parent
   void postFactory.for(userFactory.count(3), "author");
+  // @ts-expect-error a named field checks the parent against the model it points at: a partial row
+  void postFactory.for({ id: 1 }, "author");
+  // @ts-expect-error a named field checks the parent against the model it points at: another model's row
+  void postFactory.for(commentRow, "author");
+  // @ts-expect-error the same check for a factory of another model
+  void postFactory.for(commentFactory, "editor");
+
+  // A helper forwarding an optional relation field reaches the call with the field typed as possibly
+  // `undefined`, which a pair sharing one relation takes.
+  const attach = (field?: "post"): Factory<TestClient, "comment"> => commentFactory.for(postRow, field);
+  void attach();
+  void commentFactory.for(postFactory, undefined).create();
+  // @ts-expect-error the forwarded field still has to be one the pair shares
+  void ((field?: "author"): Factory<TestClient, "comment"> => commentFactory.for(postRow, field));
 
   void userFactory.has(postFactory, "posts").create();
   void userFactory.has(draftable, "posts").create();

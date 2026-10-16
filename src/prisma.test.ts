@@ -13,6 +13,7 @@ import type {
   RelationKey,
   RelationsTo,
   Row,
+  SoleParent,
   TargetModel,
 } from "./prisma.js";
 import type { TestClient } from "./tests/client.js";
@@ -83,13 +84,13 @@ test("an implicit many-to-many answers a has-many side at both ends and a belong
 
 // There is no sensible end to call `for()` from: the error is the type layer reporting that, and the
 // answer for a many-to-many is `has()` from whichever end reads better.
-test("for() takes an argument no relation field satisfies at either end of a many-to-many", () => {
-  expectTypeOf<RelationArgs<TestClient, "post", "tag">>().toEqualTypeOf<
-    [relationField: 'ERROR: no belongs-to relation from "post" to "tag"']
-  >();
-  expectTypeOf<RelationArgs<TestClient, "tag", "post">>().toEqualTypeOf<
-    [relationField: 'ERROR: no belongs-to relation from "tag" to "post"']
-  >();
+test("for() takes a parent no value satisfies at either end of a many-to-many", () => {
+  expectTypeOf<
+    SoleParent<TestClient, "post", Factory<TestClient, "tag">>
+  >().toEqualTypeOf<'ERROR: no belongs-to relation from "post" to "tag"'>();
+  expectTypeOf<
+    SoleParent<TestClient, "tag", Row<TestClient, "post">>
+  >().toEqualTypeOf<'ERROR: no belongs-to relation from "tag" to "post"'>();
 });
 
 test("has() leaves the relation field skippable at both ends of a many-to-many", () => {
@@ -115,9 +116,17 @@ test("a relation holding many records answers no belongs-to side, and neither do
   expectTypeOf<RelationsTo<TestClient, "comment", "user", true>>().toBeNever();
 });
 
-test("a relation field is optional where one relation answers and required where several do", () => {
-  expectTypeOf<RelationArgs<TestClient, "comment", "post">>().toEqualTypeOf<[relationField?: "post"]>();
-  expectTypeOf<RelationArgs<TestClient, "post", "user">>().toEqualTypeOf<[relationField: "author" | "editor"]>();
+test("a parent stands as it is where one relation answers, and names the fields to pick where several do", () => {
+  expectTypeOf<SoleParent<TestClient, "comment", Row<TestClient, "post">>>().toEqualTypeOf<Row<TestClient, "post">>();
+  expectTypeOf<SoleParent<TestClient, "comment", Factory<TestClient, "post">>>().toEqualTypeOf<
+    Factory<TestClient, "post">
+  >();
+  expectTypeOf<
+    SoleParent<TestClient, "post", Row<TestClient, "user">>
+  >().toEqualTypeOf<'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"'>();
+  expectTypeOf<
+    SoleParent<TestClient, "post", Factory<TestClient, "user">>
+  >().toEqualTypeOf<'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"'>();
 });
 
 test("a relation field argument reads the arity it is asked for, naming the side in its error", () => {
@@ -128,16 +137,21 @@ test("a relation field argument reads the arity it is asked for, naming the side
   >();
 });
 
-// Left to itself the no-relation case degrades to `[relationField?: never]`, which every call
-// satisfies by passing nothing: `IsUnion<never>` is false, so the union branch does not catch it.
-test("a pair with no belongs-to relation takes an argument no relation field satisfies", () => {
-  expectTypeOf<RelationArgs<TestClient, "post", "comment">>().toEqualTypeOf<
-    [relationField: 'ERROR: no belongs-to relation from "post" to "comment"']
-  >();
-  expectTypeOf<RelationArgs<TestClient, "comment", "user">>().toEqualTypeOf<
-    [relationField: 'ERROR: no belongs-to relation from "comment" to "user"']
-  >();
-  expectTypeOf<RelationArgs<TestClient, "post", "comment">>().not.toEqualTypeOf<[relationField?: never]>();
+// Left to itself the no-relation case degrades to the value standing as it is: `IsUnion<never>` is
+// false, so the several-relations branch does not catch it.
+test("a pair with no belongs-to relation takes a parent no value satisfies", () => {
+  expectTypeOf<
+    SoleParent<TestClient, "post", Factory<TestClient, "comment">>
+  >().toEqualTypeOf<'ERROR: no belongs-to relation from "post" to "comment"'>();
+  expectTypeOf<
+    SoleParent<TestClient, "comment", Row<TestClient, "user">>
+  >().toEqualTypeOf<'ERROR: no belongs-to relation from "comment" to "user"'>();
+});
+
+test("a value no model answers for takes a parent no value satisfies, naming what a parent is", () => {
+  expectTypeOf<
+    SoleParent<TestClient, "post", { id: number }>
+  >().toEqualTypeOf<"ERROR: not a row or a factory of any model">();
 });
 
 test("a child value is a factory of the model, batched or not, a row of it, or an array of rows", () => {
