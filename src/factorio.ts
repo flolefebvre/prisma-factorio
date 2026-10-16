@@ -20,6 +20,19 @@ import { createReseedablePicker } from "./rng.js";
  * ```
  */
 export interface Factorio<C> {
+  /**
+   * Defines a factory for one model: its definition, its declared states and its callbacks.
+   *
+   * A field the definition returns that the model does not declare is reported against a type naming
+   * that field and the model; a declared field of the wrong type is reported against `never`. README ›
+   * [Typing edges](https://github.com/flolefebvre/prisma-factorio#typing-edges) › "Error shape"
+   * reads both.
+   *
+   * @example
+   * ```ts
+   * const userFactory = prismaFactorio.define("user", { definition: ({ uid }) => ({ email: `${uid}@example.com` }) });
+   * ```
+   */
   define<M extends ModelName<C>, D, S extends StateMap<C, M> & DeclaredStates<C, M, S> = Record<never, never>>(
     model: M,
     config: FactoryConfig<C, M, D, S>,

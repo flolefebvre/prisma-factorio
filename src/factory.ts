@@ -229,6 +229,20 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   // parameter, an optional one being a union with `undefined` that splits the value branch by
   // branch, so the call without overrides, and a helper forwarding its own optional overrides, take
   // the second signature.
+  /**
+   * Creates the records this factory stands for, the overrides merged last.
+   *
+   * A field the overrides name that the model does not declare is reported against a type naming
+   * that field and the model; a declared field of the wrong type is reported against `never`. Either
+   * arrives under `No overload matches this call`, one line per signature. README ›
+   * [Typing edges](https://github.com/flolefebvre/prisma-factorio#typing-edges) › "Error shape"
+   * reads both.
+   *
+   * @example
+   * ```ts
+   * const ada = await userFactory.create({ name: "Ada" });
+   * ```
+   */
   create<O>(overrides: O & Overrides<C, M, O>): Promise<R>;
   create<O>(overrides?: Overrides<C, M, O>): Promise<R>;
   count(records: number): Factory<C, M, Row<C, M>[], S>;
@@ -260,6 +274,20 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   // takes its shape through a naked `V` as well, as `create` does, and bars a function, whose empty
   // `keyof` would otherwise satisfy `Overrides` and swallow every closure before the first signature
   // checked it.
+  /**
+   * Layers attributes over the definition, as an object or as a closure returning one.
+   *
+   * A field the state names that the model does not declare is reported against a type naming that
+   * field and the model; a declared field of the wrong type is reported against `never`. Either
+   * arrives under `No overload matches this call`, one line per signature. README ›
+   * [Typing edges](https://github.com/flolefebvre/prisma-factorio#typing-edges) › "Error shape"
+   * reads both.
+   *
+   * @example
+   * ```ts
+   * const suspendedFactory = userFactory.state({ name: "Suspended" });
+   * ```
+   */
   state<V extends (context: StateContext<C, M>) => unknown>(state: V & ExactState<C, M, V>): Factory<C, M, R, S>;
   state<V extends Record<string, unknown>>(state: V & Overrides<C, M, V>): Factory<C, M, R, S>;
   /**

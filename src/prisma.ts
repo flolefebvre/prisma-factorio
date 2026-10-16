@@ -248,8 +248,11 @@ export type CreateInput<C, M extends ModelName<C>> = WidenRelations<Types.Public
 
 // TypeScript drops excess property checking when an object literal reaches its target through a
 // function's contextual return type, which is where every definition sits, so plain assignability
-// accepts a field the model never declares.
-type Exact<T, U> = { [K in keyof T]: K extends keyof U ? T[K] : never } & U;
+// accepts a field the model never declares. The message is a key rather than a string literal: a
+// literal value inferred into `T` would meet a literal here and collapse the property to `never`.
+type Exact<T, U, M> = {
+  [K in keyof T]: K extends keyof U ? T[K] : Record<`ERROR: "${K & string}" is not a field of "${M & string}"`, true>;
+} & U;
 
 /**
  * What a definition may return: the model's create input, and nothing beyond it.
@@ -263,7 +266,7 @@ type Exact<T, U> = { [K in keyof T]: K extends keyof U ? T[K] : never } & U;
  * });
  * ```
  */
-export type Attributes<C, M extends ModelName<C>, D> = Exact<D, CreateInput<C, M>>;
+export type Attributes<C, M extends ModelName<C>, D> = Exact<D, CreateInput<C, M>, M>;
 
 type Skippable<T> = { [K in keyof T]?: T[K] | undefined };
 
@@ -293,4 +296,4 @@ export type PartialAttributes<C, M extends ModelName<C>> = Skippable<CreateInput
  * }
  * ```
  */
-export type Overrides<C, M extends ModelName<C>, O> = Exact<O, PartialAttributes<C, M>>;
+export type Overrides<C, M extends ModelName<C>, O> = Exact<O, PartialAttributes<C, M>, M>;

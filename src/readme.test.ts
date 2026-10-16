@@ -350,7 +350,14 @@ export function explicitIdAndRelation(
 }
 
 // README "Typing edges", the bullet "Error shape": a misspelled field is reported on the offending
-// property, so each directive sits on that property's line rather than on the call's.
+// property against a type naming it, so each directive sits on that property's line rather than on
+// the call's. A declared field of the wrong type still reads `never`.
+test("a field the model does not declare reads as a type naming the field and the model", () => {
+  expectTypeOf<Overrides<TestClient, "user", { nmae: string }>["nmae"]>().toEqualTypeOf<{
+    'ERROR: "nmae" is not a field of "user"': true;
+  }>();
+});
+
 export function errorShape(prismaFactorio: Factorio<TestClient>, userFactory: Factory<TestClient, "user">): void {
   void userFactory.create({
     // @ts-expect-error a misspelled field in overrides
@@ -366,6 +373,10 @@ export function errorShape(prismaFactorio: Factorio<TestClient>, userFactory: Fa
       // @ts-expect-error a misspelled field in a definition
       nmae: "Ada",
     }),
+  });
+  void userFactory.create({
+    // @ts-expect-error a declared field of the wrong type
+    name: 1,
   });
 }
 
