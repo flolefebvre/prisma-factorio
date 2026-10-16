@@ -63,3 +63,29 @@ jobs:
 
       - name: Check packed contents
         run: pnpm pack:check
+
+  # Not part of `pnpm gates`: fails when the generated factory file's instantiation
+  # count exceeds `scripts/bench-types/budget.json`.
+  bench-types:
+    name: bench-types
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-level compile cost
+        run: pnpm bench:types

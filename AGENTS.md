@@ -25,6 +25,8 @@ src/
     generated/    Generated scratch client and its DDL (gitignored, never published)
 scripts/
   check-pack.ts   Asserts what `npm publish` would ship; the last gate
+  bench-types/    Type-level compile-cost benchmark on a synthetic 100-model schema, and its budget
+    generated/    Synthetic schema, its client and the measured factory file (gitignored)
 .github/
   workflows/      CI on every push and pull request, release on a `v*` tag
 docs/
@@ -49,7 +51,10 @@ pnpm pack:check     Assert the tarball's contents; needs a current dist/
 pnpm format         Prettier write
 pnpm format:check   Prettier check without writing
 pnpm duplicates     jscpd copy-paste detection
+pnpm bench:types    Regenerate the synthetic schema and type-check a factory per model; fails over budget
 ```
+
+`pnpm bench:types` is not part of `pnpm gates`; CI runs it as its own job. It prints the instantiation count, check time and memory of the factory file beside a control that only constructs the client, and fails when the factory file's instantiations exceed `scripts/bench-types/budget.json` (the measured baseline plus 20%). A change that lowers the count lowers the budget; a change that raises it past the budget states the measured cost in its pull request body.
 
 Each script echoes a `--<name> OK--` marker on success.
 A fresh clone runs `pnpm install` and `pnpm generate` before a bare `pnpm test` or `pnpm typecheck`; both need the generated test client, and only `pnpm gates` supplies it on its own.
