@@ -4,8 +4,11 @@ import type { Factory } from "./factory.js";
 import type {
   Child,
   ChildModel,
+  ChildrenOf,
   CreateInput,
   ModelName,
+  Parent,
+  ParentsOf,
   PartialAttributes,
   RelationKey,
   RelationsTo,
@@ -159,6 +162,13 @@ test("a value no model answers for takes a parent no value satisfies, naming wha
   expectTypeOf<
     SoleParent<TestClient, "post", { id: number }>
   >().toEqualTypeOf<"ERROR: not a row or a factory of any model">();
+});
+
+test("each relation field is keyed to what it takes, at the arity it holds", () => {
+  expectTypeOf<keyof ParentsOf<TestClient, "post">>().toEqualTypeOf<"author" | "editor">();
+  expectTypeOf<ParentsOf<TestClient, "post">["author"]>().toEqualTypeOf<Parent<TestClient, "user">>();
+  expectTypeOf<keyof ChildrenOf<TestClient, "post">>().toEqualTypeOf<"comments" | "tags">();
+  expectTypeOf<ChildrenOf<TestClient, "post">["comments"]>().toEqualTypeOf<Child<TestClient, "comment">>();
 });
 
 test("a child value is a factory of the model, batched or not, a row of it, or an array of rows", () => {

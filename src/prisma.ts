@@ -154,6 +154,18 @@ export type ParentValue<C> = Parent<C, ModelName<C>>;
 export type ParentModel<C, T> = { [P in ModelName<C>]: [T] extends [Parent<C, P>] ? P : never }[ModelName<C>];
 
 /**
+ * What each belongs-to relation field of `M` takes as its parent, keyed by the field.
+ *
+ * @example
+ * ```ts
+ * const author: ParentsOf<PrismaClient, "post">["author"] = userFactory;
+ * ```
+ */
+export type ParentsOf<C, M extends ModelName<C>> = {
+  [K in RelationsTo<C, M, ModelName<C>>]: Parent<C, TargetModel<C, M, K>>;
+};
+
+/**
  * What stands for the records a model holds many of: a factory of it, batched or not, a row of it, or
  * an array of rows.
  *
@@ -189,6 +201,18 @@ export type ChildValue<C> = Child<C, ModelName<C>>;
  * ```
  */
 export type ChildModel<C, T> = { [P in ModelName<C>]: [T] extends [Child<C, P>] ? P : never }[ModelName<C>];
+
+/**
+ * What each has-many relation field of `M` takes as its children, keyed by the field.
+ *
+ * @example
+ * ```ts
+ * const written: ChildrenOf<PrismaClient, "user">["posts"] = postFactory.count(3);
+ * ```
+ */
+export type ChildrenOf<C, M extends ModelName<C>> = {
+  [K in RelationsTo<C, M, ModelName<C>, true>]: Child<C, TargetModel<C, M, K>>;
+};
 
 /**
  * What a `has` call leaving its relation field out takes as the children: the value itself where the

@@ -15,13 +15,13 @@ import type { FakerInstance, FakerProvider } from "./faker.js";
 import { mergedPool, recycledPool, type Pool } from "./pool.js";
 import type {
   Attributes,
-  Child,
+  ChildrenOf,
   ChildModel,
   ChildValue,
   CreateInput,
   ModelName,
   Overrides,
-  Parent,
+  ParentsOf,
   ParentModel,
   ParentValue,
   PartialAttributes,
@@ -29,7 +29,6 @@ import type {
   Row,
   SoleChild,
   SoleParent,
-  TargetModel,
 } from "./prisma.js";
 import type { Picker } from "./rng.js";
 import { nextUid } from "./uid.js";
@@ -308,8 +307,10 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * const comment = await commentFactory.for(post).create();
    * ```
    */
+  // `K` is inferred from the field alone: inferring it from the parent walks a factory's whole type on
+  // every call. `has` reads its children the same way.
   for<K extends RelationsTo<C, M, ModelName<C>>>(
-    parent: Parent<C, TargetModel<C, M, K>>,
+    parent: NoInfer<ParentsOf<C, M>[K]>,
     relationField: K,
   ): Factory<C, M, R, S>;
   for<T extends ParentValue<C>>(
@@ -340,7 +341,7 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * ```
    */
   has<K extends RelationsTo<C, M, ModelName<C>, true>>(
-    children: Child<C, TargetModel<C, M, K>>,
+    children: NoInfer<ChildrenOf<C, M>[K]>,
     relationField: K,
     options?: HasOptions,
   ): Factory<C, M, R, S>;
