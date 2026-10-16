@@ -332,12 +332,19 @@ export function wrongModelValues(
   teamFactory: Factory<TestClient, "team">,
   teamRow: Row<TestClient, "team">,
 ): void {
+  // @ts-expect-error a row of a model the belongs-to relation does not point at
   void postFactory.create({ author: teamRow });
+  // @ts-expect-error a row of a model the has-many relation does not point at
   void userFactory.create({ posts: teamRow });
+  // @ts-expect-error a list of rows of a model the has-many relation does not point at
   void userFactory.create({ posts: [teamRow] });
+  // @ts-expect-error a row of a model the belongs-to relation does not point at, through a state
   void postFactory.state({ author: teamRow });
+  // @ts-expect-error a list holding a factory, which stands for no row
   void userFactory.create({ posts: [teamFactory] });
+  // @ts-expect-error a list holding a batched factory, which stands for no row either
   void userFactory.create({ posts: [teamFactory.count(2)] });
+  // @ts-expect-error a list holding a factory, through a state
   void userFactory.state({ posts: [teamFactory] });
 
   // @ts-expect-error no belongs-to relation from "post" to "team"

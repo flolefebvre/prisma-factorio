@@ -179,8 +179,21 @@ test("a relation field takes a factory of the model it points at, a row of it, o
   expectTypeOf<Factory<TestClient, "user">>().toExtend<Author>();
   expectTypeOf<Row<TestClient, "user">>().toExtend<Author>();
   expectTypeOf<{ connect: { id: number } }>().toExtend<Author>();
+  expectTypeOf<{ create: { email: string } }>().toExtend<Author>();
+  expectTypeOf<{ connectOrCreate: { where: { id: number }; create: { email: string } } }>().toExtend<Author>();
   expectTypeOf<Factory<TestClient, "post">>().not.toExtend<Author>();
   expectTypeOf<Row<TestClient, "post">>().not.toExtend<Author>();
+});
+
+// Prisma's nested relation input leaves every key optional, and a union holding a row is no weak
+// type, so the relation field needs one of those keys named for an object to stand as native input.
+test("a relation field takes no object that is neither native relation input nor a value of its model", () => {
+  type Author = PartialAttributes<TestClient, "post">["author"];
+
+  expectTypeOf<Row<TestClient, "team">>().not.toExtend<Author>();
+  expectTypeOf<{ totallyBogus: number }>().not.toExtend<Author>();
+  expectTypeOf<{ email: string; name: string }>().not.toExtend<Author>();
+  expectTypeOf<Record<never, never>>().not.toExtend<Author>();
 });
 
 test("a relation field holding many records takes a factory, a row, an array of rows, or native input", () => {
@@ -191,9 +204,23 @@ test("a relation field holding many records takes a factory, a row, an array of 
   expectTypeOf<Row<TestClient, "post">>().toExtend<Posts>();
   expectTypeOf<Row<TestClient, "post">[]>().toExtend<Posts>();
   expectTypeOf<{ connect: { id: number } }>().toExtend<Posts>();
+  expectTypeOf<{ create: { title: string } }>().toExtend<Posts>();
+  expectTypeOf<{ connectOrCreate: { where: { id: number }; create: { title: string } } }>().toExtend<Posts>();
+  expectTypeOf<{ createMany: { data: { title: string }[] } }>().toExtend<Posts>();
   expectTypeOf<Factory<TestClient, "user">>().not.toExtend<Posts>();
   expectTypeOf<Row<TestClient, "user">>().not.toExtend<Posts>();
   expectTypeOf<Row<TestClient, "user">[]>().not.toExtend<Posts>();
+});
+
+test("a relation field holding many records takes no wrong-model row, no list of them and no list of factories", () => {
+  type Posts = PartialAttributes<TestClient, "user">["posts"];
+
+  expectTypeOf<Row<TestClient, "team">>().not.toExtend<Posts>();
+  expectTypeOf<Row<TestClient, "team">[]>().not.toExtend<Posts>();
+  expectTypeOf<Factory<TestClient, "team">[]>().not.toExtend<Posts>();
+  expectTypeOf<Factory<TestClient, "post">[]>().not.toExtend<Posts>();
+  expectTypeOf<{ totallyBogus: number }>().not.toExtend<Posts>();
+  expectTypeOf<Record<never, never>>().not.toExtend<Posts>();
 });
 
 test("create() is typed as the model's row and count(n).create() as an array of them", async () => {
@@ -331,4 +358,88 @@ export function checkedByTheCompiler(
   hasChildren("comment", postFactory, "post");
   // @ts-expect-error the pair shares no relation at either arity
   hasChildren("comment", userFactory);
+}
+
+// Never invoked, like the function above. A relation field is reached by four routes — a definition,
+// a declared state, `.state()` and `create()` overrides — and each is checked here at both arities.
+export function relationValuesByRoute(
+  prismaFactorio: Factorio<TestClient>,
+  userFactory: Factory<TestClient, "user">,
+  postFactory: Factory<TestClient, "post">,
+  teamFactory: Factory<TestClient, "team">,
+  userRow: Row<TestClient, "user">,
+  postRows: Row<TestClient, "post">[],
+  teamRow: Row<TestClient, "team">,
+  bogus: { totallyBogus: number },
+): void {
+  prismaFactorio.define("post", {
+    definition: ({ uid }) => ({
+      title: uid,
+      author: { connectOrCreate: { where: { id: 1 }, create: { email: uid } } },
+    }),
+    states: { native: { author: { connect: { id: 1 } } }, byRow: { author: userRow } },
+  });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({ email: uid, posts: { createMany: { data: [{ title: uid }] } } }),
+    states: { batched: { posts: postFactory.count(2) }, byRows: { posts: postRows } },
+  });
+  void postFactory.state({ author: { connectOrCreate: { where: { id: 1 }, create: { email: "a@e.com" } } } });
+  void postFactory.state({ author: userRow });
+  void userFactory.state({ posts: { createMany: { data: [{ title: "t" }] } } });
+  void userFactory.state({ posts: postRows });
+  void postFactory.create({ author: { connectOrCreate: { where: { id: 1 }, create: { email: "a@e.com" } } } });
+  void userFactory.create({ posts: { createMany: { data: [{ title: "t" }] } } });
+  void userFactory.create({ posts: { connect: [{ id: 1 }] } });
+
+  // @ts-expect-error a row of a model the belongs-to relation does not point at, in a definition
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: teamRow }) });
+  // @ts-expect-error an object that is neither native relation input nor a row, in a definition
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: bogus }) });
+  // @ts-expect-error a list of rows of a model the has-many relation does not point at, in a definition
+  prismaFactorio.define("user", { definition: ({ uid }) => ({ email: uid, posts: [teamRow] }) });
+  // @ts-expect-error a list holding a factory, in a definition
+  prismaFactorio.define("user", { definition: ({ uid }) => ({ email: uid, posts: [postFactory] }) });
+
+  prismaFactorio.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: userFactory }),
+    // @ts-expect-error a row of a model the belongs-to relation does not point at, in a declared state
+    states: { byRow: { author: teamRow } },
+  });
+  prismaFactorio.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: userFactory }),
+    // @ts-expect-error an object literal that is neither native relation input nor a row, in a declared state
+    states: { bogus: { author: { totallyBogus: 1 } } },
+  });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({ email: uid }),
+    // @ts-expect-error a row of a model the has-many relation does not point at, in a declared state
+    states: { byRow: { posts: teamRow } },
+  });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({ email: uid }),
+    // @ts-expect-error a list holding a factory, in a declared state
+    states: { byFactories: { posts: [teamFactory] } },
+  });
+
+  // @ts-expect-error an object that is neither native relation input nor a row, through a state
+  void postFactory.state({ author: bogus });
+  // @ts-expect-error an object literal that is neither native relation input nor a row, through a state
+  void postFactory.state({ author: { totallyBogus: 1 } });
+  // @ts-expect-error a list of rows of a model the has-many relation does not point at, through a state
+  void userFactory.state({ posts: [teamRow] });
+  // @ts-expect-error a list holding a factory of the model the has-many relation points at, through a state
+  void userFactory.state({ posts: [postFactory] });
+
+  // @ts-expect-error an object that is neither native relation input nor a row, in overrides
+  void postFactory.create({ author: bogus });
+  // @ts-expect-error an object literal that is neither native relation input nor a row, in overrides
+  void postFactory.create({ author: { totallyBogus: 1 } });
+  // @ts-expect-error attributes of the parent, which name no nested create, in overrides
+  void postFactory.create({ author: { email: "x@y.z", name: "X" } });
+  // @ts-expect-error native relation input naming none of its keys, in overrides
+  void postFactory.create({ author: {} });
+  // @ts-expect-error an object that is neither native relation input nor a row, at the has-many arity
+  void userFactory.create({ posts: bogus });
+  // @ts-expect-error a list holding a factory of the model the has-many relation points at, in overrides
+  void userFactory.create({ posts: [postFactory] });
 }
