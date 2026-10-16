@@ -430,8 +430,8 @@ export function wrongModelValues(
   void userFactory.has(postFactory);
 
   // The messages the bullets quote, read off the methods themselves: a field slot typed as a message
-  // takes that message, and the unnamed form's parent slot is the message once the parent's type is
-  // fixed.
+  // takes that message, and the unnamed form's parent slot requires the message as a key once the
+  // parent's type is fixed.
   void postFactory.for(teamRow, 'ERROR: no belongs-to relation from "post" to "team"');
   void postFactory.for(
     { id: 1 },
@@ -439,15 +439,17 @@ export function wrongModelValues(
   );
   void userFactory.has(teamRow, 'ERROR: no has-many relation from "user" to "team"');
   type ForUser = typeof postFactory.for<Row<TestClient, "user">>;
-  expectTypeOf<
-    Parameters<ForUser>[0]
-  >().toEqualTypeOf<'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"'>();
+  expectTypeOf<Parameters<ForUser>[0]>().toExtend<
+    Record<'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"', true>
+  >();
   type ForPoster = typeof commentFactory.for<Factory<TestClient, "user">>;
-  expectTypeOf<Parameters<ForPoster>[0]>().toEqualTypeOf<'ERROR: no belongs-to relation from "comment" to "user"'>();
+  expectTypeOf<Parameters<ForPoster>[0]>().toExtend<
+    Record<'ERROR: no belongs-to relation from "comment" to "user"', true>
+  >();
   type HasPosts = typeof userFactory.has<Factory<TestClient, "post">>;
-  expectTypeOf<
-    Parameters<HasPosts>[0]
-  >().toEqualTypeOf<'ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"'>();
+  expectTypeOf<Parameters<HasPosts>[0]>().toExtend<
+    Record<'ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"', true>
+  >();
   // @ts-expect-error a factory of a model the belongs-to relation does not point at
   void postFactory.create({ author: teamFactory });
   // @ts-expect-error a factory of a model the has-many relation does not point at
