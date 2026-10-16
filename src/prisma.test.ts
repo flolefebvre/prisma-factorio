@@ -4,15 +4,13 @@ import type { Factory } from "./factory.js";
 import type {
   Child,
   ChildModel,
-  ChildValue,
   CreateInput,
-  HasManyArgs,
   ModelName,
   PartialAttributes,
-  RelationArgs,
   RelationKey,
   RelationsTo,
   Row,
+  SoleChild,
   SoleParent,
   TargetModel,
 } from "./prisma.js";
@@ -94,12 +92,8 @@ test("for() takes a parent no value satisfies at either end of a many-to-many", 
 });
 
 test("has() leaves the relation field skippable at both ends of a many-to-many", () => {
-  expectTypeOf<HasManyArgs<TestClient, "post", "tag", InverseOption>>().toEqualTypeOf<
-    [relationField?: "tags", options?: InverseOption] | [options: InverseOption]
-  >();
-  expectTypeOf<HasManyArgs<TestClient, "tag", "post", InverseOption>>().toEqualTypeOf<
-    [relationField?: "posts", options?: InverseOption] | [options: InverseOption]
-  >();
+  expectTypeOf<SoleChild<TestClient, "post", Factory<TestClient, "tag">>>().toEqualTypeOf<Factory<TestClient, "tag">>();
+  expectTypeOf<SoleChild<TestClient, "tag", Row<TestClient, "post">[]>>().toEqualTypeOf<Row<TestClient, "post">[]>();
 });
 
 test("the relations a model pair shares are read at the arity asked for", () => {
@@ -129,12 +123,25 @@ test("a parent stands as it is where one relation answers, and names the fields 
   >().toEqualTypeOf<'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"'>();
 });
 
-test("a relation field argument reads the arity it is asked for, naming the side in its error", () => {
-  expectTypeOf<RelationArgs<TestClient, "post", "comment", true>>().toEqualTypeOf<[relationField?: "comments"]>();
-  expectTypeOf<RelationArgs<TestClient, "user", "post", true>>().toEqualTypeOf<[relationField: "posts" | "edited"]>();
-  expectTypeOf<RelationArgs<TestClient, "comment", "user", true>>().toEqualTypeOf<
-    [relationField: 'ERROR: no has-many relation from "comment" to "user"']
+test("the children a has() call takes read the has-many side, naming that side in their messages", () => {
+  expectTypeOf<SoleChild<TestClient, "post", Factory<TestClient, "comment">>>().toEqualTypeOf<
+    Factory<TestClient, "comment">
   >();
+  expectTypeOf<
+    SoleChild<TestClient, "user", Factory<TestClient, "post">>
+  >().toEqualTypeOf<'ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"'>();
+  expectTypeOf<
+    SoleChild<TestClient, "user", Row<TestClient, "post">[]>
+  >().toEqualTypeOf<'ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"'>();
+  expectTypeOf<
+    SoleChild<TestClient, "comment", Factory<TestClient, "user">>
+  >().toEqualTypeOf<'ERROR: no has-many relation from "comment" to "user"'>();
+  expectTypeOf<
+    SoleChild<TestClient, "comment", Factory<TestClient, "post">>
+  >().toEqualTypeOf<'ERROR: no has-many relation from "comment" to "post"'>();
+  expectTypeOf<
+    SoleChild<TestClient, "user", { id: number }[]>
+  >().toEqualTypeOf<"ERROR: not a row, a list of rows or a factory of any model">();
 });
 
 // Left to itself the no-relation case degrades to the value standing as it is: `IsUnion<never>` is
@@ -176,26 +183,6 @@ test("the model a child value stands for is recovered from the value's own type"
     ChildModel<TestClient, Factory<TestClient, "comment", Row<TestClient, "comment">[], { pending: unknown }>>
   >().toEqualTypeOf<"comment">();
   expectTypeOf<ChildModel<TestClient, string>>().toBeNever();
-});
-
-// The relation field is the parent-side one, so a pair sharing exactly one has-many relation also
-// takes the options object on its own — which is what keeps the tuple a union rather than a spread.
-test("the has-many arguments carry a trailing options object, reachable with the relation field or without", () => {
-  expectTypeOf<HasManyArgs<TestClient, "post", "comment", InverseOption>>().toEqualTypeOf<
-    [relationField?: "comments", options?: InverseOption] | [options: InverseOption]
-  >();
-  expectTypeOf<HasManyArgs<TestClient, "user", "post", InverseOption>>().toEqualTypeOf<
-    [relationField: "posts" | "edited", options?: InverseOption]
-  >();
-});
-
-test("the has-many arguments reject a relation read at the wrong arity, and a pair sharing none", () => {
-  expectTypeOf<HasManyArgs<TestClient, "comment", "post", InverseOption>>().toEqualTypeOf<
-    [relationField: 'ERROR: no has-many relation from "comment" to "post"', options?: InverseOption]
-  >();
-  expectTypeOf<HasManyArgs<TestClient, "comment", "user", InverseOption>>().toEqualTypeOf<
-    [relationField: 'ERROR: no has-many relation from "comment" to "user"', options?: InverseOption]
-  >();
 });
 
 test("a relation field takes a factory of the model it points at, a row of it, or native relation input", () => {
@@ -258,14 +245,6 @@ test("create() is typed as the model's row and count(n).create() as an array of 
   expectTypeOf(many).toEqualTypeOf<UserRow[]>();
   expect(many).toHaveLength(2);
 });
-
-// The argument tuple `has` takes, standing on its own: the tuple resolves the same wherever the
-// method it belongs to sits, and the factory it belongs to is declared elsewhere.
-declare function hasChildren<M extends ModelName<TestClient>, T extends ChildValue<TestClient>>(
-  model: M,
-  children: T,
-  ...args: HasManyArgs<TestClient, M, ChildModel<TestClient, T>, InverseOption>
-): void;
 
 // Held rather than written at the call site: excess property checking reaches a fresh object literal
 // only, so a literal would be rejected whether the options object is typed or not.
@@ -370,27 +349,27 @@ export function checkedByTheCompiler(
   // @ts-expect-error a batched factory in overrides stands for no one record either
   void postFactory.create({ author: userFactory.count(3) });
 
-  hasChildren("post", commentFactory);
-  hasChildren("post", commentFactory.count(3));
-  hasChildren("post", commentRows);
-  hasChildren("post", commentFactory, "comments");
-  hasChildren("post", commentFactory, inverseOption);
-  hasChildren("post", commentFactory, "comments", inverseOption);
-  hasChildren("user", postFactory.count(3), "posts");
-  hasChildren("user", postFactory.count(3), "edited", inverseOption);
+  void postFactory.has(commentFactory);
+  void postFactory.has(commentFactory.count(3));
+  void postFactory.has(commentRows);
+  void postFactory.has(commentFactory, "comments");
+  void postFactory.has(commentFactory, inverseOption);
+  void postFactory.has(commentFactory, "comments", inverseOption);
+  void userFactory.has(postFactory.count(3), "posts");
+  void userFactory.has(postFactory.count(3), "edited", inverseOption);
 
   // @ts-expect-error the pair shares two has-many relations, so the relation field has to be named
-  hasChildren("user", postFactory.count(3));
+  void userFactory.has(postFactory.count(3));
   // @ts-expect-error the options object stands in for no relation field where one has to be named
-  hasChildren("user", postFactory.count(3), inverseOption);
+  void userFactory.has(postFactory.count(3), inverseOption);
   // @ts-expect-error a relation field the parent model does not declare
-  hasChildren("post", commentFactory, "commnets");
+  void postFactory.has(commentFactory, "commnets");
   // @ts-expect-error an option key the options object does not declare
-  hasChildren("post", commentFactory, "comments", misspeltOption);
+  void postFactory.has(commentFactory, "comments", misspeltOption);
   // @ts-expect-error the relation the pair shares holds one record, not many
-  hasChildren("comment", postFactory, "post");
+  void commentFactory.has(postFactory, "post");
   // @ts-expect-error the pair shares no relation at either arity
-  hasChildren("comment", userFactory);
+  void commentFactory.has(userFactory);
 }
 
 // Never invoked, like the function above. A relation field is reached by four routes — a definition,

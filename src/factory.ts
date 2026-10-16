@@ -15,10 +15,10 @@ import type { FakerInstance, FakerProvider } from "./faker.js";
 import { mergedPool, recycledPool, type Pool } from "./pool.js";
 import type {
   Attributes,
+  Child,
   ChildModel,
   ChildValue,
   CreateInput,
-  HasManyArgs,
   ModelName,
   Overrides,
   Parent,
@@ -27,6 +27,7 @@ import type {
   PartialAttributes,
   RelationsTo,
   Row,
+  SoleChild,
   SoleParent,
   TargetModel,
 } from "./prisma.js";
@@ -290,8 +291,10 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   /**
    * Fills a relation field this model holds many records in, alongside every record it creates.
    *
-   * The relation field may be left out where the model pair shares exactly one has-many relation, and
-   * must be named where it shares several. Rows are connected as they stand, no record of the child
+   * A named relation field checks the children against the model that field points at. The field may
+   * be left out where the model pair shares exactly one has-many relation; where it shares several, or
+   * none, the children parameter reads as a message naming the pair — and, for several, the fields to
+   * pick from. Rows are connected as they stand, no record of the child
    * model being created for them; a child factory creates records of its own per parent record and
    * reaches back through the inverse relation field, which `inverse` names where the client's metadata
    * pairs the two sides down to more than one. Every child of one record is created before the next
@@ -305,11 +308,19 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * @example
    * ```ts
    * const author = await userFactory.has(postFactory.count(3), "posts").create();
+   * const post = await postFactory.has(commentFactory.count(2)).create();
    * ```
    */
+  has<K extends RelationsTo<C, M, ModelName<C>, true>>(
+    children: Child<C, TargetModel<C, M, K>>,
+    relationField: K,
+    options?: HasOptions,
+  ): Factory<C, M, R, S>;
   has<T extends ChildValue<C>>(
-    children: T,
-    ...args: HasManyArgs<C, M, ChildModel<C, T>, HasOptions>
+    children: SoleChild<C, M, T>,
+    ...args:
+      | [options?: HasOptions]
+      | [relationField: RelationsTo<C, M, ChildModel<C, T>, true> | undefined, options?: HasOptions]
   ): Factory<C, M, R, S>;
   /**
    * Pools existing rows of one model, so that a factory of that model standing in a relation field
@@ -1317,7 +1328,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
     for(parent: unknown, relationField?: string): Factory<C, M, R, S> {
       return derive({ parent: parent as Record<string, unknown>, relationField });
     },
-    has(children: object, ...args: unknown[]): Factory<C, M, R, S> {
+    has(children: unknown, ...args: unknown[]): Factory<C, M, R, S> {
       const [first] = args;
       // Read off the tail rather than off a position: a relation field the model pair leaves skippable
       // may still be passed, valued `undefined`, with the options behind it.
@@ -1325,7 +1336,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
       const options = (typeof tail === "object" ? tail : undefined) as HasOptions | null | undefined;
 
       return derive({
-        children,
+        children: children as object,
         relationField: typeof first === "string" ? first : undefined,
         inverse: options?.inverse,
       });

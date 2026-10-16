@@ -405,8 +405,10 @@ export function wrongModelValues(
   void postFactory.for(userFactory);
   // @ts-expect-error ERROR: no belongs-to relation from "post" to "team"
   void postFactory.for(teamRow);
-  // @ts-expect-error no has-many relation from "user" to "team"
+  // @ts-expect-error a named field checks the children against the model it points at, a post
   void userFactory.has(teamRow, "posts");
+  // @ts-expect-error ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"
+  void userFactory.has(postFactory);
   // @ts-expect-error a factory of a model the belongs-to relation does not point at
   void postFactory.create({ author: teamFactory });
   // @ts-expect-error a factory of a model the has-many relation does not point at

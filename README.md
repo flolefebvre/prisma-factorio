@@ -246,7 +246,7 @@ const author = await userFactory.has(postFactory.count(3), "posts").create();
 
 `create()` returns the **user**; the three posts are created after it, each reaching back to that user, and are not returned.
 
-- **The relation field is checked against the pair of models**, exactly as `for()` checks it: optional where the pair shares exactly one has-many relation, required where they share several, unsatisfiable where they share none.
+- **The relation field is checked against the pair of models**, exactly as `for()` checks it: optional where the pair shares exactly one has-many relation, required where they share several — `userFactory.has(postFactory)` reads `ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"` — and unsatisfiable where they share none. A named field checks the children against the model it points at.
 - **A child reads the record it was created for.** `parent` in a child's state closure is the created parent row — real `id`, database defaults included. Its type spans every model the client carries, so narrow it before reading a field only some of them declare.
 - **`has()` adds, every other layer replaces.** Two calls on one relation field both apply, and a `has()` after a state adds to what that state left standing. A state or a `create()` override naming that field replaces it whole — a child factory so replaced creates nothing.
 - **Ordering is depth-first.** Every child of one record is created before the next record of a batch, layer by layer in the order the calls were made.

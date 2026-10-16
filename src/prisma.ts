@@ -103,7 +103,7 @@ type Sole<C, MC extends ModelName<C>, MP, List extends boolean, T> = [MP] extend
  * What a `for` call leaving its relation field out takes as the parent: the value itself where the
  * model `M` shares exactly one belongs-to relation with the parent's model, and a message no value
  * satisfies where it shares several or none, naming the pair and, for several, the fields to pick
- * from.
+ * from. A value standing for no record of any model reads as a message saying what a parent is.
  *
  * @example
  * ```ts
@@ -113,28 +113,6 @@ type Sole<C, MC extends ModelName<C>, MP, List extends boolean, T> = [MP] extend
  * ```
  */
 export type SoleParent<C, M extends ModelName<C>, T> = Sole<C, M, ParentModel<C, T>, false, T>;
-
-/**
- * How a relation is selected between a child model and a parent model, at one arity: the relation
- * field may be left out where the pair shares exactly one, must be named where it shares several,
- * and no value satisfies the parameter where it shares none.
- *
- * `List` reads the same side {@link RelationsTo} reads: the belongs-to side by default, the fields
- * holding many records when `true`.
- *
- * @example
- * ```ts
- * type Args = RelationArgs<PrismaClient, "post", "user">; // [relationField: "author" | "editor"]
- * ```
- */
-export type RelationArgs<C, MC extends ModelName<C>, MP extends ModelName<C>, List extends boolean = false> =
-  // Ordered: `IsUnion<never>` is `false`, so a pair sharing no relation at this arity reaches the
-  // optional branch and satisfies every call unless this branch catches it first.
-  [RelationsTo<C, MC, MP, List>] extends [never]
-    ? [relationField: `ERROR: no ${Side<List>} relation from "${MC & string}" to "${MP & string}"`]
-    : IsUnion<RelationsTo<C, MC, MP, List>> extends true
-      ? [relationField: RelationsTo<C, MC, MP, List>]
-      : [relationField?: RelationsTo<C, MC, MP, List>];
 
 /**
  * What stands for one record of a model: a factory of it, or a row of it.
@@ -212,30 +190,20 @@ export type ChildValue<C> = Child<C, ModelName<C>>;
  */
 export type ChildModel<C, T> = { [P in ModelName<C>]: [T] extends [Child<C, P>] ? P : never }[ModelName<C>];
 
-// A relation field the pair leaves optional is skippable, so the options object stands alone as well;
-// where the field has to be named — or where no field satisfies the parameter at all — it does not.
-// Appending the options to the spread alone would bar the options-only call, which the tuple reaches
-// by position and never by shape.
-type WithOptions<A extends unknown[], Options> = [] extends A
-  ? [...A, options?: Options] | [options: Options]
-  : [...A, options?: Options];
-
 /**
- * How the has-many relation from `M` to `MC` is selected, and the options object trailing it.
- *
- * The field selected is the one `M` declares, so the pair is read in the order {@link RelationArgs}
- * reads it — the model holding the field first — at the arity holding many records.
+ * What a `has` call leaving its relation field out takes as the children: the value itself where the
+ * model `M` holds exactly one has-many relation to the children's model, and a message no value
+ * satisfies where it holds several or none, naming the pair and, for several, the fields to pick
+ * from. A value standing for no records of any model reads as a message saying what children are.
  *
  * @example
  * ```ts
- * type Args = HasManyArgs<PrismaClient, "user", "post", { inverse?: string }>;
- * // [relationField: "posts" | "edited", options?: { inverse?: string }]
+ * type Ok = SoleChild<PrismaClient, "post", Factory<PrismaClient, "comment">>; // the factory itself
+ * type Named = SoleChild<PrismaClient, "user", Factory<PrismaClient, "post">>;
+ * // 'ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"'
  * ```
  */
-export type HasManyArgs<C, M extends ModelName<C>, MC extends ModelName<C>, Options> = WithOptions<
-  RelationArgs<C, M, MC, true>,
-  Options
->;
+export type SoleChild<C, M extends ModelName<C>, T> = Sole<C, M, ChildModel<C, T>, true, T>;
 
 // Read at one arity, the way {@link RelationsTo} reads one: a relation field whose arity is not the
 // one asked for keeps Prisma's own input.

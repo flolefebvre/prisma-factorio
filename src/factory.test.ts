@@ -2439,12 +2439,9 @@ test("the options stand alone where the relation field may be left out, the look
   );
 });
 
-// The cast is what `exactOptionalPropertyTypes` costs: this package compiles under it, so the slot a
-// skippable relation field leaves takes no explicit `undefined` here. A caller compiling without it —
-// the default — or compiling nothing at all reaches this call as written.
 test("a relation field passed as undefined leaves the options at the tail, the lookup never reached", async () => {
   await commentedWithoutTheLookup(({ commentFactory, postFactory }) =>
-    postFactory.has(commentFactory, undefined as unknown as "comments", { inverse: "post" }),
+    postFactory.has(commentFactory, undefined, { inverse: "post" }),
   );
 });
 
@@ -4154,6 +4151,19 @@ export function relationsCheckedByTheCompiler(
   void userFactory.has(postFactory, "posts", { inverze: "author" });
   // @ts-expect-error the options stand alone only where the relation field may be left out
   void userFactory.has(postFactory, { inverse: "author" });
+  // @ts-expect-error a named field checks the children against the model it points at: a partial row
+  void userFactory.has({ id: 1 }, "posts");
+  // @ts-expect-error a named field checks the children against the model it points at: another model's
+  void userFactory.has(commentFactory, "edited");
+
+  // A helper forwarding an optional relation field reaches the call with the field typed as possibly
+  // `undefined`, which a pair sharing one relation takes, the options trailing it.
+  const attachComments = (field?: "comments"): Factory<TestClient, "post"> =>
+    postFactory.has(commentFactory, field, { inverse: "post" });
+  void attachComments();
+  void postFactory.has(commentRow, undefined).create();
+  // @ts-expect-error the forwarded field still has to be one the pair shares
+  void ((field?: "posts"): Factory<TestClient, "post"> => postFactory.has(commentFactory, field));
 
   void postFactory.has(tagFactory).create();
   void postFactory.has(tagFactory.count(3), "tags").create();
