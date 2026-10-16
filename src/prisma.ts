@@ -89,11 +89,13 @@ type NoRelation<
   List extends boolean,
 > = `ERROR: no ${Side<List>} relation from "${MC & string}" to "${MP & string}"`;
 
-type Named<C, MC extends ModelName<C>, MP, List extends boolean> = [MP] extends [never]
+// `MP` is constrained rather than intersected with `ModelName<C>` at each use: the intersection is a
+// fresh type per parent model and more than doubles the checker's memory on a large schema.
+type Named<C, MC extends ModelName<C>, MP extends ModelName<C>, List extends boolean> = [MP] extends [never]
   ? Neither<List>
-  : [RelationsTo<C, MC, MP & ModelName<C>, List>] extends [never]
+  : [RelationsTo<C, MC, MP, List>] extends [never]
     ? NoRelation<MC, MP, List>
-    : RelationsTo<C, MC, MP & ModelName<C>, List>;
+    : RelationsTo<C, MC, MP, List>;
 
 /**
  * The relation fields a `for` call may name for a parent: the belongs-to fields `M` holds pointing
