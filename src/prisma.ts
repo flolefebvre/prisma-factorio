@@ -281,13 +281,18 @@ export type CreateInput<C, M extends ModelName<C>> = WidenRelations<Types.Public
 // function's contextual return type, which is where every definition sits, so plain assignability
 // accepts a field the model never declares. The message is a key rather than a string literal: a
 // literal value inferred into `T` would meet a literal here and collapse the property to `never`.
+// `any` satisfies every type but `never`, so a value typed `any` meets `never` instead.
 type Exact<T, U, M> = {
   [K in keyof T]: K extends keyof U
     ? T[K]
-    : K extends string | number
-      ? Record<`ERROR: "${K}" is not a field of "${M & string}"`, true>
-      : never;
+    : IsAny<T[K]> extends true
+      ? never
+      : K extends string | number
+        ? Record<`ERROR: "${K}" is not a field of "${M & string}"`, true>
+        : never;
 } & U;
+
+type IsAny<T> = 0 extends 1 & T ? true : false;
 
 /**
  * What a definition may return: the model's create input, and nothing beyond it.

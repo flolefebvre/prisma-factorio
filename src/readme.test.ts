@@ -358,7 +358,20 @@ test("a field the model does not declare reads as a type naming the field and th
   }>();
 });
 
-export function errorShape(prismaFactorio: Factorio<TestClient>, userFactory: Factory<TestClient, "user">): void {
+// `JSON.parse` is what hands a value typed `any` to most call sites.
+test("a value typed any under a field the model does not declare meets never, which nothing satisfies", () => {
+  expectTypeOf<Overrides<TestClient, "user", { nmae: ReturnType<typeof JSON.parse> }>["nmae"]>().toBeNever();
+});
+
+export function errorShape(
+  prismaFactorio: Factorio<TestClient>,
+  userFactory: Factory<TestClient, "user">,
+  postFactory: Factory<TestClient, "post">,
+): void {
+  // @ts-expect-error the pair shares several belongs-to relations: TS2554, the field slot unnamed
+  void postFactory.for(userFactory);
+  // @ts-expect-error a partial object with the field left out: TS2554 as well
+  void postFactory.for({ id: 1 });
   void userFactory.create({
     // @ts-expect-error a misspelled field in overrides
     nmae: "Ada",
