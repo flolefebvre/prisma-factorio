@@ -486,13 +486,16 @@ interface Embedded {
 
 // What resolving a relation takes beyond the value standing in it: the client the records are written
 // through, and the pool a record of a pooled model is drawn from in place of being created. One wiring
-// serves a whole `create()` call, so the fields it saw pooled rows drawn into span the batch — which is
-// the span a stale draw can fail over, a row one record connected going stale for the next.
+// serves a whole `create()` call, so the fields it records span the batch — which is the span a stale
+// row can fail over, a row one record connected going stale for the next. `drawnInto` holds the
+// relation fields holding many records that pooled rows were drawn into; `matchedInto` every relation
+// field a row the caller handed over or a pool drew was matched into, whatever its arity.
 interface Wiring {
   client: unknown;
   pool: Pool;
   pick: Picker;
   drawnInto: string[];
+  matchedInto: string[];
 }
 
 // A row carries whatever columns the model declares, `create` among them where the schema says so,
@@ -682,7 +685,10 @@ async function embodied(
   if (!(await holdsManyRecords(wiring.client, model, field))) {
     const picked = pooled(value, wiring, explicit);
 
-    if (picked !== undefined) return matching(wiring.client, model, field, picked);
+    if (picked !== undefined) {
+      wiring.matchedInto.push(field);
+      return matching(wiring.client, model, field, picked);
+    }
 
     const row = await recycling(inheriting(value, wiring.client), wiring).create();
 
@@ -701,6 +707,7 @@ async function embodied(
 
   if (picks !== undefined) {
     wiring.drawnInto.push(field);
+    wiring.matchedInto.push(field);
     return matchingAll(wiring.client, model, field, picks);
   }
 
@@ -728,7 +735,11 @@ async function connected(
   explicit = false,
   fresh?: Fresh,
 ): Promise<Written> {
-  if (Array.isArray(value)) return matchingAll(wiring.client, model, field, value);
+  if (Array.isArray(value)) {
+    if (value.length > 0) wiring.matchedInto.push(field);
+
+    return matchingAll(wiring.client, model, field, value);
+  }
 
   if (isFactory(value)) return embodied(wiring, model, field, value, pending, explicit, fresh);
 
@@ -738,7 +749,11 @@ async function connected(
     return { connect: value.connect };
   }
 
-  return native(value) ? value : matching(wiring.client, model, field, value);
+  if (native(value)) return value;
+
+  wiring.matchedInto.push(field);
+
+  return matching(wiring.client, model, field, value);
 }
 
 // A single connect is what a to-one relation field takes and what a to-many one accepts alongside the
@@ -794,11 +809,15 @@ async function attaching(
       }
 
       wiring.drawnInto.push(field);
+      wiring.matchedInto.push(field);
       for (const row of picks) rows.push(targetWhere(wiring.client, model, field, row));
       continue;
     }
 
-    for (const row of listed(entry.children)) rows.push(targetWhere(wiring.client, model, field, row as Written));
+    const handed = listed(entry.children);
+
+    if (handed.length > 0) wiring.matchedInto.push(field);
+    for (const row of handed) rows.push(targetWhere(wiring.client, model, field, row as Written));
   }
 
   const held = standing(value.base);
@@ -965,29 +984,47 @@ async function borne(wiring: Wiring, model: string, row: unknown, entry: Pending
   await bearing(recycling(inheriting(entry.children, client), wiring), row).create({ [back]: reach });
 }
 
-// The code Prisma refuses a create with when a `connect` inside it finds none of the records it names.
+// The codes Prisma refuses a create with when a `connect` inside it finds none of the records it names,
+// which of the two depending on the shape of the relation rather than on its arity alone: a connect
+// into an implicit many-to-many answers with `P2025`, as one into a field holding a single record does.
 const unmatchedConnect = "P2018";
+const unmatchedRecord = "P2025";
+
+function quoted(fields: readonly string[]): string {
+  return [...new Set(fields)].map((field) => `"${field}"`).join(" or ");
+}
 
 // A create that drew pooled rows into a to-many relation field is the one whose connect can fail by the
 // pool's own doing: a required foreign key rewritten by an earlier record's connect leaves the pooled
-// copy matching nothing. Prisma's refusal names engine internals, so it is retold in the pool's terms,
-// the original standing behind it as the cause; every other failure passes through untouched, a stale
-// row the caller handed over still failing in Prisma's words.
+// copy matching nothing, which is retold in the pool's terms. Any other connect that matched nothing
+// while a handed or pooled row stood in the call is retold as a stale row, naming every field such a
+// row stood in across the call rather than the one that failed. Prisma's error stands behind either
+// as the cause; a create no such row reached passes its failure through untouched.
 async function persisted(delegate: CreateDelegate, data: Written, wiring: Wiring, model: string): Promise<unknown> {
   try {
     return await delegate.create({ data });
   } catch (error) {
-    const fields = [...new Set(wiring.drawnInto)];
+    const code = (error as { code?: unknown } | null | undefined)?.code;
 
-    if (fields.length === 0 || (error as { code?: unknown }).code !== unmatchedConnect) throw error;
+    if (code === unmatchedConnect && wiring.drawnInto.length > 0)
+      throw new Error(
+        `A pooled row drawn into ${quoted(wiring.drawnInto)} on the model "${model}" ` +
+          "no longer matches the database: a connect into a relation field backed by a required foreign key " +
+          "re-homes the record, rewriting the column the pooled copy still carries, so a pooled row fills " +
+          "such a relation once. Pool one row per parent record, or pass native relation input.",
+        { cause: error },
+      );
 
-    throw new Error(
-      `A pooled row drawn into ${fields.map((field) => `"${field}"`).join(" or ")} on the model "${model}" ` +
-        "no longer matches the database: a connect into a relation field backed by a required foreign key " +
-        "re-homes the record, rewriting the column the pooled copy still carries, so a pooled row fills " +
-        "such a relation once. Pool one row per parent record, or pass native relation input.",
-      { cause: error },
-    );
+    if ((code === unmatchedConnect || code === unmatchedRecord) && wiring.matchedInto.length > 0)
+      throw new Error(
+        `A row connected into ${quoted(wiring.matchedInto)} on the model "${model}" no longer matches the ` +
+          "database: it was read before its record changed, and every non-null scalar is matched on, so a " +
+          "changed `updatedAt` is enough. Re-read the row from the client before handing it over or pooling " +
+          "it, or pass native relation input ({ connect: { id } }) to match on the key alone.",
+        { cause: error },
+      );
+
+    throw error;
   }
 }
 
@@ -1087,7 +1124,7 @@ async function write<C, M extends ModelName<C>>(
   const faker = await chain.faker();
   const client = chain.client();
   const model = String(chain.model);
-  const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick, drawnInto: [] };
+  const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick, drawnInto: [], matchedInto: [] };
   // Every model the client carries, which is what a callback reaches a second one through. `using`
   // asks for a single delegate, so a chain redirected to a stub carrying fewer stands on the caller.
   const reached = { client: client as Pick<C, ModelName<C>> };

@@ -1120,14 +1120,63 @@ test("a has() child of another package instance reaches its parent through the c
   await expect(prisma.post.findMany()).resolves.toMatchObject([{ authorId: user.id }]);
 });
 
+// The whole error a stale row is retold as: the entire message, and the raw Prisma error standing
+// behind it as the cause — `toMatchObject` reads the pair as a subset, leaving the cause's other
+// fields free.
+function stale(field: string, model: string, code: string): { message: string; cause: { code: string } } {
+  return {
+    message:
+      `A row connected into "${field}" on the model "${model}" no longer matches the database: ` +
+      "it was read before its record changed, and every non-null scalar is matched on, so a changed " +
+      "`updatedAt` is enough. Re-read the row from the client before handing it over or pooling it, " +
+      "or pass native relation input ({ connect: { id } }) to match on the key alone.",
+    cause: { code },
+  };
+}
+
+// A user row read before its record changed, beside the factory a post is created through.
+async function staleUser(
+  attributes: { meta?: { a: number } } = {},
+): Promise<{ postFactory: Factory<TestClient, "post">; ada: Row<TestClient, "user"> }> {
+  const { prisma, postFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create(attributes);
+
+  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+
+  return { postFactory, ada };
+}
+
 // The row's scalars go into the `where`, so every field beyond the unique one narrows it: a row read
 // before the record changed no longer matches anything.
 test("connecting a row that has since changed fails rather than reaching the record it became", async () => {
-  const { prisma, postFactory, userFactory } = await factorioHarness();
-  const ada = await userFactory.create();
-  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+  const { postFactory, ada } = await staleUser();
 
-  await expect(postFactory.create({ author: ada })).rejects.toMatchObject({ code: "P2025" });
+  await expect(postFactory.create({ author: ada })).rejects.toMatchObject(stale("author", "post", "P2025"));
+});
+
+test("a stale row handed to for() fails naming the relation field it stood in", async () => {
+  const { postFactory, ada } = await staleUser();
+
+  await expect(postFactory.for(ada, "author").create()).rejects.toMatchObject(stale("author", "post", "P2025"));
+});
+
+// A row the caller pools is matched like one it hands over, so changing its record before the draw
+// leaves it as stale.
+test("a pooled row whose record changed before the draw fails as a stale row", async () => {
+  const { postFactory, ada } = await staleUser();
+
+  await expect(postFactory.recycle("user", ada).create()).rejects.toMatchObject(stale("author", "post", "P2025"));
+});
+
+// Native relation input matches on the key alone, so a connect it names that finds nothing is no stale
+// row: Prisma's own error reaches the caller as it was thrown.
+test("a connect from native relation input that matches nothing keeps Prisma's own error", async () => {
+  const { postFactory } = await factorioHarness();
+
+  const failure = postFactory.create({ author: { connect: { id: 999999 } } });
+
+  await expect(failure).rejects.toMatchObject({ code: "P2025" });
+  await expect(failure).rejects.not.toThrow("no longer matches the database");
 });
 
 // Prisma types a nullable unique column in `WhereUniqueInput` as a bare selector, never a nullable
@@ -1160,12 +1209,9 @@ test("a row whose Json column holds a value connects, through for, an attribute 
 // Leaving the Json column out narrows the match by nothing else: a row read before the record
 // changed still fails loudly rather than connecting to what the record has become.
 test("a stale row whose Json column holds a value still fails to connect", async () => {
-  const { prisma, postFactory, userFactory } = await factorioHarness();
-  const ada = await userFactory.create({ meta: { a: 1 } });
+  const { postFactory, ada } = await staleUser({ meta: { a: 1 } });
 
-  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
-
-  await expect(postFactory.for(ada, "author").create()).rejects.toMatchObject({ code: "P2025" });
+  await expect(postFactory.for(ada, "author").create()).rejects.toMatchObject(stale("author", "post", "P2025"));
 });
 
 // The same row created fresh in the build, alone in the create and beside a caller's row, which keeps
@@ -3024,15 +3070,25 @@ test("a pooled has() child drawn again by a later create() fails in the pool's o
 });
 
 // The pool's terms belong to the pool: a row the caller hands over went stale by the caller's own
-// doing, and Prisma's error reaches it unretold.
-test("rows the caller hands has() keep Prisma's own error when stale", async () => {
+// doing, and is retold as a stale row rather than a single-use one.
+test("rows the caller hands has() fail as stale rows, not single-use ones", async () => {
   const { prisma, userFactory, postFactory } = await factorioHarness();
   const ada = await userFactory.create();
   const post = await postFactory.create({ author: ada });
   await userFactory.has([post], "posts").create();
 
-  await expect(userFactory.has([post], "posts").create()).rejects.toMatchObject({ code: "P2018" });
+  await expect(userFactory.has([post], "posts").create()).rejects.toMatchObject(stale("posts", "user", "P2018"));
   await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+// A list standing in a relation field holding many records is a hand-over too, matched row by row.
+test("stale rows handed in a to-many relation attribute fail as stale rows", async () => {
+  const { prisma, userFactory, postFactory } = await factorioHarness();
+  const post = await postFactory.create();
+
+  await prisma.post.update({ where: { id: post.id }, data: { title: "Changed" } });
+
+  await expect(userFactory.create({ posts: [post] })).rejects.toMatchObject(stale("posts", "user", "P2018"));
 });
 
 // A caller pools rows it loaded itself, and an `include`d relation is no field to match a record on.
