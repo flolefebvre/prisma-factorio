@@ -34,7 +34,7 @@
     "Attach a parent with for(), children with has(), or put a factory, a row or Prisma's nested input (`{ connect }`, `{ create }`) directly in a relation field. Each is type-checked against the model the field points at.",
     "The library opens no transaction of its own — atomicity is the caller's. Route a whole graph through one with `prisma.$transaction((tx) => factory.using(tx).create())`.",
     "A definition receives { faker, index, uid } and is evaluated once per record, so count(n) yields n distinct records rather than n copies.",
-    "seed pins faker's values and recycle's picks, but does not make a run reproducible: uid draws a fresh random prefix per process, so never snapshot uid-derived columns.",
+    "seed pins faker's values and recycle's picks, but does not make a run reproducible: uid draws a fresh random prefix per process, so never snapshot uid-derived columns. Reseed per test, between creates, with prismaFactorio.reseed(seed).",
     "recycle() hands existing rows to a graph so it connects them instead of creating duplicates. A pooled row whose relation is backed by a required foreign key can be connected once only.",
     "afterCreating callbacks run on the completed record, declared in the config or added on the chain. A throwing callback rejects create() and rolls nothing back unless you are inside your own transaction.",
     "There is no code generation of any kind and no generator to add to schema.prisma: every type is inferred from the Prisma client you already generate.",
