@@ -709,7 +709,9 @@ function delegated(delegate?: object): unknown {
 
 test("a client carrying relation metadata but no delegate for the model is rejected", async () => {
   await expect(holdsManyRecords(delegated(), "user", "posts")).rejects.toThrow(
-    'The client carries no delegate for the model "user". Pass a generated Prisma client, not its relation metadata alone.',
+    'The client carries no delegate for the model "user". ' +
+      "Regenerate the client if the model was added to the schema after it was generated, " +
+      "or pass a generated Prisma client rather than its relation metadata alone.",
   );
 });
 
