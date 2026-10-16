@@ -82,17 +82,17 @@
     "@eslint/js": "^10.0.1",
     "@faker-js/faker": "^10.5.0",
     "@prisma/adapter-better-sqlite3": "^7.8.0",
-    "@prisma/adapter-pg": "7.8.0",
-    "@prisma/client": "7.8.0",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
     "@testcontainers/postgresql": "^12.2.1",
     "@types/node": "^26.1.1",
     "eslint": "^10.7.0",
     "jscpd": "^5.0.12",
     "prettier": "^3.9.5",
-    "prisma": "7.8.0",
+    "prisma": "7.10.1",
     "tsx": "^4.23.0",
     "typescript": "~6.0.3",
-    "typescript-eslint": "^8.63.0",
+    "typescript-eslint": ">=8.63.0 <8.69.0",
     "vitest": "^4.1.10"
   }
 }
