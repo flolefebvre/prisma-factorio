@@ -3081,6 +3081,16 @@ test("rows the caller hands has() fail as stale rows, not single-use ones", asyn
   await expect(prisma.user.count()).resolves.toBe(2);
 });
 
+// A list standing in a relation field holding many records is a hand-over too, matched row by row.
+test("stale rows handed in a to-many relation attribute fail as stale rows", async () => {
+  const { prisma, userFactory, postFactory } = await factorioHarness();
+  const post = await postFactory.create();
+
+  await prisma.post.update({ where: { id: post.id }, data: { title: "Changed" } });
+
+  await expect(userFactory.create({ posts: [post] })).rejects.toMatchObject(stale("posts", "user", "P2018"));
+});
+
 // A caller pools rows it loaded itself, and an `include`d relation is no field to match a record on.
 test("a pooled has() child loaded with include connects on its scalars, the loaded relation left out", async () => {
   const harness = await factorioHarness({ seed: 7 });

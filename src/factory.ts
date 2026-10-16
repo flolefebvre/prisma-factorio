@@ -1004,7 +1004,7 @@ async function persisted(delegate: CreateDelegate, data: Written, wiring: Wiring
   try {
     return await delegate.create({ data });
   } catch (error) {
-    const { code } = error as { code?: unknown };
+    const code = (error as { code?: unknown } | null | undefined)?.code;
 
     if (code === unmatchedConnect && wiring.drawnInto.length > 0)
       throw new Error(
