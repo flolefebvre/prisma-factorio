@@ -472,11 +472,11 @@ A helper wrapping a factory — a test fixture, a seed step — names the factor
 
 ```ts
 // helpers.ts
-import type { Overrides, PartialAttributes, Row } from "@flefebvre/prisma-factorio";
+import type { Overrides, Row } from "@flefebvre/prisma-factorio";
 import { prisma } from "./db.js";
 import { postFactory, userFactory } from "./factories.js";
 
-type Client = typeof prisma;
+export type Client = typeof prisma;
 
 export async function makeAuthors(): Promise<Row<Client, "user">[]> {
   return userFactory.count(3).create();
@@ -485,6 +485,14 @@ export async function makeAuthors(): Promise<Row<Client, "user">[]> {
 export async function makePost<O>(overrides?: Overrides<Client, "post", O>): Promise<Row<Client, "post">> {
   return postFactory.create(overrides);
 }
+```
+
+A test then hands the helper its overrides:
+
+```ts
+// posts.test.ts
+import type { PartialAttributes } from "@flefebvre/prisma-factorio";
+import { makePost, type Client } from "./helpers.js";
 
 const drafted = { title: "Draft" } satisfies PartialAttributes<Client, "post">;
 
@@ -493,7 +501,7 @@ const draft = await makePost(drafted);
 
 - **`Row<Client, "post">`** is the row `create()` returns, and `Row<Client, "post">[]` the rows it returns under `count()` — what `Awaited<ReturnType<typeof postFactory.create>>` spells out at length.
 - **`Overrides<Client, "post", O>`** is what `create()` accepts. `O` is the type of the caller's own object, which the compiler infers at each call, and `Overrides` checks that object key by key against the create input — so `makePost({ titel: "Draft" })` is the same compile error `postFactory.create({ titel: "Draft" })` is. It is not usable without that `O`, which is why the helper forwarding to `create()` is generic.
-- **`PartialAttributes<Client, "post">`** is any subset of the create input, every key optional: the plain shape `Overrides` checks against, for a value a helper reads or builds. A value typed `PartialAttributes` is not accepted by `create()` or `state()` as-is ([#94](https://github.com/flolefebvre/prisma-factorio/issues/94)); until then pass it with an explicit type argument, `postFactory.create<PartialAttributes<Client, "post">>(attrs)`.
+- **`PartialAttributes<Client, "post">`** is any subset of the create input, every key optional: the plain shape `Overrides` checks against, for a value a helper reads or builds. `satisfies` checks an object against it and leaves the object its own type, so `drafted` above forwards to `makePost()` like a literal; an annotation — `const attrs: PartialAttributes<Client, "post"> = …`, or a parameter so typed — replaces the object's type with `PartialAttributes` itself, a union of the create input's branches. A value typed `PartialAttributes` is not accepted by `create()` or `state()` as-is ([#94](https://github.com/flolefebvre/prisma-factorio/issues/94)); until then pass it with an explicit type argument, `postFactory.create<PartialAttributes<Client, "post">>(attrs)`.
 - **Not `Parameters<typeof postFactory.create>[0]`.** `Parameters<>` instantiates `create`'s free `O` with no caller object, so the exactness check has nothing to match against and collapses to `never`; type the parameter as the generic `Overrides` above.
 
 `CreateInput<Client, "post">` is the whole create input, its relation fields widened to factories and rows — [Typing edges](#typing-edges) has how that parts from Prisma's own — and `ModelName<Client>` is the union of the model names your client carries.

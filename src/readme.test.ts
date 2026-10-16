@@ -376,9 +376,9 @@ export function createInputIsNotPrismas(prisma: TestClient): void {
   void prisma.user.create({ data: created });
 }
 
-// README "Types", the `helpers.ts` block and the bullets under it: each exported type in the role the
-// bullet gives it, the excess-key check surviving the generic helper, and `Parameters<>` yielding no
-// usable overrides type.
+// README "Types", the `helpers.ts` and `posts.test.ts` blocks and the bullets under them: each exported
+// type in the role the bullet gives it, a `satisfies`-checked value forwarding like a literal, the
+// excess-key check surviving the generic helper, and `Parameters<>` yielding no usable overrides type.
 export async function typesSection({ userFactory, postFactory }: ReadmeFactories): Promise<void> {
   async function makeAuthors(): Promise<Row<TestClient, "user">[]> {
     return userFactory.count(3).create();
@@ -405,8 +405,9 @@ export async function typesSection({ userFactory, postFactory }: ReadmeFactories
   void viaParameters;
 }
 
-// README "Types", the `PartialAttributes` bullet's interim pending #94: a value of that type reaches `create()`
-// and `state()` only through an explicit type argument. The directives fail the gate once the value
+// README "Types", the `PartialAttributes` bullet's interim pending #94: a value annotated with that
+// type, unlike one merely checked with `satisfies`, reaches `create()` and `state()` only through an
+// explicit type argument. The directives fail the gate once the value
 // is accepted as-is, which is when the sentence documenting the interim goes.
 export function partialAttributesForwarding(
   postFactory: Factory<TestClient, "post">,
