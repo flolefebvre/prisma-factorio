@@ -5,15 +5,14 @@ import type { EvaluationContext, Factory } from "../factory.js";
 import { createTestClient, disposeTestClient, type TestClient } from "./client.js";
 
 /**
- * A bootstrap over a throwaway database, with one factory per model already declared on it — save
- * `Booking`, whose two relation defaults each bring a venue of their own and so disagree on the
- * `venueId` they share; the tests that need one declare it themselves.
+ * A bootstrap over a throwaway database, with one factory per model already declared on it, save
+ * `Booking`: its two relation defaults disagree on the `venueId` they share, so the tests that need
+ * one declare it themselves.
  *
  * `postFactory`, `commentFactory`, `membershipFactory`, `badgeFactory` and `customerFactory` carry a
- * relation default, so
- * creating any of them walks the chain of factories behind it: a comment brings a post, which brings a
- * user; a membership brings a user and a team both; a badge brings a whole membership; and a customer
- * brings a venue.
+ * relation default, so creating any of them walks the chain of factories behind it: a comment brings
+ * a post, which brings a user; a membership brings a user and a team both; a badge brings a whole
+ * membership; and a customer brings a venue.
  *
  * @example
  * ```ts
