@@ -24,7 +24,7 @@
     "pnpm-lock.yaml"
   ],
   "rules": [
-    "Import from \"@flefebvre/prisma-factorio\". ESM only, Node >= 20; there is no CommonJS require entry. `@prisma/client` >=7 <8 is the only required peer.",
+    "Import from \"@flefebvre/prisma-factorio\". ESM only, Node 22.12+ or 24+; there is no CommonJS require entry. `@prisma/client` >=7 <8 is the only required peer.",
     "Bootstrap once per client: `const prismaFactorio = initPrismaFactorio(() => prisma, { seed, locale })`. Prefer the thunk — it is called on the first create() and never again.",
     "The library never builds a Prisma client; the caller passes their own. A Prisma 7 client is constructed with a driver adapter.",
     "Every fluent call returns a new factory. `userFactory.count(3)` leaves userFactory untouched, so factories are safe to share, compose and export from a module.",

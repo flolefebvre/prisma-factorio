@@ -16,6 +16,8 @@ The package is published to npm as [`@flefebvre/prisma-factorio`](https://www.np
 
 The workflow then checks the tag against `package.json`, runs the full `ci.yml` gate, rebuilds `dist/` from that exact commit through `prepublishOnly`, publishes with npm [provenance](https://docs.npmjs.com/generating-provenance-statements), and cuts the GitHub release with generated notes.
 
+The gate runs in full on Node 22, and its generate, typecheck and test steps again on Node 24 and Node 26: the Node 24 lane is required, the Node 26 lane advisory, so a failure there never holds back a release.
+
 A tag that fails the gate publishes nothing. Delete it (`git push --delete origin v0.2.0`), fix the problem, and tag again.
 
 ## One-time setup
