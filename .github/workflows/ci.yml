@@ -18,6 +18,7 @@ permissions:
 
 jobs:
   ci:
+    # The main branch ruleset requires a status check named exactly `ci`.
     name: ci
     runs-on: ubuntu-latest
 
@@ -63,6 +64,44 @@ jobs:
 
       - name: Check packed contents
         run: pnpm pack:check
+
+  # The other Node majors `engines` claims, on the runtime-dependent gates only. The Node 26
+  # lane is advisory until Prisma's engines list Node 26: it must never block a pull request
+  # or a release.
+  test-node:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.node == 26 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24, 26]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate scratch Prisma client
+        run: pnpm generate
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
 
   # Not part of `pnpm gates`: fails when the generated factory file's instantiation
   # count exceeds `scripts/bench-types/budget.json`.
