@@ -14,7 +14,7 @@ const team = await userFactory.count(3).vip().create();
 const author = await userFactory.has(postFactory.count(2), "posts").create();
 ```
 
-No generator, no build step, no schema parsing: the factory API reads model names, create inputs and row types straight off your generated client. A misspelled field, a state that does not exist, a `for()` between unrelated models — each one is a compile error, not a runtime surprise.
+No generator, no build step: the factory API reads model names, create inputs and row types straight off your generated client. A misspelled field, a state that does not exist, a `for()` between unrelated models — each one is a compile error, not a runtime surprise.
 
 ## Why factories?
 
