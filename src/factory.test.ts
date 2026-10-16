@@ -1776,6 +1776,17 @@ test("for() rejects a relation field the model pair does not share, naming it an
   );
 });
 
+// A row names no model of its own, so the field is checked against the ones the model declares alone.
+test("for() rejects a relation field the model does not declare beside a row, naming it and the candidates", async () => {
+  const { postFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create();
+
+  await expect(postFactory.for(ada, "illustrator" as unknown as "author").create()).rejects.toThrow(
+    'The model "post" has no relation field "illustrator". ' +
+      'Relation fields on "post": "author", "editor", "comments", "tags".',
+  );
+});
+
 // The type layer rejects the omitted name here; the runtime says the same thing to a caller who
 // compiles nothing, and names the escape hatch, which the runtime alone cannot narrow down to one.
 test("for() rejects an omitted relation field where the model pair shares several, naming them", async () => {
@@ -2042,12 +2053,12 @@ test("has(rows) resolves the one has-many relation the model pair shares when th
   });
 });
 
-test("has() rejects a relation field the model pair does not share, naming it and the candidates", async () => {
+test("has() rejects a relation field the model does not declare beside a row, naming it and the candidates", async () => {
   const { harness, first } = await attachable();
 
   await expect(harness.userFactory.has([first], "illustrated" as unknown as "posts").create()).rejects.toThrow(
-    'The model "user" has no relation field "illustrated" pointing at "post". ' +
-      'Relation fields on "user" pointing at "post": "posts", "edited".',
+    'The model "user" has no relation field "illustrated". ' +
+      'Relation fields on "user": "posts", "edited", "memberships", "profile".',
   );
 });
 

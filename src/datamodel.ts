@@ -179,12 +179,18 @@ function fieldListing(client: unknown, model: string): string {
  * ```
  */
 export function namedRelationField(client: unknown, model: string, relationField: string): string {
-  if (!relationFieldsOf(client, model).includes(relationField))
+  return declaredRelationField(client, model, relationField).name;
+}
+
+function declaredRelationField(client: unknown, model: string, relationField: string): DataModelField {
+  const field = relationFields(client, model).find((candidate) => candidate.name === relationField);
+
+  if (field === undefined)
     throw new TypeError(
       `The model "${model}" has no relation field "${relationField}". ${fieldListing(client, model)}`,
     );
 
-  return relationField;
+  return field;
 }
 
 // A model relating to itself carries both sides of one pairing, so the field the lookup starts from
@@ -301,12 +307,6 @@ function fittingTarget(client: unknown, model: string, row: Record<string, unkno
 
 function tagOf(client: unknown, model: string, relationField: string | undefined): string | undefined {
   return relationFields(client, model).find((candidate) => candidate.name === relationField)?.type;
-}
-
-function targetOf(client: unknown, model: string, relationField: string | undefined): string | undefined {
-  const tag = tagOf(client, model, relationField);
-
-  return tag === undefined ? undefined : delegateKey(tag);
 }
 
 /**
@@ -800,9 +800,9 @@ export function targetWhere(
  * resolved.
  *
  * The model is named by its delegate key. An explicit `relationField` carries the model it points at,
- * so the row's own fields are read only where it is left out — or where it names no relation field at
- * all, which the throw then reports. A row fitting no single target model throws, listing every
- * relation field the model declares.
+ * so the row's own fields are read only where it is left out. A name the model declares as no relation
+ * field throws, listing every relation field the model declares, and so does a row fitting no single
+ * target model.
  *
  * @example
  * ```ts
@@ -815,7 +815,10 @@ export function resolveRowRelationField(
   row: Record<string, unknown>,
   relationField?: string,
 ): string {
-  const target = targetOf(client, model, relationField) ?? fittingTarget(client, model, row);
+  const target =
+    relationField === undefined
+      ? fittingTarget(client, model, row)
+      : delegateKey(declaredRelationField(client, model, relationField).type);
 
   return resolveRelationField(client, model, target, relationField);
 }
