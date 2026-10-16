@@ -571,7 +571,20 @@ test("an explicit relation field names its target rather than reading the row's 
 test("an explicit relation field the model does not declare is rejected, naming it and the candidates", async () => {
   const prisma = await disposableClient();
 
-  expect(() => resolveRowRelationField(prisma, "post", userShape, "illustrator")).toThrow(unsharedField);
+  expect(() => resolveRowRelationField(prisma, "post", userShape, "illustrator")).toThrow(
+    'The model "post" has no relation field "illustrator". ' +
+      'Relation fields on "post": "author", "editor", "comments", "tags".',
+  );
+});
+
+// A row too narrow to single out a target model is never read once a field is named.
+test("an explicit relation field the model does not declare is rejected before the row is read", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => resolveRowRelationField(prisma, "post", { id: 1 }, "editor2")).toThrow(
+    'The model "post" has no relation field "editor2". ' +
+      'Relation fields on "post": "author", "editor", "comments", "tags".',
+  );
 });
 
 // `comments` and `post` are paired by a label Prisma generates rather than one the schema names, so
