@@ -69,7 +69,7 @@ pnpm add -D @flefebvre/prisma-factorio
 
 Requirements:
 
-- **Node ≥ 20**, ESM only — there is no CommonJS `require` entry.
+- **Node ^22.12 or ≥ 24**, ESM only — there is no CommonJS `require` entry.
 - **`@prisma/client` `>=7 <8`** — the only required peer. The only `prisma` import this package makes is type-only.
 - **Optional peers**: the `prisma` CLI (`>=7 <8`) — yours already if you run migrations or generation — and `@faker-js/faker` (`>=10 <11`), needed only by definitions that actually read `faker`.
 
