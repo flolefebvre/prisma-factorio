@@ -26,7 +26,7 @@ export interface FactorioOptions {
    * Pins every value a bootstrap draws at random: the output faker generates, and the rows a recycle
    * pool picks. Each is a stream of its own, so one seed replays both, and neither moves the other
    * along. It does not make a run reproducible on its own, since a uid draws a fresh prefix in every
-   * process.
+   * process. `prismaFactorio.reseed(seed)` restarts both streams on a new seed later, between creates.
    *
    * @example
    * ```ts

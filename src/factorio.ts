@@ -8,7 +8,7 @@ import {
   type StateMap,
 } from "./factory.js";
 import type { ModelName, Row } from "./prisma.js";
-import { createPicker } from "./rng.js";
+import { createReseedablePicker } from "./rng.js";
 
 /**
  * The entry point a bootstrap hands back, bound to one client and one faker.
@@ -24,6 +24,22 @@ export interface Factorio<C> {
     model: M,
     config: FactoryConfig<C, M, D, S>,
   ): Factory<C, M, Row<C, M>, S>;
+
+  /**
+   * Restarts this bootstrap's faker and its recycle picks on a new seed, for every factory it has
+   * defined and every factory it defines after.
+   *
+   * From then on, faker's values and the rows recycle pools pick are those of a fresh bootstrap seeded
+   * `seed` running the same calls; without a seed, both are reseeded at random, as an unseeded bootstrap
+   * is. `uid` is not pinned. Call it between creates: a reseed while a `create()` is in flight leaves
+   * that create's draws unspecified.
+   *
+   * @example
+   * ```ts
+   * registerResetHook(({ seed }) => prismaFactorio.reseed(seed));
+   * ```
+   */
+  reseed(seed?: number): void;
 }
 
 function resolver<C extends object>(source: C | (() => C)): () => C {
@@ -42,6 +58,8 @@ function resolver<C extends object>(source: C | (() => C)): () => C {
  * the values that faker generates and the rows a recycle pool picks. The picks belong to the graph
  * that resolves them rather than to the bootstrap that defined the factory, so a factory defined here
  * and reached through a graph of another bootstrap draws from that one's stream, seeded or not.
+ * `reseed` restarts both on a new seed between creates, so a test harness can hand every factory a
+ * seed of its own per test.
  *
  * @example
  * ```ts
@@ -56,7 +74,7 @@ export function initPrismaFactorio<C extends object>(
 ): Factorio<C> {
   const faker = createFakerProvider(options);
   // One picker per bootstrap, so every factory it defines draws its recycled rows from one stream.
-  const pick = createPicker(options.seed);
+  const { pick, reseed: reseedPicks } = createReseedablePicker(options.seed);
   const client = resolver(clientOrThunk);
 
   const define: Factorio<C>["define"] = (model, config) =>
@@ -75,5 +93,10 @@ export function initPrismaFactorio<C extends object>(
       pick,
     });
 
-  return { define };
+  const reseed: Factorio<C>["reseed"] = (seed) => {
+    faker.reseed(seed);
+    reseedPicks(seed);
+  };
+
+  return { define, reseed };
 }
