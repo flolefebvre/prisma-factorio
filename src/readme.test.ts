@@ -224,6 +224,23 @@ export async function explicitManyToMany(
   prismaFactorio.define("membership", { definition: () => ({ role: "member", user: userFactory }) });
 }
 
+// README "Recycle", the opening blocks: a `bookingFactory` whose `venue` and `customer` defaults each bring
+// a venue of their own, and the recipe recycling one venue into both legs. The `Booking` model the
+// section shows is the scratch schema's own.
+export async function recycleSharedParentSection(
+  prismaFactorio: Factorio<TestClient>,
+  venueFactory: Factory<TestClient, "venue">,
+  customerFactory: Factory<TestClient, "customer">,
+): Promise<void> {
+  const bookingFactory = prismaFactorio.define("booking", {
+    definition: ({ uid }) => ({ seat: uid, venue: venueFactory, customer: customerFactory }),
+  });
+
+  const venue = await venueFactory.create();
+  const booking = await bookingFactory.recycle("venue", venue).create();
+  expectTypeOf(booking).toEqualTypeOf<Row<TestClient, "booking">>();
+}
+
 // README "Recycle", the block declaring `postFactory` and `commentFactory` with two user legs, the Children block
 // below it, and the bullets: the pool never stands in for the record asked for, successive calls merge
 // per model, and a row loaded with `include` is accepted where one missing a required scalar is not.
