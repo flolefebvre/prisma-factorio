@@ -61,6 +61,7 @@ model Team {
   id          Int          @id @default(autoincrement())
   slug        String
   memberships Membership[]
+  sponsored   Badge[]      @relation("sponsored")
 }
 
 // The explicit many-to-many: `User` and `Team` share no relation field, reaching each other through
@@ -80,10 +81,15 @@ model Membership {
 // The to-one leg onto the join model: the one relation field a row reaches `connect` through bare —
 // no `has` layer, no list — so the compound selector on the fresh-created and pooled to-one paths is
 // pinned here. `note` is a scalar no other model declares, which keeps a row of this model resolvable.
+// `sponsor` is the one relation a row can be handed into beside `membership`, which forces a fresh
+// compound-keyed membership onto `connect` rather than its foreign key columns, so the compound
+// selector a fresh row connects on is reachable.
 model Badge {
   id         Int        @id @default(autoincrement())
   note       String
   membership Membership @relation(fields: [userId, teamId], references: [userId, teamId])
   userId     Int
   teamId     Int
+  sponsor    Team?      @relation("sponsored", fields: [sponsorId], references: [id])
+  sponsorId  Int?
 }

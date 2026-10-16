@@ -637,6 +637,32 @@ function matching(client: unknown, model: string, field: string, row: Record<str
   return { connect: targetWhere(client, model, field, row) };
 }
 
+// The where-clause naming the record a foreign key's values point at: those values under the fields
+// they reference, plus the compound selector Prisma matches a compound reference on.
+function referencedWhere(client: unknown, model: string, field: string, key: ForeignKey, values: unknown[]): Written {
+  return targetWhere(client, model, field, Object.fromEntries(key.references.map((name, at) => [name, values[at]])));
+}
+
+// A row this build created cannot have gone stale by anyone else's doing, while its own callbacks may
+// already have changed its record, so it connects on the fields its key references alone. A key held
+// at the far end or unreadable, or a referenced field the row holds no value in, leaves the row
+// matched on every scalar.
+function freshWhere(
+  client: unknown,
+  model: string,
+  field: string,
+  key: ForeignKey | null | undefined,
+  row: Written,
+): Written {
+  if (key === null || key === undefined) return targetWhere(client, model, field, row);
+
+  const values = key.references.map((name) => row[name]);
+
+  return values.some((value) => value === null || value === undefined)
+    ? targetWhere(client, model, field, row)
+    : referencedWhere(client, model, field, key, values);
+}
+
 // A list connects as a list, which is what a relation field holding many records takes: a list found
 // standing in a field that holds a single record keeps the value it was handed rather than reaching
 // here, `resolved` turning it back on the arity. A single row connects on its own, the one shape both
@@ -693,14 +719,14 @@ async function embodied(
     const row = await recycling(inheriting(value, wiring.client), wiring).create();
 
     // A batch factory standing in a field holding a single record hands back a list, which is left for
-    // Prisma to refuse rather than being mangled into a match. A row the factory just created matches
-    // back like one the caller handed over, its compound selector included, wherever `keyed` leaves
-    // the create on `connect`.
+    // Prisma to refuse rather than being mangled into a match.
     if (Array.isArray(row)) return { connect: row };
 
     fresh?.set(field, row as Written);
 
-    return matching(wiring.client, model, field, row as Written);
+    return {
+      connect: freshWhere(wiring.client, model, field, foreignKeyOf(wiring.client, model, field), row as Written),
+    };
   }
 
   const picks = drawn(value, wiring, explicit);
@@ -959,9 +985,7 @@ function reconnected(client: unknown, model: string, data: Written): Written {
 
     if (values.some((value) => value === null)) continue;
 
-    const row = Object.fromEntries(key.references.map((reference, at) => [reference, values[at]]));
-
-    connects[field] = { connect: targetWhere(client, model, field, row) };
+    connects[field] = { connect: referencedWhere(client, model, field, key, values) };
     for (const column of key.fields) consumed.add(column);
   }
 
@@ -978,8 +1002,9 @@ async function borne(wiring: Wiring, model: string, row: unknown, entry: Pending
   const back = entry.inverse ?? inverseRelationField(client, model, entry.field, entry.advice);
   // A child holding the foreign key reaches back through a row this build has just created, which its
   // own create may write as that key; any other back relation connects on the row's scalars.
-  const connect = targetWhere(client, target, back, row as Written);
-  const reach: Written = foreignKeyOf(client, target, back) === null ? { connect } : { connect, [created]: row };
+  const key = foreignKeyOf(client, target, back);
+  const connect = freshWhere(client, target, back, key, row as Written);
+  const reach: Written = key === null ? { connect } : { connect, [created]: row };
 
   await bearing(recycling(inheriting(entry.children, client), wiring), row).create({ [back]: reach });
 }
