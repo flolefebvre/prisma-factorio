@@ -49,6 +49,7 @@ test("a model name is a delegate the client carries", () => {
     | "booking"
     | "invite"
     | "category"
+    | "profile"
   >();
 });
 
@@ -59,7 +60,7 @@ test("a row carries the model's scalars and none of its relations", () => {
 
 test("a relation key is a field pointing at another model, and never a scalar the model holds", () => {
   expectTypeOf<RelationKey<TestClient, "post">>().toEqualTypeOf<"author" | "editor" | "comments" | "tags">();
-  expectTypeOf<RelationKey<TestClient, "user">>().toEqualTypeOf<"posts" | "edited" | "memberships">();
+  expectTypeOf<RelationKey<TestClient, "user">>().toEqualTypeOf<"posts" | "edited" | "memberships" | "profile">();
   expectTypeOf<RelationKey<TestClient, "comment">>().toEqualTypeOf<"post">();
 });
 

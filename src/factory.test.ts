@@ -2051,7 +2051,7 @@ test("has([]) rejects a relation field the model does not declare, naming it and
   const { userFactory } = await factorioHarness();
 
   await expect(userFactory.has([], "illustrated" as unknown as "posts").create()).rejects.toThrow(
-    'The model "user" has no relation field "illustrated". Relation fields on "user": "posts", "edited", "memberships".',
+    'The model "user" has no relation field "illustrated". Relation fields on "user": "posts", "edited", "memberships", "profile".',
   );
 });
 
