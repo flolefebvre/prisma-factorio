@@ -2,7 +2,7 @@
 // client and the factory file that exercises it, then type-checks two programs: the control, which
 // only constructs the client, and the factory file, which imports the control and adds the library.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { renderControl, renderFactories } from "./factories.ts";
 import { describeSchema, renderSchema } from "./schema.ts";
@@ -59,6 +59,16 @@ function measure(name: string, config: string): Measurement {
   };
 }
 
+interface Budget {
+  instantiations: number;
+}
+
+function readBudget(): number {
+  const budget = JSON.parse(readFileSync(new URL("budget.json", import.meta.url), "utf8")) as Budget;
+  if (!Number.isInteger(budget.instantiations)) throw new Error("budget.json holds no integer `instantiations`.");
+  return budget.instantiations;
+}
+
 function row(label: string, instantiations: string, checkTime = "", memory = ""): string {
   return `${label.padEnd(16)}${instantiations.padStart(16)}${checkTime.padStart(14)}${memory.padStart(14)}`;
 }
@@ -71,3 +81,20 @@ console.log(row("", "instantiations", "check time", "memory"));
 console.log(row("control", String(control.instantiations), control.checkTime, control.memory));
 console.log(row("factories", String(factories.instantiations), factories.checkTime, factories.memory));
 console.log(row("library share", String(factories.instantiations - control.instantiations)));
+
+const budget = readBudget();
+if (factories.instantiations > budget) {
+  console.error(
+    [
+      `The factory file costs ${String(factories.instantiations)} instantiations, over the budget of ${String(budget)} in scripts/bench-types/budget.json.`,
+      "Bring the cost back under the budget, or raise the budget and state the measured cost in the pull request body.",
+    ].join("\n"),
+  );
+  process.exit(1);
+}
+
+if (factories.instantiations * 1.2 < budget) {
+  console.log(
+    `The cost sits more than 20% under the budget of ${String(budget)}: lower scripts/bench-types/budget.json to ${String(Math.round(factories.instantiations * 1.2))}.`,
+  );
+}
