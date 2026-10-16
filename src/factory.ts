@@ -5,6 +5,7 @@ import {
   inverseRelationField,
   type InverseAdvice,
   namedRelationField,
+  presentDelegate,
   relationFieldsOf,
   resolveRelationField,
   resolveRowRelationField,
@@ -1153,7 +1154,7 @@ async function write<C, M extends ModelName<C>>(
   // Every model the client carries, which is what a callback reaches a second one through. `using`
   // asks for a single delegate, so a chain redirected to a stub carrying fewer stands on the caller.
   const reached = { client: client as Pick<C, ModelName<C>> };
-  const delegate = client[chain.model] as CreateDelegate;
+  const delegate = presentDelegate(client, model) as CreateDelegate;
   const applied = given(overrides);
   // A relation field the call names outright is the caller's own choice of parent, which the pool
   // leaves standing; a key valued `undefined` names nothing, `given` having dropped it.

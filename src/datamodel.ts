@@ -92,7 +92,9 @@ export function relationFieldsTo(client: unknown, model: string, target: string)
  * Both models are named by their delegate key. An explicit `relationField` must be one of the
  * model's relation fields pointing at the target; omitted, it resolves only where exactly one such
  * field exists. Anything else throws, naming the model pair and listing the relation fields it holds
- * between them, which the runtime cannot narrow down to the ones a given call accepts.
+ * between them, which the runtime cannot narrow down to the ones a given call accepts. A pair holding
+ * no relation field where either model is absent from the client's metadata throws naming that model
+ * instead, as one the client was generated without.
  *
  * @example
  * ```ts
@@ -103,10 +105,20 @@ export function resolveRelationField(client: unknown, model: string, target: str
   const candidates = relationFieldsTo(client, model, target);
   const [only, ...rest] = candidates;
 
-  if (only === undefined)
+  if (only === undefined) {
+    const models = modelsOf(client);
+    const unknown = [model, target].find((name) => entryOf(models, name) === undefined);
+
+    if (unknown !== undefined)
+      throw new TypeError(
+        `The client knows no model "${unknown}". ` +
+          "Regenerate the client if the model was added to the schema after it was generated.",
+      );
+
     throw new TypeError(
       `The model "${model}" has no relation field pointing at "${target}". Declare the relation in the Prisma schema.`,
     );
+  }
 
   if (relationField !== undefined) {
     if (!candidates.includes(relationField))
@@ -775,13 +787,33 @@ interface Delegate {
   findFirst: (args: unknown) => Promise<unknown>;
 }
 
-function delegateOf(client: unknown, model: string): Delegate {
-  const delegate = (client as Record<string, Delegate | null | undefined>)[model];
+/**
+ * The delegate a client carries for a model, whatever methods it answers.
+ *
+ * The model is named by its delegate key, the same name `define` takes. A client carrying no delegate
+ * under that key throws, naming the model: a client generated before the model was added to the
+ * schema carries none, and neither does an object holding relation metadata alone.
+ *
+ * @example
+ * ```ts
+ * presentDelegate(prisma, "user"); // prisma.user
+ * ```
+ */
+export function presentDelegate(client: unknown, model: string): unknown {
+  const delegate = (client as Record<string, unknown>)[model];
 
   if (delegate === undefined || delegate === null)
     throw new TypeError(
-      `The client carries no delegate for the model "${model}". Pass a generated Prisma client, not its relation metadata alone.`,
+      `The client carries no delegate for the model "${model}". ` +
+        "Regenerate the client if the model was added to the schema after it was generated, " +
+        "or pass a generated Prisma client rather than its relation metadata alone.",
     );
+
+  return delegate;
+}
+
+function delegateOf(client: unknown, model: string): Delegate {
+  const delegate = presentDelegate(client, model) as Delegate;
 
   // A delegate carrying every method its caller ever needed still answers no arity: the query it is
   // read off is one a hand-rolled double reaches only once a relation default stands in a field.

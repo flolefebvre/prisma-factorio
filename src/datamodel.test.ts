@@ -128,6 +128,31 @@ test("a model pair with no relation at all is rejected, naming both models", asy
   );
 });
 
+const unknownGhost =
+  'The client knows no model "ghost". ' +
+  "Regenerate the client if the model was added to the schema after it was generated.";
+
+test("a target model the client knows nothing of is reported as unknown, suggesting regeneration", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => resolveRelationField(prisma, "post", "ghost")).toThrow(new TypeError(unknownGhost));
+  expect(() => resolveRelationField(prisma, "post", "ghost", "author")).toThrow(new TypeError(unknownGhost));
+});
+
+test("a model the client knows nothing of is reported as unknown, suggesting regeneration", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => resolveRelationField(prisma, "ghost", "user")).toThrow(new TypeError(unknownGhost));
+});
+
+test("a known model declaring no relation at all keeps the advice to declare one", () => {
+  const client = clientWith({ Log: [{ name: "message", kind: "scalar", type: "String" }], User: [] });
+
+  expect(() => resolveRelationField(client, "log", "user")).toThrow(
+    'The model "log" has no relation field pointing at "user". Declare the relation in the Prisma schema.',
+  );
+});
+
 // The listed fields are reported as what they are rather than as what to pass: the runtime datamodel
 // carries no arity, and the query it is read off instead is one this lookup does not make, so the
 // list can hold a field holding many records, which for() rejects.
@@ -709,7 +734,9 @@ function delegated(delegate?: object): unknown {
 
 test("a client carrying relation metadata but no delegate for the model is rejected", async () => {
   await expect(holdsManyRecords(delegated(), "user", "posts")).rejects.toThrow(
-    'The client carries no delegate for the model "user". Pass a generated Prisma client, not its relation metadata alone.',
+    'The client carries no delegate for the model "user". ' +
+      "Regenerate the client if the model was added to the schema after it was generated, " +
+      "or pass a generated Prisma client rather than its relation metadata alone.",
   );
 });
 

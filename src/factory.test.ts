@@ -1730,6 +1730,51 @@ test("for() rejects a relation field holding many records, naming it and the ari
   await expect(prisma.post.count()).resolves.toBe(0);
 });
 
+const undelegated =
+  'The client carries no delegate for the model "ghost". ' +
+  "Regenerate the client if the model was added to the schema after it was generated, " +
+  "or pass a generated Prisma client rather than its relation metadata alone.";
+
+// A client generated before a model was added carries neither its delegate nor its metadata, which
+// only a model name cast past the type surface reaches.
+function ghostFactoryOf(prismaFactorio: Factorio<TestClient>): Factory<TestClient, "user"> {
+  return prismaFactorio.define("ghost" as "user", { definition: userDefinition });
+}
+
+test("create() on a model the client carries no delegate for names it and suggests regenerating", async () => {
+  const { prismaFactorio } = await factorioHarness();
+
+  await expect(ghostFactoryOf(prismaFactorio).create()).rejects.toThrow(new TypeError(undelegated));
+});
+
+test("a relation default on a model the client carries no delegate for names it and suggests regenerating", async () => {
+  const { prisma, prismaFactorio, postFactory } = await factorioHarness();
+
+  await expect(postFactory.create({ author: ghostFactoryOf(prismaFactorio) })).rejects.toThrow(undelegated);
+  await expect(prisma.post.count()).resolves.toBe(0);
+});
+
+test("for() and has() on a model the client carries no delegate for name it and suggest regenerating", async () => {
+  const { prismaFactorio, postFactory, userFactory } = await factorioHarness();
+  const ghostFactory = ghostFactoryOf(prismaFactorio) as unknown as Factory<TestClient, "post">;
+  const ada = await userFactory.create();
+
+  await expect(ghostFactory.for(ada, "author").create()).rejects.toThrow(undelegated);
+  await expect(ghostFactoryOf(prismaFactorio).has(postFactory, "posts").create()).rejects.toThrow(undelegated);
+});
+
+test("for() and has() toward a model the client knows nothing of name it and suggest regenerating", async () => {
+  const { prisma, prismaFactorio, postFactory, userFactory } = await factorioHarness();
+  const unknown =
+    'The client knows no model "ghost". ' +
+    "Regenerate the client if the model was added to the schema after it was generated.";
+  const ghostPostFactory = ghostFactoryOf(prismaFactorio) as unknown as Factory<TestClient, "post">;
+
+  await expect(postFactory.for(ghostFactoryOf(prismaFactorio), "author").create()).rejects.toThrow(unknown);
+  await expect(userFactory.has(ghostPostFactory, "posts").create()).rejects.toThrow(unknown);
+  await expect(prisma.user.count()).resolves.toBe(0);
+});
+
 test("for() hands create the relation field as connect and never a foreign key column", async () => {
   const { prisma, postFactory, userFactory } = await factorioHarness();
   const { client, written } = recording(prisma, "post");
