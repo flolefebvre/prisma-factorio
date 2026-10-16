@@ -2207,7 +2207,7 @@ test("a child factory's own has() reaches the level below it", async () => {
 
 // `parent` spans every model the client carries, and the join model declares no `id` of its own, so
 // a closure reading one narrows before it reaches the column.
-function parentId(parent: Row<TestClient, ModelName<TestClient>> | undefined): number | undefined {
+function parentId(parent: Row<TestClient, ModelName<TestClient>> | undefined): number | string | undefined {
   return parent !== undefined && "id" in parent ? parent.id : undefined;
 }
 
@@ -2227,7 +2227,7 @@ test("a child state closure reads the created parent row through parent", async 
 // they declared: a record it goes on to create for no one reads the record of a run already over.
 test("a child factory reused after a has() chain reads no parent of its own", async () => {
   const { prisma, prismaFactorio, userFactory } = await factorioHarness();
-  const seen: (number | undefined)[] = [];
+  const seen: (number | string | undefined)[] = [];
   const creditedFactory = prismaFactorio.define("post", {
     definition: ({ uid }) => ({ title: uid, author: userFactory }),
     states: {

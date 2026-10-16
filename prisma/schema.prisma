@@ -62,6 +62,18 @@ model Team {
   slug        String
   memberships Membership[]
   sponsored   Badge[]      @relation("sponsored")
+  invites     Invite[]
+}
+
+// The one model whose id the client generates: Prisma's checked create input keeps an `id` it does
+// not leave to the database, so an explicit id and a belongs-to relation field meet in one create
+// here, where every database-generated id refuses them. `code` is a scalar no other model declares,
+// which keeps a row of this model resolvable.
+model Invite {
+  id     String @id @default(uuid())
+  code   String
+  team   Team   @relation(fields: [teamId], references: [id])
+  teamId Int
 }
 
 // The explicit many-to-many: `User` and `Team` share no relation field, reaching each other through
