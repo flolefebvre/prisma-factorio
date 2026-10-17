@@ -8,6 +8,7 @@ import type {
   CreateInput,
   ModelName,
   NamedParentField,
+  Overrides,
   PartialAttributes,
   RelationKey,
   RelationsTo,
@@ -398,6 +399,79 @@ export function checkedByTheCompiler(
   void commentFactory.has(postFactory, "post");
   // @ts-expect-error the pair shares no relation at either arity
   void commentFactory.has(userFactory);
+}
+
+test("overrides take a foreign key column beside a relation field of another key", () => {
+  interface Mixed {
+    authorId: number;
+    editor: Row<TestClient, "user">;
+  }
+  interface Paired {
+    authorId: number;
+    author: Row<TestClient, "user">;
+  }
+
+  expectTypeOf<Mixed>().toExtend<Overrides<TestClient, "post", Mixed>>();
+  expectTypeOf<Paired>().not.toExtend<Overrides<TestClient, "post", Paired>>();
+  expectTypeOf<PartialAttributes<TestClient, "post">>().toExtend<
+    Overrides<TestClient, "post", PartialAttributes<TestClient, "post">>
+  >();
+});
+
+// Never invoked: a helper wrapping a factory forwards its own overrides, typed the way `create` types
+// its parameter, with the parameter required or optional.
+export async function forwardRequiredOverrides<O>(
+  postFactory: Factory<TestClient, "post">,
+  overrides: O & Overrides<TestClient, "post", O>,
+): Promise<Row<TestClient, "post">> {
+  return postFactory.create(overrides);
+}
+
+export async function forwardOptionalOverrides<O>(
+  postFactory: Factory<TestClient, "post">,
+  overrides?: Overrides<TestClient, "post", O>,
+): Promise<Row<TestClient, "post">> {
+  return postFactory.create(overrides);
+}
+
+// Never invoked, like the functions above. Prisma's create input takes the relation fields holding a
+// foreign key or the raw columns, never both; a column a layer writes beside another key's relation
+// field reaches Prisma as a `connect` on its own relation field, so that mix is one object's to make.
+export function foreignKeyBesideRelation(
+  postFactory: Factory<TestClient, "post">,
+  userFactory: Factory<TestClient, "user">,
+  userRow: Row<TestClient, "user">,
+  categoryFactory: Factory<TestClient, "category">,
+  categoryRow: Row<TestClient, "category">,
+  bookingFactory: Factory<TestClient, "booking">,
+  customerRow: Row<TestClient, "customer">,
+  venueRow: Row<TestClient, "venue">,
+  badgeFactory: Factory<TestClient, "badge">,
+  teamRow: Row<TestClient, "team">,
+): void {
+  void postFactory.create({ authorId: 1, editor: userRow });
+  void postFactory.create({ editorId: null, author: userFactory });
+  void postFactory.create({ authorId: 1, editor: { connect: { id: 2 } }, title: "t" });
+  void postFactory.create({ authorId: 1, editorId: 2 });
+  void postFactory.create({ id: 7, authorId: 1 });
+  void postFactory.create({ authorId: 1, author: undefined, editor: userRow });
+  void postFactory.state({ authorId: 1, editor: userRow });
+  void postFactory.state(() => ({ editorId: 2, author: userRow }));
+  void categoryFactory.create({ parentId: categoryRow.id });
+  // One column of a compound key type-checks beside another relation field holding a key; Prisma
+  // refuses the key named in part at runtime, as it does on its own (README "Typing edges").
+  void badgeFactory.create({ userId: 1, sponsor: teamRow });
+
+  // @ts-expect-error a foreign key column beside the relation field it backs
+  void postFactory.create({ authorId: 1, author: userRow });
+  // @ts-expect-error the same pair, the relation field held by a factory
+  void postFactory.state({ editorId: 1, editor: userFactory });
+  // @ts-expect-error a database-generated id beside a relation field holding a key
+  void postFactory.create({ id: 7, authorId: 1, editor: userRow });
+  // @ts-expect-error a column two keys share, beside one of the relation fields it backs
+  void bookingFactory.create({ venueId: 1, customerId: 1, venue: venueRow });
+  // @ts-expect-error a compound key's column beside the relation field it backs
+  void bookingFactory.create({ customerId: 1, customer: customerRow });
 }
 
 // Never invoked, like the function above. A relation field is reached by four routes — a definition,

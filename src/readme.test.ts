@@ -348,7 +348,7 @@ export function explicitIdAndRelation(
   void postFactory.create({ id: 7 });
   void postFactory.create({ id: 7, authorId: 1 });
 
-  // @ts-expect-error no branch of the create input survives an id beside a belongs-to relation field
+  // @ts-expect-error a database-generated id cannot stand beside a belongs-to relation field
   void postFactory.create({ id: 7, author: { connect: { id: 1 } } });
 
   void inviteFactory.create({ id: "3f2c9e1a-0b7d-4c55-9a8e-6d1f2b3c4d5e", team: { connect: { id: 1 } } });
@@ -412,6 +412,19 @@ export function errorShape(prismaFactorio: Factorio<TestClient>, userFactory: Fa
   });
   // @ts-expect-error a numeric key the model does not declare, reported on the call
   void userFactory.create({ 1: "Ada" });
+}
+
+// README "States", the bullet "Layers apply in order": a foreign key column beside another relation's
+// field compiles in one object. README "Typing edges", the bullet "Error shape": a key refused beside
+// the relation fields the object names is reported on that key.
+export function columnBesideRelation(postFactory: Factory<TestClient, "post">, userRow: Row<TestClient, "user">): void {
+  void postFactory.create({ authorId: 1, editor: userRow });
+  void postFactory.state({ editor: userRow }).create({ authorId: 1 });
+  void postFactory.create({
+    // @ts-expect-error a database-generated id beside a belongs-to relation field, reported on the id
+    id: 7,
+    author: { connect: { id: 1 } },
+  });
 }
 
 // README "Relations", the paragraph "Such a value is a factory, an existing row, or Prisma's own

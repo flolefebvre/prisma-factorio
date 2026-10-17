@@ -368,19 +368,54 @@ export interface ForeignKey {
   references: string[];
 }
 
-// What the scan read off one model block. A relation field maps to its foreign key, to `null` where
-// the block declares it holding none, and to `undefined` where its declaration does not read cleanly.
-// `bracketed` names every field whose declared type carries `[]`, relation fields included.
+/**
+ * What the schema text says about the foreign key behind one relation field: the key itself where
+ * this side holds it; `null` where this side holds none — a field holding many records, or the side
+ * of a one-to-one whose key the far end holds; `undefined` where there is no telling.
+ *
+ * @example
+ * ```ts
+ * const reading: ForeignKeyReading = foreignKeyOf(prisma, "user", "posts"); // null
+ * ```
+ */
+export type ForeignKeyReading = ForeignKey | null | undefined;
+
+/**
+ * Whether a reading names a foreign key this side holds, rather than none or no telling.
+ *
+ * @example
+ * ```ts
+ * if (isForeignKey(foreignKeyOf(prisma, "post", "author"))) console.log("post holds the key");
+ * ```
+ */
+export function isForeignKey(reading: ForeignKeyReading): reading is ForeignKey {
+  return reading !== null && reading !== undefined;
+}
+
+// What the scan read off one model block. A relation field maps to what its declaration reads as,
+// `undefined` where it does not read cleanly. `bracketed` names every field whose declared type
+// carries `[]`, relation fields included. `identity` lists the fields of the model's `@id` or
+// `@@id`, `undefined` where the block declares neither cleanly.
 interface ScannedModel {
   keys: CompoundKey[];
-  relations: Map<string, ForeignKey | null | undefined>;
+  relations: Map<string, ForeignKeyReading>;
   bracketed: Set<string>;
+  identity: string[] | undefined;
+}
+
+// `clean` is the schema with its comments dropped; structural scans read `mask`, where string
+// contents are spaces of their own length, so a brace or an attribute inside a literal matches
+// nothing while every index still addresses `clean`.
+interface Scanned {
+  clean: string;
+  mask: string;
 }
 
 // A `//` inside a string literal opens no comment, so the walk tracks the quotes; a backslash keeps
 // the character behind it, which is how a quote written as `\"` stays inside its string.
-function withoutComments(schema: string): string {
+function scannedText(schema: string): Scanned {
   let clean = "";
+  let mask = "";
   let index = 0;
   let quoted = false;
 
@@ -389,47 +424,24 @@ function withoutComments(schema: string): string {
 
     if (quoted && char === "\\" && index + 1 < schema.length) {
       clean += char + schema.charAt(index + 1);
+      mask += "  ";
       index += 2;
     } else if (char === '"') {
       quoted = !quoted;
       clean += char;
+      mask += char;
       index += 1;
     } else if (!quoted && char === "/" && schema.charAt(index + 1) === "/") {
       const newline = schema.indexOf("\n", index);
       index = newline === -1 ? schema.length : newline;
     } else {
       clean += char;
-      index += 1;
-    }
-  }
-
-  return clean;
-}
-
-// Structural scans read the mask, where string contents are spaces of their own length: a brace or
-// an attribute inside a literal matches nothing, while every index still addresses `clean`.
-function blankedStrings(clean: string): string {
-  let mask = "";
-  let index = 0;
-  let quoted = false;
-
-  while (index < clean.length) {
-    const char = clean.charAt(index);
-
-    if (quoted && char === "\\" && index + 1 < clean.length) {
-      mask += "  ";
-      index += 2;
-    } else if (char === '"') {
-      quoted = !quoted;
-      mask += char;
-      index += 1;
-    } else {
       mask += quoted ? " " : char;
       index += 1;
     }
   }
 
-  return mask;
+  return { clean, mask };
 }
 
 // The index one past the close matching the opener `from` sits on, read off the mask, or -1 where
@@ -501,24 +513,34 @@ function constraintName(argClean: string, argMask: string, fields: string[]): st
   return identifier.test(name) ? name : undefined;
 }
 
-// One constraint read off an attribute's argument text, or nothing where any part of it does not
-// parse cleanly: a selector built on a guess would refuse connects that work today, where a skipped
-// constraint leaves the flat scalars as they always were. A single field is no compound constraint —
-// Prisma exposes it as the flat scalar the splat already carries.
-function parsedConstraint(argClean: string, argMask: string): CompoundKey | undefined {
-  const fieldsToken = /\bfields\s*:/.exec(argMask);
-  const bracket = argMask.indexOf("[", fieldsToken === null ? 0 : fieldsToken.index + fieldsToken[0].length);
-
-  if (bracket === -1) return undefined;
+// The fields a list opening at `bracket` names — `[a, b(sort: Desc)]` — or `undefined` where no list
+// opens there, it does not close, or an entry names no field.
+function fieldList(argMask: string, bracket: number): string[] | undefined {
+  if (argMask.charAt(bracket) !== "[") return undefined;
 
   const bracketEnd = spanEnd(argMask, bracket, "[", "]");
 
   if (bracketEnd === -1) return undefined;
 
-  const references = splitFields(argMask.slice(bracket + 1, bracketEnd - 1)).map(fieldNameOf);
-  const fields = references.filter((reference): reference is string => reference !== undefined);
+  const names = splitFields(argMask.slice(bracket + 1, bracketEnd - 1)).map(fieldNameOf);
 
-  if (fields.length < 2 || fields.length !== references.length) return undefined;
+  return names.every((name): name is string => name !== undefined) ? names : undefined;
+}
+
+// The fields a constraint attribute's argument text lists, under `fields:` or as its first list.
+function constraintFields(argMask: string): string[] | undefined {
+  const token = /\bfields\s*:/.exec(argMask);
+
+  return fieldList(argMask, argMask.indexOf("[", token === null ? 0 : token.index + token[0].length));
+}
+
+// One constraint read off an attribute's argument text, or nothing where any part of it does not
+// parse cleanly, so no selector Prisma would refuse reaches a where-clause. A single field is no
+// compound constraint — Prisma exposes it as the flat scalar the splat already carries.
+function parsedConstraint(argClean: string, argMask: string): CompoundKey | undefined {
+  const fields = constraintFields(argMask);
+
+  if (fields === undefined || fields.length < 2) return undefined;
 
   const name = constraintName(argClean, argMask, fields);
 
@@ -569,24 +591,12 @@ function declarationsOf(bodyMask: string): string[] {
   return declarations.filter((declaration) => declaration !== "" && !declaration.startsWith("@@"));
 }
 
-// The bare field names a named list argument holds — `fields: [a, b]` — `null` where the argument is
-// absent, and `undefined` where it is present but not a list of bare names.
+// The field names a named list argument holds — `fields: [a, b]` — `null` where the argument is
+// absent, and `undefined` where it is present but not a list of field names.
 function namedList(argMask: string, name: string): string[] | null | undefined {
   const token = new RegExp(`\\b${name}\\s*:\\s*`).exec(argMask);
 
-  if (token === null) return null;
-
-  const bracket = token.index + token[0].length;
-
-  if (argMask.charAt(bracket) !== "[") return undefined;
-
-  const bracketEnd = spanEnd(argMask, bracket, "[", "]");
-
-  if (bracketEnd === -1) return undefined;
-
-  const names = splitFields(argMask.slice(bracket + 1, bracketEnd - 1)).map((part) => part.trim());
-
-  return names.every((part) => identifier.test(part)) ? names : undefined;
+  return token === null ? null : fieldList(argMask, token.index + token[0].length);
 }
 
 const relationAttribute = /@relation\b\s*/;
@@ -594,7 +604,7 @@ const relationAttribute = /@relation\b\s*/;
 // The foreign key one field declaration names. A declaration carrying no `fields` argument names none,
 // which is how every relation field reads but the side holding the key; one whose arguments do not read
 // cleanly answers `undefined`, so a guessed column never reaches a write.
-function declaredForeignKey(declaration: string): ForeignKey | null | undefined {
+function declaredForeignKey(declaration: string): ForeignKeyReading {
   const attribute = relationAttribute.exec(declaration);
 
   if (attribute === null) return null;
@@ -620,12 +630,11 @@ function declaredForeignKey(declaration: string): ForeignKey | null | undefined 
 
 const declaredName = /^([A-Za-z_]\w*)\s/;
 
-// A name declared twice is a schema Prisma refuses to generate from, so no answer is given for it
-// rather than one of the two being picked.
-function relationsOf(bodyMask: string): Map<string, ForeignKey | null | undefined> {
-  const relations = new Map<string, ForeignKey | null | undefined>();
+// A name declared twice is a schema Prisma refuses to generate from, so it answers `undefined`.
+function relationsOf(declarations: string[]): Map<string, ForeignKeyReading> {
+  const relations = new Map<string, ForeignKeyReading>();
 
-  for (const declaration of declarationsOf(bodyMask)) {
+  for (const declaration of declarations) {
     const name = declaredName.exec(declaration)?.[1];
 
     if (name === undefined) continue;
@@ -638,17 +647,39 @@ function relationsOf(bodyMask: string): Map<string, ForeignKey | null | undefine
 
 const bracketedDeclaration = /^([A-Za-z_]\w*)\s+[A-Za-z_][\w.]*\s*\[\s*\]/;
 
-function bracketedOf(bodyMask: string): Set<string> {
-  const names = declarationsOf(bodyMask).map((declaration) => bracketedDeclaration.exec(declaration)?.[1]);
+function bracketedOf(declarations: string[]): Set<string> {
+  const names = declarations.map((declaration) => bracketedDeclaration.exec(declaration)?.[1]);
 
   return new Set(names.filter((name): name is string => name !== undefined));
+}
+
+const fieldIdentity = /(?<![@\w])@id\b/;
+const blockIdentity = /@@id\s*\(/g;
+
+// A model's primary key is one declaration carrying `@id` or one `@@id` attribute; a block naming
+// several, none, or one that does not read cleanly answers `undefined`.
+function identityOf(bodyMask: string, declarations: string[]): string[] | undefined {
+  const fields = declarations
+    .filter((declaration) => fieldIdentity.test(declaration))
+    .map((declaration) => {
+      const name = declaredName.exec(declaration)?.[1];
+      return name === undefined ? undefined : [name];
+    });
+  const attributes = [...bodyMask.matchAll(blockIdentity)].map((match) => {
+    const open = match.index + match[0].length - 1;
+    const end = spanEnd(bodyMask, open, "(", ")");
+
+    return end === -1 ? undefined : constraintFields(bodyMask.slice(open + 1, end - 1));
+  });
+  const [only, ...rest] = [...fields, ...attributes];
+
+  return rest.length > 0 ? undefined : only;
 }
 
 const modelHeader = /(?:^|\n)\s*model\s+([A-Za-z_]\w*)\s*\{/g;
 
 function scannedModels(schema: string): Map<string, ScannedModel> {
-  const clean = withoutComments(schema);
-  const mask = blankedStrings(clean);
+  const { clean, mask } = scannedText(schema);
   const models = new Map<string, ScannedModel>();
 
   for (const match of mask.matchAll(modelHeader)) {
@@ -663,11 +694,13 @@ function scannedModels(schema: string): Map<string, ScannedModel> {
 
     const bodyClean = clean.slice(open + 1, end - 1);
     const bodyMask = mask.slice(open + 1, end - 1);
+    const declarations = declarationsOf(bodyMask);
 
     models.set(tag, {
       keys: constraintsOf(bodyClean, bodyMask),
-      relations: relationsOf(bodyMask),
-      bracketed: bracketedOf(bodyMask),
+      relations: relationsOf(declarations),
+      bracketed: bracketedOf(declarations),
+      identity: identityOf(bodyMask, declarations),
     });
   }
 
@@ -690,8 +723,28 @@ function scannedModel(client: unknown, tag: string): ScannedModel | undefined {
   return held.get(tag);
 }
 
-function targetCompoundKeys(client: unknown, tag: string): CompoundKey[] {
-  return scannedModel(client, tag)?.keys ?? [];
+function targetCompoundKeys(client: unknown, tag: string | undefined): CompoundKey[] {
+  return (tag === undefined ? undefined : scannedModel(client, tag)?.keys) ?? [];
+}
+
+/**
+ * The fields of the primary key of the model a relation field points at — its `@id`, or the fields
+ * its `@@id` lists — read off the schema text the client carries.
+ *
+ * The model is named by its delegate key, the relation field by the name it carries on that model.
+ * The runtime datamodel marks no field as the id, so a client carrying no schema text, a relation
+ * field the model does not declare, and a model whose key the scan cannot read cleanly all answer
+ * `undefined`.
+ *
+ * @example
+ * ```ts
+ * targetIdentity(prisma, "user", "memberships"); // ["userId", "teamId"]
+ * ```
+ */
+export function targetIdentity(client: unknown, model: string, relationField: string): string[] | undefined {
+  const tag = tagOf(client, model, relationField);
+
+  return tag === undefined ? undefined : scannedModel(client, tag)?.identity;
 }
 
 /**
@@ -710,17 +763,17 @@ function targetCompoundKeys(client: unknown, tag: string): CompoundKey[] {
  * foreignKeyOf(prisma, "user", "posts"); // null
  * ```
  */
-export function foreignKeyOf(client: unknown, model: string, relationField: string): ForeignKey | null | undefined {
+export function foreignKeyOf(client: unknown, model: string, relationField: string): ForeignKeyReading {
+  const models = modelsOf(client);
   const target = tagOf(client, model, relationField);
-  const tag = entryOf(modelsOf(client), model)?.[0];
+  const tag = entryOf(models, model)?.[0];
 
   if (target === undefined || tag === undefined) return undefined;
 
   const key = scannedModel(client, tag)?.relations.get(relationField);
 
-  if (key === null || key === undefined) return key;
+  if (!isForeignKey(key)) return key;
 
-  const models = modelsOf(client);
   const held =
     key.fields.every((field) => scalarNames(models, tag).includes(field)) &&
     key.references.every((field) => scalarNames(models, target).includes(field));
@@ -745,11 +798,7 @@ export function foreignKeyOf(client: unknown, model: string, relationField: stri
  * inverseForeignKeyOf(prisma, "post", "author"); // null
  * ```
  */
-export function inverseForeignKeyOf(
-  client: unknown,
-  model: string,
-  relationField: string,
-): ForeignKey | null | undefined {
+export function inverseForeignKeyOf(client: unknown, model: string, relationField: string): ForeignKeyReading {
   const field = relationFields(client, model).find((candidate) => candidate.name === relationField);
 
   if (field?.relationName === undefined) return undefined;
@@ -784,7 +833,7 @@ export function targetWhere(
 ): Record<string, unknown> {
   const where = targetScalars(client, model, relationField, row);
 
-  for (const key of targetCompoundKeys(client, tagOf(client, model, relationField) ?? "")) {
+  for (const key of targetCompoundKeys(client, tagOf(client, model, relationField))) {
     const values = key.fields.map((field) => row[field]);
 
     if (key.name in where || values.some((value) => value === null || value === undefined)) continue;

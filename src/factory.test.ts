@@ -7,6 +7,7 @@ import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./
 import type { ModelName, PartialAttributes, Row } from "./prisma.js";
 import { disposableClient, factorioHarness, userDefinition, type Harness } from "./tests/factorio.js";
 import type { TestClient } from "./tests/client.js";
+import { withInlineSchema } from "./tests/inline-schema.js";
 
 // Every export keeps its own implementation and gains a spy, which is what lets one test replace the
 // inverse lookup alone while every other test in this file runs against the real module.
@@ -847,7 +848,7 @@ test("a relation default in a definition evaluates once per record, so a batch d
 });
 
 // A row the build created a moment ago cannot have gone stale, so it is written as the foreign key it
-// stands for: a nested `connect` would cost Prisma an implicit transaction and an existence read.
+// stands for (ADR 0005).
 test("a row created for a relation field reaches create as its foreign key, never as connect", async () => {
   const { prisma, postFactory } = await factorioHarness();
   const { client, written } = recording(prisma, "post");
@@ -1054,9 +1055,7 @@ test("a foreign key column beside a handed-over row reaches create as connect on
   const postFactory = harness.postFactory.using(client);
 
   const layered = await postFactory.state({ editor: grace }).create({ authorId: ada.id });
-  // The compiler refuses a column beside a relation within one object; the rewrite does not depend on
-  // the layers the mix arrived through.
-  const inline = await postFactory.create({ authorId: ada.id, editor: grace } as never);
+  const inline = await postFactory.create({ authorId: ada.id, editor: grace });
 
   for (const post of [layered, inline]) expect([post.authorId, post.editorId]).toStrictEqual([ada.id, grace.id]);
   expect(written).toStrictEqual(
@@ -1112,11 +1111,11 @@ test("every column of a compound foreign key drops the relation default, persist
 });
 
 // The foreign key is read off the schema text the client carries; a client carrying none leaves the
-// relation on `connect`, as it always was.
+// relation on `connect`.
 test("a client carrying no schema text keeps a fresh row on connect", async () => {
   const { prisma, postFactory } = await factorioHarness();
   const { client, written } = recording(prisma, "post");
-  const schemaless = Object.create(client, { _engineConfig: { value: {} } }) as typeof client;
+  const schemaless = withInlineSchema(client, undefined);
 
   const post = await postFactory.using(schemaless).create();
   const author = await prisma.user.findUniqueOrThrow({ where: { id: post.authorId } });
@@ -1130,7 +1129,7 @@ function rekeyed(client: Transaction, from: string, to: string): Transaction {
   const schema = readFileSync(new URL("../prisma/schema.prisma", import.meta.url), "utf8");
   expect(schema).toContain(from);
 
-  return Object.create(client, { _engineConfig: { value: { inlineSchema: schema.replace(from, to) } } }) as Transaction;
+  return withInlineSchema(client, schema.replace(from, to));
 }
 
 // Two relations naming one column would write it twice, from two rows holding different values.
@@ -1300,6 +1299,33 @@ test("a has() child reaches a parent an earlier sibling's callback changed, besi
   const posts = await prisma.post.findMany({ where: { authorId: ada.id } });
 
   expect(posts).toHaveLength(2);
+});
+
+// An implicit many-to-many holds no foreign key on either side, so the child reaches back to the
+// parent on the parent model's id.
+test("a has() child reaches a parent an earlier sibling's callback changed, across a many-to-many", async () => {
+  const { prisma, postFactory, tagFactory } = await factorioHarness();
+  const retitlingTagFactory = tagFactory.count(2).afterCreating(async (tag, { client }) => {
+    await client.post.updateMany({ where: { tags: { some: { id: tag.id } } }, data: { title: tag.label } });
+  });
+
+  const post = await postFactory.has(retitlingTagFactory).create();
+  const tags = await prisma.tag.findMany({ where: { posts: { some: { id: post.id } } } });
+
+  expect(tags).toHaveLength(2);
+});
+
+// The far end of a one-to-one holds the key, so the row created for the field connects on its own id.
+test("a fresh row its own callback changed connects through a field whose key the far end holds", async () => {
+  const { prisma, userFactory, profileFactory } = await factorioHarness();
+  const rewritingProfileFactory = profileFactory.afterCreating(async (profile, { client }) => {
+    await client.profile.update({ where: { id: profile.id }, data: { bio: `${profile.bio}!` } });
+  });
+
+  const ada = await userFactory.create({ profile: rewritingProfileFactory });
+  const profile = await prisma.profile.findUniqueOrThrow({ where: { userId: ada.id } });
+
+  expect(profile.bio).toMatch(/!$/);
 });
 
 // Prisma types a nullable unique column in `WhereUniqueInput` as a bare selector, never a nullable

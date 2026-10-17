@@ -1,6 +1,5 @@
-// The type-level compile cost of the library on a large schema. Regenerates the synthetic schema, its
-// client and the factory file that exercises it, then type-checks two programs: the control, which
-// only constructs the client, and the factory file, which imports the control and adds the library.
+// The factory program imports the control program, so the difference between their counts is the
+// library's own share.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

@@ -1,15 +1,18 @@
 import {
   foreignKeyOf,
+  type ForeignKeyReading,
   type ForeignKey,
   holdsManyRecords,
   inverseForeignKeyOf,
   inverseRelationField,
+  isForeignKey,
   type InverseAdvice,
   namedRelationField,
   presentDelegate,
   relationFieldsOf,
   resolveRelationField,
   resolveRowRelationField,
+  targetIdentity,
   targetWhere,
 } from "./datamodel.js";
 import type { FakerInstance, FakerProvider } from "./faker.js";
@@ -689,56 +692,74 @@ function pooled(value: Embedded, { pool, pick }: Wiring, explicit: boolean): Rec
   return rows === undefined ? undefined : (pick(rows) as Record<string, unknown>);
 }
 
-function recordDraw(wiring: Wiring, model: string, field: string, many: boolean): void {
+// One relation field of one model, resolved through the wiring of the create it belongs to.
+interface Slot {
+  wiring: Wiring;
+  model: string;
+  field: string;
+}
+
+// What resolving a value standing in a slot reports back to the create holding it: `pending` gathers
+// the children created once the parent row exists, `explicit` marks the slot as the caller's own
+// choice, and `held` collects the rows standing in this create's own relation fields — a caller with
+// no create of its own to rewrite, the base a `has` layer gathers on, passes none.
+interface Resolving {
+  pending: Pending[];
+  explicit: boolean;
+  held: Held | undefined;
+}
+
+function recordDraw({ wiring, model, field }: Slot, many: boolean): void {
   const key = inverseForeignKeyOf(wiring.client, model, field);
 
-  if (many ? key !== null : key !== null && key !== undefined) wiring.rehomedInto.push({ field, many });
+  if (many ? key !== null : isForeignKey(key)) wiring.rehomedInto.push({ field, many });
   wiring.matchedInto.push(field);
 }
 
-// Every scalar of the row `targetScalars` keeps goes into the `where`, plus a compound selector for
-// every unique constraint the row can name whole — the one match a model whose only unique
-// constraint is compound answers to. The runtime datamodel marks no field unique, so no subset of the scalars is
-// knowably the one Prisma would match on; every extra field narrows the match, which is what makes
-// a stale row fail rather than reach the record it has become. A relation the row carries is no
-// field to match on at all — a row loaded with `include` carries one, and so may a pooled row —
-// so the where-clause is what `targetWhere` reads off the row and nothing else.
-function matching(client: unknown, model: string, field: string, row: Record<string, unknown>): Written {
-  return { connect: targetWhere(client, model, field, row) };
+function slotWhere({ wiring, model, field }: Slot, row: Written): Written {
+  return targetWhere(wiring.client, model, field, row);
+}
+
+// Every field narrows the match, which is what makes a stale row fail rather than reach the record it
+// has become.
+function matching(slot: Slot, row: Written): Written {
+  return { connect: slotWhere(slot, row) };
+}
+
+function referencedValues(key: ForeignKey, row: Written): unknown[] {
+  return key.references.map((name) => row[name]);
 }
 
 // The where-clause naming the record a foreign key's values point at: those values under the fields
 // they reference, plus the compound selector Prisma matches a compound reference on.
-function referencedWhere(client: unknown, model: string, field: string, key: ForeignKey, values: unknown[]): Written {
-  return targetWhere(client, model, field, Object.fromEntries(key.references.map((name, at) => [name, values[at]])));
+function referencedWhere(slot: Slot, key: ForeignKey, values: unknown[]): Written {
+  return slotWhere(slot, Object.fromEntries(key.references.map((name, at) => [name, values[at]])));
 }
 
 // A row this build created cannot have gone stale by anyone else's doing, while its own callbacks may
-// already have changed its record, so it connects on the fields its key references alone. A key held
-// at the far end or unreadable, or a referenced field the row holds no value in, leaves the row
-// matched on every scalar.
-function freshWhere(
-  client: unknown,
-  model: string,
-  field: string,
-  key: ForeignKey | null | undefined,
-  row: Written,
-): Written {
-  if (key === null || key === undefined) return targetWhere(client, model, field, row);
+// already have changed its record, so it connects on the fields its key references alone — or, where
+// this side holds no key, on its model's id. An unreadable key or id, or a field the row holds no
+// value in, leaves the row matched on every scalar.
+function freshWhere(slot: Slot, key: ForeignKeyReading, row: Written): Written {
+  const { wiring, model, field } = slot;
+  const fields = isForeignKey(key)
+    ? key.references
+    : key === null
+      ? targetIdentity(wiring.client, model, field)
+      : undefined;
+  const identifying = Object.fromEntries((fields ?? []).map((name) => [name, row[name]]));
 
-  const values = key.references.map((name) => row[name]);
-
-  return values.some((value) => value === null || value === undefined)
-    ? targetWhere(client, model, field, row)
-    : referencedWhere(client, model, field, key, values);
+  return fields === undefined || Object.values(identifying).some((value) => value === null || value === undefined)
+    ? slotWhere(slot, row)
+    : slotWhere(slot, identifying);
 }
 
 // A list connects as a list, which is what a relation field holding many records takes: a list found
 // standing in a field that holds a single record keeps the value it was handed rather than reaching
 // here, `resolved` turning it back on the arity. A single row connects on its own, the one shape both
 // arities take. A list holding no row connects nothing at all, leaving the field to the layers around it.
-function matchingAll(client: unknown, model: string, field: string, rows: readonly unknown[]): Written {
-  return rows.length === 0 ? {} : { connect: rows.map((row) => targetWhere(client, model, field, row as Written)) };
+function matchingAll(slot: Slot, rows: readonly unknown[]): Written {
+  return rows.length === 0 ? {} : { connect: rows.map((row) => slotWhere(slot, row as Written)) };
 }
 
 // A value a relation field has no reading for: a list standing in a field that holds a single record,
@@ -746,8 +767,8 @@ function matchingAll(client: unknown, model: string, field: string, rows: readon
 // going unwritten. A list is not the only value the arity is asked for — a factory standing in a field
 // asks it too — and neither ask is dear: the answer is held per client, and a field holding a single
 // record never reaches the database, Prisma refusing the probe filter where it stands.
-async function unread(client: unknown, model: string, field: string, value: Standing): Promise<boolean> {
-  return Array.isArray(value) && !(await holdsManyRecords(client, model, field));
+async function unread({ wiring, model, field }: Slot, value: Standing): Promise<boolean> {
+  return Array.isArray(value) && !(await holdsManyRecords(wiring.client, model, field));
 }
 
 // Prisma's own input, told from a row by the keys it carries: every one of them names an operation,
@@ -769,22 +790,16 @@ const standingOrder = -1;
 // holding a single record is the side the record has to exist first for, and is created here. The
 // arity is asked ahead of the pool: a single connect is a shape both arities take, so a slot drawn
 // before its arity is known would collapse a whole batch of children to one row.
-async function embodied(
-  wiring: Wiring,
-  model: string,
-  field: string,
-  value: Embedded,
-  pending: Pending[],
-  explicit: boolean,
-  held: Held | undefined,
-): Promise<Written> {
+async function embodied(slot: Slot, value: Embedded, { pending, explicit, held }: Resolving): Promise<Written> {
+  const { wiring, model, field } = slot;
+
   if (!(await holdsManyRecords(wiring.client, model, field))) {
     const picked = pooled(value, wiring, explicit);
 
     if (picked !== undefined) {
       held?.set(field, { row: picked, fresh: false });
-      recordDraw(wiring, model, field, false);
-      return matching(wiring.client, model, field, picked);
+      recordDraw(slot, false);
+      return matching(slot, picked);
     }
 
     const row = await recycling(inheriting(value, wiring.client), wiring).create();
@@ -795,16 +810,14 @@ async function embodied(
 
     held?.set(field, { row: row as Written, fresh: true });
 
-    return {
-      connect: freshWhere(wiring.client, model, field, foreignKeyOf(wiring.client, model, field), row as Written),
-    };
+    return { connect: freshWhere(slot, foreignKeyOf(wiring.client, model, field), row as Written) };
   }
 
   const picks = drawn(value, wiring, explicit);
 
   if (picks !== undefined) {
-    recordDraw(wiring, model, field, true);
-    return matchingAll(wiring.client, model, field, picks);
+    recordDraw(slot, true);
+    return matchingAll(slot, picks);
   }
 
   // The stand-in a `for` call leaves takes no overrides, so it has nothing to reach back through the
@@ -820,24 +833,17 @@ async function embodied(
   return {};
 }
 
-// `held` collects the rows standing in this create's own relation fields; a caller with no create of
-// its own to rewrite — the base a `has` layer gathers on — passes none.
-async function connected(
-  wiring: Wiring,
-  model: string,
-  field: string,
-  value: Standing,
-  pending: Pending[],
-  explicit = false,
-  held?: Held,
-): Promise<Written> {
+async function connected(slot: Slot, value: Standing, resolving: Resolving): Promise<Written> {
+  const { wiring, field } = slot;
+  const { held } = resolving;
+
   if (Array.isArray(value)) {
     if (value.length > 0) wiring.matchedInto.push(field);
 
-    return matchingAll(wiring.client, model, field, value);
+    return matchingAll(slot, value);
   }
 
-  if (isFactory(value)) return embodied(wiring, model, field, value, pending, explicit, held);
+  if (isFactory(value)) return embodied(slot, value, resolving);
 
   if (isCreated(value)) {
     held?.set(field, { row: value[created], fresh: true });
@@ -850,7 +856,7 @@ async function connected(
   held?.set(field, { row: value, fresh: false });
   wiring.matchedInto.push(field);
 
-  return matching(wiring.client, model, field, value);
+  return matching(slot, value);
 }
 
 // A single connect is what a to-one relation field takes and what a to-many one accepts alongside the
@@ -858,9 +864,9 @@ async function connected(
 function connecting(base: Written, rows: unknown[]): Written {
   if (rows.length === 0) return base;
 
-  const held = base.connect;
+  const existing = base.connect;
 
-  return { ...base, connect: [...(held === undefined ? [] : listed(held)), ...rows] };
+  return { ...base, connect: [...(existing === undefined ? [] : listed(existing)), ...rows] };
 }
 
 // A factory whose model the pool names stands for rows already written rather than for records to
@@ -887,13 +893,8 @@ function drawn(children: Embedded, wiring: Wiring, explicit: boolean): Record<st
 // children hang off and never a record standing in a slot, and an override replaces the relation field
 // whole, children and all, so the base survived every override there was. A `for` stand-in does reach
 // `connected` as that base, and stays the caller's own by the mark it carries rather than by the flag.
-async function attaching(
-  wiring: Wiring,
-  model: string,
-  field: string,
-  value: Attached,
-  pending: Pending[],
-): Promise<Written> {
+async function attaching(slot: Slot, value: Attached, pending: Pending[]): Promise<Written> {
+  const { wiring, field } = slot;
   const rows: unknown[] = [];
 
   for (const entry of value.entries) {
@@ -905,19 +906,19 @@ async function attaching(
         continue;
       }
 
-      recordDraw(wiring, model, field, true);
-      for (const row of picks) rows.push(targetWhere(wiring.client, model, field, row));
+      recordDraw(slot, true);
+      for (const row of picks) rows.push(slotWhere(slot, row));
       continue;
     }
 
     const handed = listed(entry.children);
 
     if (handed.length > 0) wiring.matchedInto.push(field);
-    for (const row of handed) rows.push(targetWhere(wiring.client, model, field, row as Written));
+    for (const row of handed) rows.push(slotWhere(slot, row as Written));
   }
 
-  const held = standing(value.base);
-  const base = held === undefined ? {} : await connected(wiring, model, field, held, pending);
+  const stood = standing(value.base);
+  const base = stood === undefined ? {} : await connected(slot, stood, { pending, explicit: false, held: undefined });
 
   return connecting(base, rows);
 }
@@ -929,8 +930,8 @@ async function resolved(
   explicit: ReadonlySet<string>,
 ): Promise<Resolved> {
   const embedded = Object.entries(data).flatMap(([key, value]) => {
-    const held = standing(value);
-    return held === undefined ? [] : [[key, held] as const];
+    const stood = standing(value);
+    return stood === undefined ? [] : [[key, stood] as const];
   });
 
   if (embedded.length === 0) return { data, pending: [] };
@@ -940,26 +941,29 @@ async function resolved(
   const written: Written = { ...data };
   const held: Held = new Map();
 
-  for (const [key, value] of embedded) {
-    if (!relations.includes(key)) continue;
-    if (await unread(wiring.client, model, key, value)) continue;
+  for (const [field, value] of embedded) {
+    if (!relations.includes(field)) continue;
+
+    const slot: Slot = { wiring, model, field };
+
+    if (await unread(slot, value)) continue;
 
     const input = isAttached(value)
-      ? await attaching(wiring, model, key, value, pending)
-      : await connected(wiring, model, key, value, pending, explicit.has(key), held);
+      ? await attaching(slot, value, pending)
+      : await connected(slot, value, { pending, explicit: explicit.has(field), held });
 
     // What the parent's own create has nothing to say about — a list holding no row, children created
     // once the parent row exists, and none at all — leaves the relation field unwritten rather than
     // naming it and giving Prisma nothing to do.
-    written[key] = Object.keys(input).length === 0 ? undefined : input;
+    written[field] = Object.keys(input).length === 0 ? undefined : input;
   }
 
   const settled = given(written);
 
-  agreed(wiring.client, model, settled, held);
+  assertColumnsAgree(wiring.client, model, settled, held);
 
   return {
-    data: keyed(wiring.client, model, settled, held),
+    data: keyed(wiring, model, settled, held),
     pending: pending.sort((one, next) => one.order - next.order),
   };
 }
@@ -968,17 +972,19 @@ async function resolved(
 // field comes last, or refuses outright: rows the library holds in both are told apart before then. A
 // referenced value a row does not hold, and native relation input, which carries no row, are Prisma's
 // to settle.
-function agreed(client: unknown, model: string, data: Written, held: Held): void {
+function assertColumnsAgree(client: unknown, model: string, data: Written, held: Held): void {
   const claims = new Map<string, { field: string; value: unknown }>();
 
   for (const field of Object.keys(data)) {
     const row = held.get(field)?.row;
     const key = row === undefined ? undefined : foreignKeyOf(client, model, field);
 
-    if (row === undefined || key === null || key === undefined) continue;
+    if (row === undefined || !isForeignKey(key)) continue;
+
+    const values = referencedValues(key, row);
 
     for (const [at, column] of key.fields.entries()) {
-      const value = row[key.references[at] ?? ""];
+      const value = values[at];
       const claim = claims.get(column);
 
       if (value === null || value === undefined) continue;
@@ -1012,9 +1018,10 @@ function shown(value: unknown): string {
 // value is written once, by that key.
 function columnsOf(key: ForeignKey, row: Written, data: Written, filled: Written): Written | undefined {
   const columns: Written = {};
+  const values = referencedValues(key, row);
 
   for (const [at, column] of key.fields.entries()) {
-    const value = row[key.references[at] ?? ""];
+    const value = values[at];
 
     if (value === null || value === undefined || column in data || column in columns) return undefined;
 
@@ -1036,10 +1043,10 @@ function columnsOf(key: ForeignKey, row: Written, data: Written, filled: Written
 // every relation field holding a key is filled by a row this build created, and every relation
 // otherwise goes on `connect`, the columns the caller wrote among them: a row the caller handed over or
 // a pool drew may have gone stale, and matching it on every scalar is what makes that fail loudly.
-function keyed(client: unknown, model: string, data: Written, held: Held): Written {
-  const columns = columnsFor(client, model, data, held);
+function keyed(wiring: Wiring, model: string, data: Written, held: Held): Written {
+  const columns = columnsFor(wiring.client, model, data, held);
 
-  return columns ?? reconnected(client, model, data);
+  return columns ?? reconnected(wiring, model, data);
 }
 
 function columnsFor(client: unknown, model: string, data: Written, held: Held): Written | undefined {
@@ -1053,7 +1060,7 @@ function columnsFor(client: unknown, model: string, data: Written, held: Held): 
 
     const entry = held.get(field);
     const row = entry?.fresh === true ? entry.row : undefined;
-    const columns = key === undefined || row === undefined ? undefined : columnsOf(key, row, data, filled);
+    const columns = !isForeignKey(key) || row === undefined ? undefined : columnsOf(key, row, data, filled);
 
     if (columns === undefined) return undefined;
 
@@ -1078,7 +1085,7 @@ function pairingOf(client: unknown, model: string): Pairing {
   return relationFieldsOf(client, model).flatMap((field) => {
     const key = foreignKeyOf(client, model, field);
 
-    return key === null || key === undefined ? [] : [[field, key] as const];
+    return isForeignKey(key) ? [[field, key] as const] : [];
   });
 }
 
@@ -1086,8 +1093,8 @@ function pairingOf(client: unknown, model: string): Pairing {
 // whole is written as a `connect` on the fields it references instead, and one whose columns are all
 // `null` as the relation field left out. A key named in part, or holding `null` in part, is left for
 // Prisma to refuse.
-function reconnected(client: unknown, model: string, data: Written): Written {
-  const keys = pairingOf(client, model);
+function reconnected(wiring: Wiring, model: string, data: Written): Written {
+  const keys = pairingOf(wiring.client, model);
 
   if (!keys.some(([field]) => field in data)) return data;
 
@@ -1106,7 +1113,7 @@ function reconnected(client: unknown, model: string, data: Written): Written {
 
     if (values.some((value) => value === null)) continue;
 
-    connects[field] = { connect: referencedWhere(client, model, field, key, values) };
+    connects[field] = { connect: referencedWhere({ wiring, model, field }, key, values) };
     for (const column of key.fields) consumed.add(column);
   }
 
@@ -1122,9 +1129,9 @@ async function borne(wiring: Wiring, model: string, row: unknown, entry: Pending
   const target = entry.children[brand];
   const back = entry.inverse ?? inverseRelationField(client, model, entry.field, entry.advice);
   // A child holding the foreign key reaches back through a row this build has just created, which its
-  // own create may write as that key; any other back relation connects on the row's scalars.
+  // own create may write as that key; any other back relation connects on it.
   const key = foreignKeyOf(client, target, back);
-  const connect = freshWhere(client, target, back, key, row as Written);
+  const connect = freshWhere({ wiring, model: target, field: back }, key, row as Written);
   const reach: Written = key === null ? { connect } : { connect, [created]: row };
 
   await bearing(recycling(inheriting(entry.children, client), wiring), row).create({ [back]: reach });

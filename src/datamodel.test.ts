@@ -9,10 +9,12 @@ import {
   relationFieldsTo,
   resolveRelationField,
   resolveRowRelationField,
+  targetIdentity,
   targetScalars,
   targetWhere,
 } from "./datamodel.js";
 import { disposableClient } from "./tests/factorio.js";
+import { withInlineSchema } from "./tests/inline-schema.js";
 
 const postShape = { id: 1, title: "Hello", authorId: 1, editorId: null };
 const userShape = { id: 1, email: "ada@example.com", name: null };
@@ -235,7 +237,7 @@ function compoundClient(inlineSchema: string): unknown {
     Child: scalars("a", "b", "c"),
   });
 
-  return { ...(client as object), _engineConfig: { inlineSchema } };
+  return withInlineSchema(client, inlineSchema);
 }
 
 const child = { a: 1, b: 2, c: 3 };
@@ -344,6 +346,41 @@ test("a selector never overwrites a scalar the row already carries under its nam
   expect(targetWhere(client, "parent", "child", child)).toStrictEqual(child);
 });
 
+test("the identity of the model a relation field points at is its id, single or compound", async () => {
+  const prisma = await disposableClient();
+
+  expect(targetIdentity(prisma, "post", "tags")).toStrictEqual(["id"]);
+  expect(targetIdentity(prisma, "tag", "posts")).toStrictEqual(["id"]);
+  expect(targetIdentity(prisma, "user", "profile")).toStrictEqual(["id"]);
+  expect(targetIdentity(prisma, "user", "memberships")).toStrictEqual(["userId", "teamId"]);
+});
+
+test("an identity is read off a field's own @id or a block's @@id, arguments and comments aside", () => {
+  const cases: [string, string[]][] = [
+    ['model Child {\n  a Int @default(1) @id @map("x")\n  b Int\n  c String\n}', ["a"]],
+    ["model Child {\n  a Int\n  b Int\n  c String\n  @@id([b])\n}", ["b"]],
+    ['model Child {\n  a Int\n  b Int\n  c String\n  @@id(name: "pair", fields: [b, a(sort: Desc)])\n}', ["b", "a"]],
+    ['model Child {\n  a Int // @id\n  b Int @default("@id")\n  c String @id\n}', ["c"]],
+  ];
+
+  for (const [block, identity] of cases)
+    expect(targetIdentity(compoundClient(block), "parent", "child"), block).toStrictEqual(identity);
+});
+
+test("an identity the scanner cannot read whole, or none at all, answers undefined", () => {
+  const blocks = [
+    childBlock("  @@unique([a, b])"),
+    "model Child {\n  a Int @id\n  b Int @id\n  c String\n}",
+    "model Child {\n  a Int @id\n  b Int\n  c String\n  @@id([a, b])\n}",
+    childBlock("  @@id([, ])"),
+    childBlock("  @@id([a, b]"),
+  ];
+
+  for (const block of blocks) expect(targetIdentity(compoundClient(block), "parent", "child"), block).toBeUndefined();
+  expect(targetIdentity(withInlineSchema(compoundClient(""), undefined), "parent", "child")).toBeUndefined();
+  expect(targetIdentity(compoundClient(childBlock("  @@id([a, b])")), "parent", "missing")).toBeUndefined();
+});
+
 // SQLite declares no list column, so the scratch schema holds none: a stand-in carries `String[]`,
 // `Int[]` and an enum list beside a `Json` column, and the schema text is the only part a test varies.
 function listingClient(inlineSchema?: string): unknown {
@@ -358,7 +395,7 @@ function listingClient(inlineSchema?: string): unknown {
     ],
   });
 
-  return inlineSchema === undefined ? client : { ...(client as object), _engineConfig: { inlineSchema } };
+  return withInlineSchema(client, inlineSchema);
 }
 
 const listingBlock =
@@ -432,67 +469,67 @@ test("a name the model declares as no relation field has no foreign key to read"
 });
 
 // A stand-in carries a one-to-one whose schema text a test varies: `Holder` keeps the foreign key,
-// `Owner` sits at the far end of it.
+// `Patron` sits at the far end of it.
 function keyedClient(inlineSchema?: string): unknown {
   const client = clientWith({
-    Owner: [...scalars("id", "code"), { name: "held", kind: "object", type: "Holder", relationName: "holding" }],
-    Holder: [...scalars("id", "ownerId"), { name: "owner", kind: "object", type: "Owner", relationName: "holding" }],
+    Patron: [...scalars("id", "code"), { name: "held", kind: "object", type: "Holder", relationName: "holding" }],
+    Holder: [...scalars("id", "patronId"), { name: "patron", kind: "object", type: "Patron", relationName: "holding" }],
   });
 
-  return inlineSchema === undefined ? client : { ...(client as object), _engineConfig: { inlineSchema } };
+  return withInlineSchema(client, inlineSchema);
 }
 
-function holderBlock(owner: string): string {
+function holderBlock(patron: string): string {
   return (
-    "model Owner {\n  id String @id\n  code String @unique\n  held Holder?\n}\n" +
-    `model Holder {\n  id String @id\n  ownerId String @unique\n  owner ${owner}\n}`
+    "model Patron {\n  id String @id\n  code String @unique\n  held Holder?\n}\n" +
+    `model Holder {\n  id String @id\n  patronId String @unique\n  patron ${patron}\n}`
   );
 }
 
 test("the inverse side of a one-to-one holds no foreign key, the far end holding it", () => {
-  const client = keyedClient(holderBlock('Owner @relation("holding", fields: [ownerId], references: [code])'));
+  const client = keyedClient(holderBlock('Patron @relation("holding", fields: [patronId], references: [code])'));
 
-  expect(foreignKeyOf(client, "owner", "held")).toBeNull();
-  expect(foreignKeyOf(client, "holder", "owner")).toStrictEqual({ fields: ["ownerId"], references: ["code"] });
+  expect(foreignKeyOf(client, "patron", "held")).toBeNull();
+  expect(foreignKeyOf(client, "holder", "patron")).toStrictEqual({ fields: ["patronId"], references: ["code"] });
 });
 
 test("a relation attribute spanning several lines is read whole", () => {
-  const client = keyedClient(holderBlock("Owner @relation(\n    fields: [ownerId],\n    references: [id],\n  )"));
+  const client = keyedClient(holderBlock("Patron @relation(\n    fields: [patronId],\n    references: [id],\n  )"));
 
-  expect(foreignKeyOf(client, "holder", "owner")).toStrictEqual({ fields: ["ownerId"], references: ["id"] });
+  expect(foreignKeyOf(client, "holder", "patron")).toStrictEqual({ fields: ["patronId"], references: ["id"] });
 });
 
 test("a relation attribute written in a comment or a string literal is no attribute", () => {
-  const decoy = 'model Decoy {\n  owner String @default("Owner @relation(fields: [ownerId], references: [id])")\n}\n';
-  const client = keyedClient(decoy + holderBlock("Owner // @relation(fields: [ownerId], references: [id])"));
+  const decoy =
+    'model Decoy {\n  patron String @default("Patron @relation(fields: [patronId], references: [id])")\n}\n';
+  const client = keyedClient(decoy + holderBlock("Patron // @relation(fields: [patronId], references: [id])"));
 
-  expect(foreignKeyOf(client, "holder", "owner")).toBeNull();
+  expect(foreignKeyOf(client, "holder", "patron")).toBeNull();
 });
 
-// A guessed key would write a column the model may not hold, where no answer leaves the relation on
-// `connect`, as it always was.
+// A guessed key could name a column the model does not hold; no answer leaves the relation on `connect`.
 test("a relation attribute the scanner cannot read whole yields no answer rather than guessing", () => {
-  for (const owner of [
-    "Owner @relation(fields: [ownerId])",
-    "Owner @relation(fields: [ownerId], references: [id, code])",
-    "Owner @relation(fields: ownerId, references: [id])",
-    "Owner @relation(fields: [], references: [])",
-    "Owner @relation(fields: [missing], references: [id])",
-    "Owner @relation(fields: [ownerId], references: [missing])",
-    "Owner @relation(fields: [ownerId], references: [id]",
+  for (const patron of [
+    "Patron @relation(fields: [patronId])",
+    "Patron @relation(fields: [patronId], references: [id, code])",
+    "Patron @relation(fields: patronId, references: [id])",
+    "Patron @relation(fields: [], references: [])",
+    "Patron @relation(fields: [missing], references: [id])",
+    "Patron @relation(fields: [patronId], references: [missing])",
+    "Patron @relation(fields: [patronId], references: [id]",
   ])
-    expect(foreignKeyOf(keyedClient(holderBlock(owner)), "holder", "owner"), owner).toBeUndefined();
+    expect(foreignKeyOf(keyedClient(holderBlock(patron)), "holder", "patron"), patron).toBeUndefined();
 });
 
 test("a field declared twice in one model yields no answer for it", () => {
-  const client = keyedClient(holderBlock("Owner @relation(fields: [ownerId], references: [id])\n  owner Owner"));
+  const client = keyedClient(holderBlock("Patron @relation(fields: [patronId], references: [id])\n  patron Patron"));
 
-  expect(foreignKeyOf(client, "holder", "owner")).toBeUndefined();
+  expect(foreignKeyOf(client, "holder", "patron")).toBeUndefined();
 });
 
 test("a client carrying no schema text yields no answer for any relation field", () => {
-  expect(foreignKeyOf(keyedClient(), "holder", "owner")).toBeUndefined();
-  expect(foreignKeyOf(keyedClient(), "owner", "held")).toBeUndefined();
+  expect(foreignKeyOf(keyedClient(), "holder", "patron")).toBeUndefined();
+  expect(foreignKeyOf(keyedClient(), "patron", "held")).toBeUndefined();
 });
 
 test("the inverse foreign key is the one the target model holds for the field pairing with the one asked", async () => {
@@ -525,7 +562,7 @@ test("a field the target model pairs with nothing yields no inverse foreign key 
   expect(
     inverseForeignKeyOf(relating([{ name: "posts", kind: "object", type: "Post" }]), "user", "posts"),
   ).toBeUndefined();
-  expect(inverseForeignKeyOf(keyedClient(), "owner", "held")).toBeUndefined();
+  expect(inverseForeignKeyOf(keyedClient(), "patron", "held")).toBeUndefined();
 });
 
 // `include` hands back the loaded relation alongside the scalars, and the relation it names belongs
