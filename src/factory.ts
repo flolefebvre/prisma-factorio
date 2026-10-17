@@ -1,30 +1,38 @@
 import {
   foreignKeyOf,
+  type ForeignKeyReading,
   type ForeignKey,
   holdsManyRecords,
+  inverseForeignKeyOf,
   inverseRelationField,
+  isForeignKey,
   type InverseAdvice,
   namedRelationField,
+  presentDelegate,
   relationFieldsOf,
   resolveRelationField,
   resolveRowRelationField,
+  targetIdentity,
   targetWhere,
 } from "./datamodel.js";
 import type { FakerInstance, FakerProvider } from "./faker.js";
 import { mergedPool, recycledPool, type Pool } from "./pool.js";
 import type {
   Attributes,
+  NamedChildField,
   ChildModel,
   ChildValue,
   CreateInput,
-  HasManyArgs,
   ModelName,
   Overrides,
+  NamedParentField,
   ParentModel,
   ParentValue,
   PartialAttributes,
-  RelationArgs,
+  RelationsTo,
   Row,
+  SoleChild,
+  SoleParent,
 } from "./prisma.js";
 import type { Picker } from "./rng.js";
 import { nextUid } from "./uid.js";
@@ -219,6 +227,26 @@ export interface HasOptions {
  * ```
  */
 export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
+  // The naked `O` beside `Overrides` is what infers a value typed as a union of the create input's
+  // branches whole, rather than collapsing it to one branch. That holds only on a required
+  // parameter, an optional one being a union with `undefined` that splits the value branch by
+  // branch, so the call without overrides, and a helper forwarding its own optional overrides, take
+  // the second signature.
+  /**
+   * Creates the records this factory stands for, the overrides merged last.
+   *
+   * A field the overrides name that the model does not declare is reported against a type naming
+   * that field and the model; a declared field of the wrong type is reported against `never`. Either
+   * arrives under `No overload matches this call`, one line per signature. README ›
+   * [Typing edges](https://github.com/flolefebvre/prisma-factorio#typing-edges) › "Error shape"
+   * reads both.
+   *
+   * @example
+   * ```ts
+   * const ada = await userFactory.create({ name: "Ada" });
+   * ```
+   */
+  create<O>(overrides: O & Overrides<C, M, O>): Promise<R>;
   create<O>(overrides?: Overrides<C, M, O>): Promise<R>;
   count(records: number): Factory<C, M, Row<C, M>[], S>;
   /**
@@ -246,36 +274,62 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
   // `Overrides` with the state's own shape inferred into it, which is what makes a field the model
   // does not declare an error. The closure form takes its return type through `ExactState`, the
   // same route a declared state takes, so both accept exactly the same states. The object form
-  // bars a function, whose empty `keyof` would otherwise satisfy `Overrides` and swallow every
-  // closure before the first signature checked it.
+  // takes its shape through a naked `V` as well, as `create` does, and bars a function, whose empty
+  // `keyof` would otherwise satisfy `Overrides` and swallow every closure before the first signature
+  // checked it.
+  /**
+   * Layers attributes over the definition, as an object or as a closure returning one.
+   *
+   * A field the state names that the model does not declare is reported against a type naming that
+   * field and the model; a declared field of the wrong type is reported against `never`. Either
+   * arrives under `No overload matches this call`, one line per signature. README ›
+   * [Typing edges](https://github.com/flolefebvre/prisma-factorio#typing-edges) › "Error shape"
+   * reads both.
+   *
+   * @example
+   * ```ts
+   * const suspendedFactory = userFactory.state({ name: "Suspended" });
+   * ```
+   */
   state<V extends (context: StateContext<C, M>) => unknown>(state: V & ExactState<C, M, V>): Factory<C, M, R, S>;
-  state<V extends Record<string, unknown>>(state: Overrides<C, M, V>): Factory<C, M, R, S>;
+  state<V extends Record<string, unknown>>(state: V & Overrides<C, M, V>): Factory<C, M, R, S>;
   /**
    * Connects every record this factory creates to one parent, named by a factory of the parent model
    * or by a row of it.
    *
-   * The relation field may be left out where the model pair shares exactly one belongs-to relation,
-   * and must be named where it shares several. A parent factory is evaluated once per `create` call,
-   * so a batch connects to one record rather than to one each. The relation field merges at the
-   * position `for` was called: a state applied after it wins that field, a state applied before it
-   * loses, and `create`'s overrides win over both.
+   * A named relation field is one of the belongs-to fields pointing at the parent's model; where there
+   * is none, or where the parent stands for no record of any model — a hand-built partial object is no
+   * row — the field reads as a message saying which. The field may be left out where the model pair
+   * shares exactly one belongs-to relation; where it shares several, or none, the parent parameter
+   * reads as a message naming the pair — and, for several, the fields to pick from. A parent factory
+   * is evaluated once per `create` call, so a batch connects to one record rather than to one each.
+   * The relation field merges at the position `for` was called: a state applied after it wins that
+   * field, a state applied before it loses, and `create`'s overrides win over both.
    *
    * @example
    * ```ts
    * const drafts = await postFactory.count(3).for(userFactory, "author").create();
+   * const comment = await commentFactory.for(post).create();
    * ```
    */
-  for<T extends ParentValue<C>>(parent: T, ...args: RelationArgs<C, M, ParentModel<C, T>>): Factory<C, M, R, S>;
+  for<T extends object>(parent: T, relationField: NamedParentField<C, M, T>): Factory<C, M, R, S>;
+  for<T extends ParentValue<C>>(
+    parent: SoleParent<C, M, T>,
+    relationField?: RelationsTo<C, M, ParentModel<C, T>>,
+  ): Factory<C, M, R, S>;
   /**
    * Fills a relation field this model holds many records in, alongside every record it creates.
    *
-   * The relation field may be left out where the model pair shares exactly one has-many relation, and
-   * must be named where it shares several. Rows are connected as they stand, no record of the child
-   * model being created for them; a child factory creates records of its own per parent record and
-   * reaches back through the inverse relation field, which `inverse` names where the client's metadata
-   * pairs the two sides down to more than one. Every child of one record is created before the next
-   * record of a batch is, layer by layer in the order the calls were made, and each one reads the
-   * record it was created for through `parent`.
+   * A named relation field is one of the has-many fields pointing at the children's model; where there
+   * is none, or where the children stand for no records of any model, the field reads as a message
+   * saying which. The field may be left out where the model pair shares exactly one has-many
+   * relation; where it shares several, or none, the children parameter reads as a message naming the
+   * pair — and, for several, the fields to pick from. Rows are connected as they stand, no record of
+   * the child model being created for them; a child factory creates records of its own per parent
+   * record and reaches back through the inverse relation field, which `inverse` names where the
+   * client's metadata pairs the two sides down to more than one. Every child of one record is created
+   * before the next record of a batch is, layer by layer in the order the calls were made, and each
+   * one reads the record it was created for through `parent`.
    *
    * `has` adds to the relation field rather than replacing it: two calls on one field both apply, and
    * a call made after a state adds to what that state left standing. Every other layer — a definition
@@ -284,11 +338,19 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * @example
    * ```ts
    * const author = await userFactory.has(postFactory.count(3), "posts").create();
+   * const post = await postFactory.has(commentFactory.count(2)).create();
    * ```
    */
-  has<T extends ChildValue<C>>(
+  has<T extends object>(
     children: T,
-    ...args: HasManyArgs<C, M, ChildModel<C, T>, HasOptions>
+    relationField: NamedChildField<C, M, T>,
+    options?: HasOptions,
+  ): Factory<C, M, R, S>;
+  has<T extends ChildValue<C>>(
+    children: SoleChild<C, M, T>,
+    ...args:
+      | [options?: HasOptions]
+      | [relationField: RelationsTo<C, M, ChildModel<C, T>, true> | undefined, options?: HasOptions]
   ): Factory<C, M, R, S>;
   /**
    * Pools existing rows of one model, so that a factory of that model standing in a relation field
@@ -310,9 +372,9 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
    * `has` layer or stands in a relation field holding many records.
    *
    * A row of the named model is what the argument takes, whatever else it carries: pooled rows
-   * connect on the target model's non-null scalars, plus the compound selector for each unique
-   * constraint the row names whole, so one loaded with `include` stands here as readily as one
-   * straight from a create.
+   * connect on every non-null scalar of the target model the where-clause can hold, plus the
+   * compound selector for each unique constraint the row names whole, so one loaded with `include`
+   * stands here as readily as one straight from a create.
    *
    * @example
    * ```ts
@@ -351,7 +413,12 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
  * Attributes merge in one order: the definition, then the states in the order they were applied,
  * then the overrides `create` was given. Last write wins per key, save for the relation field a `has`
  * layer adds to rather than replaces — see {@link FactoryMethods.has}; a key valued `undefined` is
- * skipped at every layer, so the layer before it stands; a `null` is written.
+ * skipped at every layer, so the layer before it stands; a `null` is written. A relation field and
+ * the columns of the foreign key backing it count as one key: a layer writing any of those columns
+ * drops the relation field an earlier layer wrote, and a layer writing the relation field drops the
+ * columns an earlier layer wrote. Where the create keeps another relation on `connect`, a column set
+ * named whole reaches Prisma as a `connect` on its own relation field, and one wholly `null` as that
+ * field left out. A model whose foreign keys the client's schema text does not name merges key by key.
  *
  * `count` takes a non-negative whole number and throws a `RangeError` on anything else; `count(0)`
  * is legal and creates no records.
@@ -362,7 +429,7 @@ export interface FactoryMethods<C, M extends ModelName<C>, R, S> {
  * const rows = await adminFactory.using(tx).create({ name: "Ada" });
  * ```
  */
-export type Factory<C, M extends ModelName<C>, R = Row<C, M>, S = Record<never, never>> = FactoryMethods<C, M, R, S> & {
+export type Factory<C, M extends ModelName<C>, R = Row<C, M>, S = object> = FactoryMethods<C, M, R, S> & {
   [K in keyof S]: () => Factory<C, M, R, S>;
 };
 
@@ -481,13 +548,19 @@ interface Embedded {
 
 // What resolving a relation takes beyond the value standing in it: the client the records are written
 // through, and the pool a record of a pooled model is drawn from in place of being created. One wiring
-// serves a whole `create()` call, so the fields it saw pooled rows drawn into span the batch — which is
-// the span a stale draw can fail over, a row one record connected going stale for the next.
+// serves a whole `create()` call, so the fields it records span the batch — which is the span a stale
+// row can fail over, a row one record connected going stale for the next. `rehomedInto` holds the
+// relation fields a pooled row was drawn into whose foreign key the drawn row's own model holds, so
+// that the connect rewrites a column the pooled copy still carries, each with its arity; `matchedInto`
+// every relation field a row the caller handed over or a pool drew was matched into, whatever its
+// arity. Where the schema text leaves the inverse key unread, a field holding many records counts as
+// re-homing and one holding a single record does not.
 interface Wiring {
   client: unknown;
   pool: Pool;
   pick: Picker;
-  drawnInto: string[];
+  rehomedInto: { field: string; many: boolean }[];
+  matchedInto: string[];
 }
 
 // A row carries whatever columns the model declares, `create` among them where the schema says so,
@@ -548,9 +621,10 @@ function isCreated(value: object): value is Created {
   return created in value;
 }
 
-// The rows this build created for the relation fields of one create, keyed by relation field: rows
-// that cannot have gone stale, and so may be written as the foreign key they stand for.
-type Fresh = Map<string, Written>;
+// The rows standing in the relation fields of one create, keyed by relation field: every row the
+// library holds there, handed over, drawn from a pool or created by this build. Only a row this build
+// created is `fresh`: it cannot have gone stale, and so may be written as the foreign key it stands for.
+type Held = Map<string, { row: Written; fresh: boolean }>;
 
 function isAttached(value: unknown): value is Attached {
   return typeof value === "object" && value !== null && attached in value;
@@ -618,23 +692,74 @@ function pooled(value: Embedded, { pool, pick }: Wiring, explicit: boolean): Rec
   return rows === undefined ? undefined : (pick(rows) as Record<string, unknown>);
 }
 
-// Every non-null scalar of the row goes into the `where`, plus a compound selector for every unique
-// constraint the row can name whole — the one match a model whose only unique constraint is
-// compound answers to. The runtime datamodel marks no field unique, so no subset of the scalars is
-// knowably the one Prisma would match on; every extra field narrows the match, which is what makes
-// a stale row fail rather than reach the record it has become. A relation the row carries is no
-// field to match on at all — a row loaded with `include` carries one, and so may a pooled row —
-// so the where-clause is what `targetWhere` reads off the row and nothing else.
-function matching(client: unknown, model: string, field: string, row: Record<string, unknown>): Written {
-  return { connect: targetWhere(client, model, field, row) };
+// One relation field of one model, resolved through the wiring of the create it belongs to.
+interface Slot {
+  wiring: Wiring;
+  model: string;
+  field: string;
+}
+
+// What resolving a value standing in a slot reports back to the create holding it: `pending` gathers
+// the children created once the parent row exists, `explicit` marks the slot as the caller's own
+// choice, and `held` collects the rows standing in this create's own relation fields — a caller with
+// no create of its own to rewrite, the base a `has` layer gathers on, passes none.
+interface Resolving {
+  pending: Pending[];
+  explicit: boolean;
+  held: Held | undefined;
+}
+
+function recordDraw({ wiring, model, field }: Slot, many: boolean): void {
+  const key = inverseForeignKeyOf(wiring.client, model, field);
+
+  if (many ? key !== null : isForeignKey(key)) wiring.rehomedInto.push({ field, many });
+  wiring.matchedInto.push(field);
+}
+
+function slotWhere({ wiring, model, field }: Slot, row: Written): Written {
+  return targetWhere(wiring.client, model, field, row);
+}
+
+// Every field narrows the match, which is what makes a stale row fail rather than reach the record it
+// has become.
+function matching(slot: Slot, row: Written): Written {
+  return { connect: slotWhere(slot, row) };
+}
+
+function referencedValues(key: ForeignKey, row: Written): unknown[] {
+  return key.references.map((name) => row[name]);
+}
+
+// The where-clause naming the record a foreign key's values point at: those values under the fields
+// they reference, plus the compound selector Prisma matches a compound reference on.
+function referencedWhere(slot: Slot, key: ForeignKey, values: unknown[]): Written {
+  return slotWhere(slot, Object.fromEntries(key.references.map((name, at) => [name, values[at]])));
+}
+
+// A row this build created cannot have gone stale by anyone else's doing, while its own callbacks may
+// already have changed its record, so it connects on the fields its key references alone — or, where
+// this side holds no key, on its model's id. An unreadable key or id, or a field the row holds no
+// value in, leaves the row matched on every scalar.
+function freshWhere(slot: Slot, key: ForeignKeyReading, row: Written): Written {
+  const { wiring, model, field } = slot;
+  const fields = isForeignKey(key)
+    ? key.references
+    : key === null
+      ? targetIdentity(wiring.client, model, field)
+      : undefined;
+  const identifying = Object.fromEntries((fields ?? []).map((name) => [name, row[name]]));
+
+  return fields === undefined || Object.values(identifying).some((value) => value === null || value === undefined)
+    ? slotWhere(slot, row)
+    : slotWhere(slot, identifying);
 }
 
 // A list connects as a list, which is what a relation field holding many records takes: a list found
 // standing in a field that holds a single record keeps the value it was handed rather than reaching
 // here, `resolved` turning it back on the arity. A single row connects on its own, the one shape both
 // arities take. A list holding no row connects nothing at all, leaving the field to the layers around it.
-function matchingAll(client: unknown, model: string, field: string, rows: readonly unknown[]): Written {
-  return rows.length === 0 ? {} : { connect: rows.map((row) => targetWhere(client, model, field, row as Written)) };
+function matchingAll(slot: Slot, rows: readonly unknown[]): Written {
+  return rows.length === 0 ? {} : { connect: rows.map((row) => slotWhere(slot, row as Written)) };
 }
 
 // A value a relation field has no reading for: a list standing in a field that holds a single record,
@@ -642,8 +767,8 @@ function matchingAll(client: unknown, model: string, field: string, rows: readon
 // going unwritten. A list is not the only value the arity is asked for — a factory standing in a field
 // asks it too — and neither ask is dear: the answer is held per client, and a field holding a single
 // record never reaches the database, Prisma refusing the probe filter where it stands.
-async function unread(client: unknown, model: string, field: string, value: Standing): Promise<boolean> {
-  return Array.isArray(value) && !(await holdsManyRecords(client, model, field));
+async function unread({ wiring, model, field }: Slot, value: Standing): Promise<boolean> {
+  return Array.isArray(value) && !(await holdsManyRecords(wiring.client, model, field));
 }
 
 // Prisma's own input, told from a row by the keys it carries: every one of them names an operation,
@@ -665,38 +790,34 @@ const standingOrder = -1;
 // holding a single record is the side the record has to exist first for, and is created here. The
 // arity is asked ahead of the pool: a single connect is a shape both arities take, so a slot drawn
 // before its arity is known would collapse a whole batch of children to one row.
-async function embodied(
-  wiring: Wiring,
-  model: string,
-  field: string,
-  value: Embedded,
-  pending: Pending[],
-  explicit: boolean,
-  fresh: Fresh | undefined,
-): Promise<Written> {
+async function embodied(slot: Slot, value: Embedded, { pending, explicit, held }: Resolving): Promise<Written> {
+  const { wiring, model, field } = slot;
+
   if (!(await holdsManyRecords(wiring.client, model, field))) {
     const picked = pooled(value, wiring, explicit);
 
-    if (picked !== undefined) return matching(wiring.client, model, field, picked);
+    if (picked !== undefined) {
+      held?.set(field, { row: picked, fresh: false });
+      recordDraw(slot, false);
+      return matching(slot, picked);
+    }
 
     const row = await recycling(inheriting(value, wiring.client), wiring).create();
 
     // A batch factory standing in a field holding a single record hands back a list, which is left for
-    // Prisma to refuse rather than being mangled into a match. A row the factory just created matches
-    // back like one the caller handed over, its compound selector included, wherever `keyed` leaves
-    // the create on `connect`.
+    // Prisma to refuse rather than being mangled into a match.
     if (Array.isArray(row)) return { connect: row };
 
-    fresh?.set(field, row as Written);
+    held?.set(field, { row: row as Written, fresh: true });
 
-    return matching(wiring.client, model, field, row as Written);
+    return { connect: freshWhere(slot, foreignKeyOf(wiring.client, model, field), row as Written) };
   }
 
   const picks = drawn(value, wiring, explicit);
 
   if (picks !== undefined) {
-    wiring.drawnInto.push(field);
-    return matchingAll(wiring.client, model, field, picks);
+    recordDraw(slot, true);
+    return matchingAll(slot, picks);
   }
 
   // The stand-in a `for` call leaves takes no overrides, so it has nothing to reach back through the
@@ -712,28 +833,30 @@ async function embodied(
   return {};
 }
 
-// `fresh` collects the rows created for this create's own relation fields; a caller with no create of
-// its own to rewrite — the base a `has` layer gathers on — passes none.
-async function connected(
-  wiring: Wiring,
-  model: string,
-  field: string,
-  value: Standing,
-  pending: Pending[],
-  explicit = false,
-  fresh?: Fresh,
-): Promise<Written> {
-  if (Array.isArray(value)) return matchingAll(wiring.client, model, field, value);
+async function connected(slot: Slot, value: Standing, resolving: Resolving): Promise<Written> {
+  const { wiring, field } = slot;
+  const { held } = resolving;
 
-  if (isFactory(value)) return embodied(wiring, model, field, value, pending, explicit, fresh);
+  if (Array.isArray(value)) {
+    if (value.length > 0) wiring.matchedInto.push(field);
+
+    return matchingAll(slot, value);
+  }
+
+  if (isFactory(value)) return embodied(slot, value, resolving);
 
   if (isCreated(value)) {
-    fresh?.set(field, value[created]);
+    held?.set(field, { row: value[created], fresh: true });
 
     return { connect: value.connect };
   }
 
-  return native(value) ? value : matching(wiring.client, model, field, value);
+  if (native(value)) return value;
+
+  held?.set(field, { row: value, fresh: false });
+  wiring.matchedInto.push(field);
+
+  return matching(slot, value);
 }
 
 // A single connect is what a to-one relation field takes and what a to-many one accepts alongside the
@@ -741,9 +864,9 @@ async function connected(
 function connecting(base: Written, rows: unknown[]): Written {
   if (rows.length === 0) return base;
 
-  const held = base.connect;
+  const existing = base.connect;
 
-  return { ...base, connect: [...(held === undefined ? [] : listed(held)), ...rows] };
+  return { ...base, connect: [...(existing === undefined ? [] : listed(existing)), ...rows] };
 }
 
 // A factory whose model the pool names stands for rows already written rather than for records to
@@ -770,13 +893,8 @@ function drawn(children: Embedded, wiring: Wiring, explicit: boolean): Record<st
 // children hang off and never a record standing in a slot, and an override replaces the relation field
 // whole, children and all, so the base survived every override there was. A `for` stand-in does reach
 // `connected` as that base, and stays the caller's own by the mark it carries rather than by the flag.
-async function attaching(
-  wiring: Wiring,
-  model: string,
-  field: string,
-  value: Attached,
-  pending: Pending[],
-): Promise<Written> {
+async function attaching(slot: Slot, value: Attached, pending: Pending[]): Promise<Written> {
+  const { wiring, field } = slot;
   const rows: unknown[] = [];
 
   for (const entry of value.entries) {
@@ -788,16 +906,19 @@ async function attaching(
         continue;
       }
 
-      wiring.drawnInto.push(field);
-      for (const row of picks) rows.push(targetWhere(wiring.client, model, field, row));
+      recordDraw(slot, true);
+      for (const row of picks) rows.push(slotWhere(slot, row));
       continue;
     }
 
-    for (const row of listed(entry.children)) rows.push(targetWhere(wiring.client, model, field, row as Written));
+    const handed = listed(entry.children);
+
+    if (handed.length > 0) wiring.matchedInto.push(field);
+    for (const row of handed) rows.push(slotWhere(slot, row as Written));
   }
 
-  const held = standing(value.base);
-  const base = held === undefined ? {} : await connected(wiring, model, field, held, pending);
+  const stood = standing(value.base);
+  const base = stood === undefined ? {} : await connected(slot, stood, { pending, explicit: false, held: undefined });
 
   return connecting(base, rows);
 }
@@ -809,8 +930,8 @@ async function resolved(
   explicit: ReadonlySet<string>,
 ): Promise<Resolved> {
   const embedded = Object.entries(data).flatMap(([key, value]) => {
-    const held = standing(value);
-    return held === undefined ? [] : [[key, held] as const];
+    const stood = standing(value);
+    return stood === undefined ? [] : [[key, stood] as const];
   });
 
   if (embedded.length === 0) return { data, pending: [] };
@@ -818,40 +939,96 @@ async function resolved(
   const relations = relationFieldsOf(wiring.client, model);
   const pending: Pending[] = [];
   const written: Written = { ...data };
-  const fresh: Fresh = new Map();
+  const held: Held = new Map();
 
-  for (const [key, value] of embedded) {
-    if (!relations.includes(key)) continue;
-    if (await unread(wiring.client, model, key, value)) continue;
+  for (const [field, value] of embedded) {
+    if (!relations.includes(field)) continue;
+
+    const slot: Slot = { wiring, model, field };
+
+    if (await unread(slot, value)) continue;
 
     const input = isAttached(value)
-      ? await attaching(wiring, model, key, value, pending)
-      : await connected(wiring, model, key, value, pending, explicit.has(key), fresh);
+      ? await attaching(slot, value, pending)
+      : await connected(slot, value, { pending, explicit: explicit.has(field), held });
 
     // What the parent's own create has nothing to say about — a list holding no row, children created
     // once the parent row exists, and none at all — leaves the relation field unwritten rather than
     // naming it and giving Prisma nothing to do.
-    written[key] = Object.keys(input).length === 0 ? undefined : input;
+    written[field] = Object.keys(input).length === 0 ? undefined : input;
   }
 
   const settled = given(written);
 
+  assertColumnsAgree(wiring.client, model, settled, held);
+
   return {
-    data: fresh.size === 0 ? settled : keyed(wiring.client, model, settled, fresh),
+    data: keyed(wiring, model, settled, held),
     pending: pending.sort((one, next) => one.order - next.order),
   };
 }
 
+// Two foreign keys sharing a column write one value there, which Prisma takes from whichever relation
+// field comes last, or refuses outright: rows the library holds in both are told apart before then. A
+// referenced value a row does not hold, and native relation input, which carries no row, are Prisma's
+// to settle.
+function assertColumnsAgree(client: unknown, model: string, data: Written, held: Held): void {
+  const claims = new Map<string, { field: string; value: unknown }>();
+
+  for (const field of Object.keys(data)) {
+    const row = held.get(field)?.row;
+    const key = row === undefined ? undefined : foreignKeyOf(client, model, field);
+
+    if (row === undefined || !isForeignKey(key)) continue;
+
+    const values = referencedValues(key, row);
+
+    for (const [at, column] of key.fields.entries()) {
+      const value = values[at];
+      const claim = claims.get(column);
+
+      if (value === null || value === undefined) continue;
+
+      if (claim === undefined) claims.set(column, { field, value });
+      else if (!same(claim.value, value))
+        throw new TypeError(
+          `The relation fields "${claim.field}" and "${field}" on the model "${model}" disagree on the foreign ` +
+            `key column "${column}": "${claim.field}" holds ${shown(claim.value)} and "${field}" holds ` +
+            `${shown(value)}. Pool the shared parent with recycle(), or hand the same row to both fields.`,
+        );
+    }
+  }
+}
+
+// A foreign key references an id, so a value is a number, a bigint or a string; an object one — a
+// date, a decimal, bytes — is a fresh instance per read, compared by what it serialises to.
+function same(one: unknown, other: unknown): boolean {
+  return typeof one === "object" && typeof other === "object"
+    ? JSON.stringify(one) === JSON.stringify(other)
+    : one === other;
+}
+
+function shown(value: unknown): string {
+  return typeof value === "bigint" ? String(value) : JSON.stringify(value);
+}
+
 // The foreign key columns a fresh row stands for in one relation field, or nothing where any of them
-// cannot be written: a referenced value the row does not hold, or a column some other key of the
-// create already fills.
-function columnsOf(key: ForeignKey, row: Written, filled: Written): Written | undefined {
+// cannot be written: a referenced value the row does not hold, a column the caller wrote, or one some
+// other key of the create already fills with another value. A column another key fills with the same
+// value is written once, by that key.
+function columnsOf(key: ForeignKey, row: Written, data: Written, filled: Written): Written | undefined {
   const columns: Written = {};
+  const values = referencedValues(key, row);
 
   for (const [at, column] of key.fields.entries()) {
-    const value = row[key.references[at] ?? ""];
+    const value = values[at];
 
-    if (value === null || value === undefined || column in filled || column in columns) return undefined;
+    if (value === null || value === undefined || column in data || column in columns) return undefined;
+
+    if (column in filled) {
+      if (!same(filled[column], value)) return undefined;
+      continue;
+    }
 
     columns[column] = value;
   }
@@ -863,22 +1040,29 @@ function columnsOf(key: ForeignKey, row: Written, filled: Written): Written | un
 // model holds a foreign key, or the unchecked one, carrying the raw columns there instead and refusing
 // those relation fields. A relation field holding no key — one holding many records, the side of a
 // one-to-one whose key the far end holds — is accepted by both. So the columns are written only where
-// every relation field holding a key is filled by a row this build created, and the create is
-// otherwise handed back as it stood, every relation on `connect`: a row the caller handed over or a
-// pool drew may have gone stale, and matching it on every scalar is what makes that fail loudly.
-function keyed(client: unknown, model: string, data: Written, fresh: Fresh): Written {
+// every relation field holding a key is filled by a row this build created, and every relation
+// otherwise goes on `connect`, the columns the caller wrote among them: a row the caller handed over or
+// a pool drew may have gone stale, and matching it on every scalar is what makes that fail loudly.
+function keyed(wiring: Wiring, model: string, data: Written, held: Held): Written {
+  const columns = columnsFor(wiring.client, model, data, held);
+
+  return columns ?? reconnected(wiring, model, data);
+}
+
+function columnsFor(client: unknown, model: string, data: Written, held: Held): Written | undefined {
   const replaced = new Map<string, Written>();
-  const filled: Written = { ...data };
+  const filled: Written = {};
 
   for (const field of relationFieldsOf(client, model).filter((name) => name in data)) {
     const key = foreignKeyOf(client, model, field);
 
     if (key === null) continue;
 
-    const row = fresh.get(field);
-    const columns = key === undefined || row === undefined ? undefined : columnsOf(key, row, filled);
+    const entry = held.get(field);
+    const row = entry?.fresh === true ? entry.row : undefined;
+    const columns = !isForeignKey(key) || row === undefined ? undefined : columnsOf(key, row, data, filled);
 
-    if (columns === undefined) return data;
+    if (columns === undefined) return undefined;
 
     Object.assign(filled, columns);
     replaced.set(field, columns);
@@ -893,6 +1077,49 @@ function keyed(client: unknown, model: string, data: Written, fresh: Fresh): Wri
   );
 }
 
+// Every relation field of a model whose foreign key the schema text names, beside that key. A field
+// whose key is held at the far end, or cannot be read at all, pairs with no column.
+type Pairing = readonly (readonly [field: string, key: ForeignKey])[];
+
+function pairingOf(client: unknown, model: string): Pairing {
+  return relationFieldsOf(client, model).flatMap((field) => {
+    const key = foreignKeyOf(client, model, field);
+
+    return isForeignKey(key) ? [[field, key] as const] : [];
+  });
+}
+
+// A create left on `connect` takes no raw foreign key column, so a key whose columns the data names
+// whole is written as a `connect` on the fields it references instead, and one whose columns are all
+// `null` as the relation field left out. A key named in part, or holding `null` in part, is left for
+// Prisma to refuse.
+function reconnected(wiring: Wiring, model: string, data: Written): Written {
+  const keys = pairingOf(wiring.client, model);
+
+  if (!keys.some(([field]) => field in data)) return data;
+
+  const connects: Written = {};
+  const consumed = new Set<string>();
+
+  for (const [field, key] of keys) {
+    if (field in data || !key.fields.every((column) => column in data)) continue;
+
+    const values = key.fields.map((column) => data[column]);
+
+    if (values.every((value) => value === null)) {
+      for (const column of key.fields) consumed.add(column);
+      continue;
+    }
+
+    if (values.some((value) => value === null)) continue;
+
+    connects[field] = { connect: referencedWhere({ wiring, model, field }, key, values) };
+    for (const column of key.fields) consumed.add(column);
+  }
+
+  return { ...Object.fromEntries(Object.entries(data).filter(([name]) => !consumed.has(name))), ...connects };
+}
+
 // The children left pending — by a `has` layer, or by a factory standing in a relation field holding
 // many records — are created once the parent row exists, through their own factory, so every layer their
 // own chain holds still applies. They reach back to that row on the relation field pairing with the one
@@ -902,36 +1129,63 @@ async function borne(wiring: Wiring, model: string, row: unknown, entry: Pending
   const target = entry.children[brand];
   const back = entry.inverse ?? inverseRelationField(client, model, entry.field, entry.advice);
   // A child holding the foreign key reaches back through a row this build has just created, which its
-  // own create may write as that key; any other back relation connects on the row's scalars.
-  const connect = targetWhere(client, target, back, row as Written);
-  const reach: Written = foreignKeyOf(client, target, back) === null ? { connect } : { connect, [created]: row };
+  // own create may write as that key; any other back relation connects on it.
+  const key = foreignKeyOf(client, target, back);
+  const connect = freshWhere({ wiring, model: target, field: back }, key, row as Written);
+  const reach: Written = key === null ? { connect } : { connect, [created]: row };
 
   await bearing(recycling(inheriting(entry.children, client), wiring), row).create({ [back]: reach });
 }
 
-// The code Prisma refuses a create with when a `connect` inside it finds none of the records it names.
+// The codes Prisma refuses a create with when a `connect` inside it finds none of the records it names,
+// which of the two depending on the shape of the relation rather than on its arity alone: a connect
+// into an implicit many-to-many answers with `P2025`, as one into a field holding a single record does.
 const unmatchedConnect = "P2018";
+const unmatchedRecord = "P2025";
 
-// A create that drew pooled rows into a to-many relation field is the one whose connect can fail by the
-// pool's own doing: a required foreign key rewritten by an earlier record's connect leaves the pooled
-// copy matching nothing. Prisma's refusal names engine internals, so it is retold in the pool's terms,
-// the original standing behind it as the cause; every other failure passes through untouched, a stale
-// row the caller handed over still failing in Prisma's words.
+function quoted(fields: readonly string[]): string {
+  return [...new Set(fields)].map((field) => `"${field}"`).join(" or ");
+}
+
+// A create that drew pooled rows into a relation field whose foreign key the drawn rows hold is the one
+// whose connect can fail by the pool's own doing: a key rewritten by an earlier record's connect
+// leaves the pooled copy matching nothing, which is retold in the pool's terms. A re-homing field that
+// fails answers with a code of its arity — `P2018` one holding many records, `P2025` one holding a
+// single record — so only a re-homing field of that arity can be the one, and the retelling names
+// every such field across the call; a stale row in a field of the same arity is retold in the pool's
+// terms all the same. Any other connect that matched nothing while a handed or pooled row stood in
+// the call is retold as a stale row, naming every field such a row stood in across the call rather
+// than the one that failed. Prisma's error stands behind either as the cause; a create no such row
+// reached passes its failure through untouched.
 async function persisted(delegate: CreateDelegate, data: Written, wiring: Wiring, model: string): Promise<unknown> {
   try {
     return await delegate.create({ data });
   } catch (error) {
-    const fields = [...new Set(wiring.drawnInto)];
+    const code = (error as { code?: unknown } | null | undefined)?.code;
+    const unmatched = code === unmatchedConnect || code === unmatchedRecord;
+    const rehomed = wiring.rehomedInto
+      .filter(({ many }) => many === (code === unmatchedConnect))
+      .map(({ field }) => field);
 
-    if (fields.length === 0 || (error as { code?: unknown }).code !== unmatchedConnect) throw error;
+    if (unmatched && rehomed.length > 0)
+      throw new Error(
+        `A pooled row drawn into ${quoted(rehomed)} on the model "${model}" ` +
+          "no longer matches the database: a connect into a relation field backed by a required foreign key " +
+          "re-homes the record, rewriting the column the pooled copy still carries, so a pooled row fills " +
+          "such a relation once. Pool one row per parent record, or pass native relation input.",
+        { cause: error },
+      );
 
-    throw new Error(
-      `A pooled row drawn into ${fields.map((field) => `"${field}"`).join(" or ")} on the model "${model}" ` +
-        "no longer matches the database: a connect into a relation field backed by a required foreign key " +
-        "re-homes the record, rewriting the column the pooled copy still carries, so a pooled row fills " +
-        "such a relation once. Pool one row per parent record, or pass native relation input.",
-      { cause: error },
-    );
+    if (unmatched && wiring.matchedInto.length > 0)
+      throw new Error(
+        `A row connected into ${quoted(wiring.matchedInto)} on the model "${model}" no longer matches the ` +
+          "database: it was read before its record changed, and every non-null scalar is matched on, so a " +
+          "changed `updatedAt` is enough. Re-read the row from the client before handing it over or pooling " +
+          "it, or pass native relation input ({ connect: { id } }) to match on the key alone.",
+        { cause: error },
+      );
+
+    throw error;
   }
 }
 
@@ -998,6 +1252,25 @@ function attachStep({ client }: Wiring, model: string, layer: Children, order: n
   return ({ attrs }): Written => ({ [field]: accumulating(attrs[field], entry) });
 }
 
+// A relation field and its foreign key columns are one key to the merge: a later layer writing either
+// drops what an earlier one wrote under the other, while a layer naming both keeps both for Prisma to
+// refuse. Only a layer holding a value that may stand in a relation field can pair anything, so the
+// metadata is read for no other — a client carrying none still creates a model holding no relation.
+function overlaid(earlier: Written, later: Written, pairing: () => Pairing): Written {
+  const layers = [earlier, later].flatMap((layer) => Object.values(layer));
+
+  if (!layers.some((value) => standing(value) !== undefined)) return { ...earlier, ...later };
+
+  const displaced = new Set(
+    pairing().flatMap(([field, { fields }]) => [
+      ...(fields.some((column) => column in later) ? [field] : []),
+      ...(field in later ? fields : []),
+    ]),
+  );
+
+  return { ...Object.fromEntries(Object.entries(earlier).filter(([key]) => !displaced.has(key))), ...later };
+}
+
 function layerStep(wiring: Wiring, model: string, layer: Layer, order: number): Step {
   if (typeof layer === "function") return layer;
 
@@ -1012,25 +1285,27 @@ async function write<C, M extends ModelName<C>>(
   const faker = await chain.faker();
   const client = chain.client();
   const model = String(chain.model);
-  const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick, drawnInto: [] };
+  const wiring: Wiring = { client, pool: chain.pool, pick: chain.pick, rehomedInto: [], matchedInto: [] };
   // Every model the client carries, which is what a callback reaches a second one through. `using`
   // asks for a single delegate, so a chain redirected to a stub carrying fewer stands on the caller.
   const reached = { client: client as Pick<C, ModelName<C>> };
-  const delegate = client[chain.model] as CreateDelegate;
+  const delegate = presentDelegate(client, model) as CreateDelegate;
   const applied = given(overrides);
   // A relation field the call names outright is the caller's own choice of parent, which the pool
   // leaves standing; a key valued `undefined` names nothing, `given` having dropped it.
   const explicit = new Set(Object.keys(applied));
   const steps = chain.applied.map((layer, order) => layerStep(wiring, model, layer, order));
+  let paired: Pairing | undefined;
+  const pairing = (): Pairing => (paired ??= pairingOf(client, model));
   const rows: unknown[] = [];
 
   for (let index = 0; index < (chain.batch ?? 1); index += 1) {
     const context = { faker, index, uid: nextUid(), parent: chain.parent };
     let attrs = given(chain.definition(context));
 
-    for (const state of steps) attrs = { ...attrs, ...given(state({ ...context, attrs })) };
+    for (const state of steps) attrs = overlaid(attrs, given(state({ ...context, attrs })), pairing);
 
-    const { data, pending } = await resolved(wiring, model, { ...attrs, ...applied }, explicit);
+    const { data, pending } = await resolved(wiring, model, overlaid(attrs, applied, pairing), explicit);
     const row = await persisted(delegate, data, wiring, model);
 
     // Depth first: every child of one record exists before the next record of the batch is created,
@@ -1084,7 +1359,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
   const derive = (layer: Layer): Factory<C, M, R, S> => createFactory({ ...chain, applied: [...chain.applied, layer] });
 
   const methods: FactoryMethods<C, M, R, S> = {
-    async create<O>(overrides?: Overrides<C, M, O>): Promise<R> {
+    async create(overrides?: unknown): Promise<R> {
       const rows = await write(chain, overrides as Written | undefined);
       return (chain.batch === undefined ? rows[0] : rows) as R;
     },
@@ -1100,10 +1375,10 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
     state(state: unknown): Factory<C, M, R, S> {
       return derive(step(state));
     },
-    for(parent: object, relationField?: string): Factory<C, M, R, S> {
+    for(parent: unknown, relationField?: string): Factory<C, M, R, S> {
       return derive({ parent: parent as Record<string, unknown>, relationField });
     },
-    has(children: object, ...args: unknown[]): Factory<C, M, R, S> {
+    has(children: unknown, ...args: unknown[]): Factory<C, M, R, S> {
       const [first] = args;
       // Read off the tail rather than off a position: a relation field the model pair leaves skippable
       // may still be passed, valued `undefined`, with the options behind it.
@@ -1111,7 +1386,7 @@ export function createFactory<C, M extends ModelName<C>, R, S>(chain: FactoryCha
       const options = (typeof tail === "object" ? tail : undefined) as HasOptions | null | undefined;
 
       return derive({
-        children,
+        children: children as object,
         relationField: typeof first === "string" ? first : undefined,
         inverse: options?.inverse,
       });

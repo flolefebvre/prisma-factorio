@@ -1,6 +1,6 @@
 # Using prisma-factorio with @flefebvre/prisma-test-helper
 
-[`@flefebvre/prisma-test-helper`](https://github.com/flolefebvre/prisma-test-helper) is a Postgres test harness for Prisma + Vitest: one throwaway container per run, one database per worker, and tests that commit for real. This guide covers its 1.0.0 lifecycle. Before a file's first test, and after every test, the harness's Reset empties every table and rewinds every sequence. Paired with prisma-factorio, factories build their whole graph through your own client, and the Reset is the cleanup.
+[`@flefebvre/prisma-test-helper`](https://github.com/flolefebvre/prisma-test-helper) is a Postgres test harness for Prisma + Vitest: one throwaway container per run, one database per worker, and tests that commit for real. This guide covers its 1.0.0 lifecycle. Before a file's first test, and after every test, the harness's Reset returns every table to its Baseline: empty, except for the rows that migrations and the global-setup seed inserted, which it restores. Every sequence is rewound. Paired with prisma-factorio, factories build their whole graph through your own client, and the Reset is the cleanup.
 
 The pairing needs no adapter and no extra wiring. The harness takes the client your app already uses, `setupDatabase(db)`, and wraps nothing. prisma-factorio reads relation metadata off that same client and issues its queries through it, so every factory write is an ordinary committed write.
 
@@ -53,7 +53,7 @@ Every row the graph created is committed, and the Reset removes it when the test
 ## Lifecycle
 
 - **Build rows per test: in the test, in `beforeEach`, or through a factory called from either.** A row a `beforeAll` of your own creates lasts only until the first test ends, when the Reset removes it like any other.
-- **A `recycle()` pool must not outlive a test.** A pool is a list of rows you handed over, held by the factory chain. If those rows came from a `beforeAll`, or from an earlier test, the Reset has already deleted them, while the factory still holds the copies. Build the rows and the pool that recycles them in the same test or `beforeEach`.
+- **Build a `recycle()` pool in the test that uses it.** A pool is a list of rows you handed over, held by the factory chain. If those rows came from a `beforeAll`, or from an earlier test, the Reset has already deleted them, while the factory still holds the copies. Build the rows and the pool that recycles them in the same test or `beforeEach`.
 - **A stale row fails loudly, and that is deliberate.** The Reset rewinds every sequence, so the next test's first user gets id 1 again. A stale row matched on its id alone would silently reach that unrelated new record. prisma-factorio connects a row you handed over, or one a pool drew, on every non-null scalar it holds. The new user with id 1 holds a different email, so the create fails with Prisma's `P2025` instead of wiring the wrong record. A row the factory created in the same build is never stale, and is written as its foreign key ([ADR 0005](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/adr/0005-fresh-rows-as-foreign-keys.md)).
 - **`using(tx)` is for transactions your test opens itself.** Factory writes already commit through the client you bootstrapped on. Reach for `using` only to put a graph inside a `$transaction` of your own.
 - A shared factories module can fail loudly when a test file forgot to opt in:
@@ -68,7 +68,7 @@ Every row the graph created is committed, and the Reset removes it when the test
 
 ## Determinism
 
-The harness runs every hook given to `registerResetHook` in each `beforeEach`, handing it `{ testName, seed }`. `seed` is derived from the test name alone, so rerunning one test with `-t` hands it the same seed a full-suite run did. prisma-factorio takes its `seed` once, at `initPrismaFactorio`, and exposes no way to reseed a bootstrap. So seed it per test by bootstrapping again from the hook, with the factories defined in a function of the seed:
+The harness runs every hook given to `registerResetHook` in each `beforeEach`, handing it `{ testName, seed }`. `seed` is derived from the test name alone, so rerunning one test with `-t` hands it the same seed a full-suite run did. Hand it to the bootstrap with one line in the factories module:
 
 ```ts
 // tests/factories.ts
@@ -76,25 +76,13 @@ import { initPrismaFactorio } from "@flefebvre/prisma-factorio";
 import { registerResetHook } from "@flefebvre/prisma-test-helper";
 import { db } from "../src/db/client.js";
 
-function defineFactories(seed?: number) {
-  const prismaFactorio = initPrismaFactorio(() => db, { seed });
+const prismaFactorio = initPrismaFactorio(() => db);
 
-  const userFactory = prismaFactorio.define("user", {
-    definition: ({ faker, uid }) => ({ email: `user-${uid}@example.com`, name: faker.person.fullName() }),
-  });
+registerResetHook(({ seed }) => prismaFactorio.reseed(seed));
 
-  const postFactory = prismaFactorio.define("post", {
-    definition: ({ faker }) => ({ title: faker.lorem.sentence(), author: userFactory }),
-  });
-
-  return { userFactory, postFactory };
-}
-
-export let factories = defineFactories();
-
-registerResetHook(({ seed }) => {
-  factories = defineFactories(seed);
+export const userFactory = prismaFactorio.define("user", {
+  definition: ({ faker, uid }) => ({ email: `user-${uid}@example.com`, name: faker.person.fullName() }),
 });
 ```
 
-Read the factories off `factories` inside the test, as in `factories.userFactory.create()`, rather than destructuring them at import time, which would keep the bootstrap the module started with. The seed pins faker's values and the recycle picks. It does not pin `uid`, which draws a fresh random prefix in every process, so never assert on a `uid`-derived column.
+`reseed` restarts the bootstrap's streams in place, so every factory it defined — before the hook ran or after — draws from the test's seed, and test files import and destructure the factories as usual. The seed pins faker's values and the recycle picks. It does not pin `uid`, which draws a fresh random prefix in every process, so never assert on a `uid`-derived column.

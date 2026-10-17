@@ -11,14 +11,28 @@ generator client {
 
 // `handle` is the one nullable unique column in the schema: Prisma types it in `WhereUniqueInput` as
 // a bare selector rather than a nullable filter, so a row holding `null` there names no record.
+// `meta` is the one Json column: Prisma types it in `WhereUniqueInput` as a filter, never a bare
+// value, so a row holding one there names no record either.
 model User {
   id          Int          @id @default(autoincrement())
   email       String       @unique
   name        String?
   handle      String?      @unique
+  meta        Json?
   posts       Post[]       @relation("authored")
   edited      Post[]       @relation("edited")
   memberships Membership[]
+  profile     Profile?
+}
+
+// The one one-to-one: its required foreign key is unique and sits on this side, so a connect from
+// `User` re-homes the profile, rewriting `userId` under any copy of the row read before. `bio` is a
+// scalar no other model declares, which keeps a row of this model resolvable.
+model Profile {
+  id     Int    @id @default(autoincrement())
+  bio    String
+  user   User   @relation(fields: [userId], references: [id])
+  userId Int    @unique
 }
 
 model Post {
@@ -58,6 +72,19 @@ model Team {
   id          Int          @id @default(autoincrement())
   slug        String
   memberships Membership[]
+  sponsored   Badge[]      @relation("sponsored")
+  invites     Invite[]
+}
+
+// The one model whose id the client generates: Prisma's checked create input keeps an `id` it does
+// not leave to the database, so an explicit id and a belongs-to relation field meet in one create
+// here, where every database-generated id refuses them. `code` is a scalar no other model declares,
+// which keeps a row of this model resolvable.
+model Invite {
+  id     String @id @default(uuid())
+  code   String
+  team   Team   @relation(fields: [teamId], references: [id])
+  teamId Int
 }
 
 // The explicit many-to-many: `User` and `Team` share no relation field, reaching each other through
@@ -77,10 +104,59 @@ model Membership {
 // The to-one leg onto the join model: the one relation field a row reaches `connect` through bare —
 // no `has` layer, no list — so the compound selector on the fresh-created and pooled to-one paths is
 // pinned here. `note` is a scalar no other model declares, which keeps a row of this model resolvable.
+// `sponsor` is the one relation a row can be handed into beside `membership`, which forces a fresh
+// compound-keyed membership onto `connect` rather than its foreign key columns, so the compound
+// selector a fresh row connects on is reachable.
 model Badge {
   id         Int        @id @default(autoincrement())
   note       String
   membership Membership @relation(fields: [userId, teamId], references: [userId, teamId])
   userId     Int
   teamId     Int
+  sponsor    Team?      @relation("sponsored", fields: [sponsorId], references: [id])
+  sponsorId  Int?
+}
+
+// The parent two relations of `Booking` must agree on. `city` is a scalar no other model declares,
+// which keeps a row of this model resolvable.
+model Venue {
+  id        Int        @id @default(autoincrement())
+  city      String
+  customers Customer[]
+  bookings  Booking[]
+}
+
+// Its compound unique `(id, venueId)` exists only to be referenced: it is what lets `Booking` point at
+// a customer and that customer's venue through one key. `phone` is a scalar no other model declares.
+model Customer {
+  id       Int       @id @default(autoincrement())
+  phone    String
+  venue    Venue     @relation(fields: [venueId], references: [id])
+  venueId  Int
+  bookings Booking[]
+
+  @@unique([id, venueId])
+}
+
+// The one model relating to itself: both sides of the `tree` pairing sit on it, so the inverse of
+// either side is the other and never the field itself. `path` is a scalar no other model declares,
+// which keeps a row of this model resolvable.
+model Category {
+  id       Int        @id @default(autoincrement())
+  path     String
+  parent   Category?  @relation("tree", fields: [parentId], references: [id])
+  parentId Int?
+  children Category[] @relation("tree")
+}
+
+// The one model whose two relations share a foreign key column: `venueId` belongs to both `venue` and
+// the composite `customer` key, so relation defaults that each build their own venue disagree on it.
+// Only a parent shared between them — a recycled venue — gives both legs the same value. `seat` is a scalar no other model declares.
+model Booking {
+  id         Int      @id @default(autoincrement())
+  seat       String
+  venue      Venue    @relation(fields: [venueId], references: [id])
+  venueId    Int
+  customer   Customer @relation(fields: [customerId, venueId], references: [id, venueId])
+  customerId Int
 }

@@ -5,11 +5,16 @@ import type { EvaluationContext, Factory } from "../factory.js";
 import { createTestClient, disposeTestClient, type TestClient } from "./client.js";
 
 /**
- * A bootstrap over a throwaway database, with one factory per model already declared on it.
+ * A bootstrap over a throwaway database, with one factory per model already declared on it, save
+ * `Booking`: its two relation defaults disagree on the `venueId` they share, so the tests that need
+ * one declare it themselves.
  *
- * `postFactory`, `commentFactory`, `membershipFactory` and `badgeFactory` carry a relation default, so
- * creating any of them walks the chain of factories behind it: a comment brings a post, which brings a
- * user; a membership brings a user and a team both; and a badge brings a whole membership.
+ * `postFactory`, `commentFactory`, `membershipFactory`, `badgeFactory`, `customerFactory`,
+ * `inviteFactory` and `profileFactory` carry a relation default, so creating any of them walks the
+ * chain of factories behind it: a comment brings a post, which brings a user; a membership brings a
+ * user and a team both; a badge brings a whole membership; a customer brings a venue; an invite
+ * brings a team; and a profile brings a user.
+ * `categoryFactory` carries none: a self-relation default in its own definition recurses without end.
  *
  * @example
  * ```ts
@@ -26,6 +31,11 @@ export interface Harness {
   teamFactory: Factory<TestClient, "team">;
   membershipFactory: Factory<TestClient, "membership">;
   badgeFactory: Factory<TestClient, "badge">;
+  venueFactory: Factory<TestClient, "venue">;
+  customerFactory: Factory<TestClient, "customer">;
+  inviteFactory: Factory<TestClient, "invite">;
+  categoryFactory: Factory<TestClient, "category">;
+  profileFactory: Factory<TestClient, "profile">;
 }
 
 /**
@@ -82,6 +92,17 @@ export async function factorioHarness(options: FactorioOptions = {}): Promise<Ha
   const badgeFactory = prismaFactorio.define("badge", {
     definition: ({ uid }) => ({ note: uid, membership: membershipFactory }),
   });
+  const venueFactory = prismaFactorio.define("venue", { definition: ({ uid }) => ({ city: uid }) });
+  const customerFactory = prismaFactorio.define("customer", {
+    definition: ({ uid }) => ({ phone: uid, venue: venueFactory }),
+  });
+  const inviteFactory = prismaFactorio.define("invite", {
+    definition: ({ uid }) => ({ code: uid, team: teamFactory }),
+  });
+  const categoryFactory = prismaFactorio.define("category", { definition: ({ uid }) => ({ path: uid }) });
+  const profileFactory = prismaFactorio.define("profile", {
+    definition: ({ uid }) => ({ bio: uid, user: userFactory }),
+  });
 
   return {
     prisma,
@@ -93,5 +114,10 @@ export async function factorioHarness(options: FactorioOptions = {}): Promise<Ha
     teamFactory,
     membershipFactory,
     badgeFactory,
+    venueFactory,
+    customerFactory,
+    inviteFactory,
+    categoryFactory,
+    profileFactory,
   };
 }

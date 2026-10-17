@@ -1,6 +1,6 @@
 {
   "name": "@flefebvre/prisma-factorio",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Laravel-style model factories for Prisma, fully typed",
   "license": "MIT",
   "author": "Florian Lefebvre <florian.lefebvre.contact@gmail.com>",
@@ -34,23 +34,32 @@
   },
   "files": [
     "dist",
+    "docs/for-agents.md",
+    "docs/prisma-test-helper.md",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/tests",
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20"
+    "node": "^22.12 || >=24"
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "generate": "prisma generate && prisma migrate diff --from-empty --to-schema=prisma/schema.prisma --script --output=src/tests/generated/schema.sql && echo '--generate OK--'",
+    "generate": "pnpm generate:sqlite && pnpm generate:postgres && echo '--generate OK--'",
+    "generate:sqlite": "prisma generate && prisma migrate diff --from-empty --to-schema=prisma/schema.prisma --script --output=src/tests/generated/schema.sql && echo '--generate:sqlite OK--'",
+    "generate:postgres": "prisma generate --schema=prisma/postgres.prisma && prisma migrate diff --from-empty --to-schema=prisma/postgres.prisma --script --output=src/tests/postgres/generated/schema.sql && echo '--generate:postgres OK--'",
     "clean": "rm -rf dist && echo '--clean OK--'",
     "prepublishOnly": "pnpm clean && pnpm build",
     "typecheck": "tsc --noEmit && echo '--typecheck OK--'",
     "lint": "eslint . && echo '--lint OK--'",
     "test": "vitest run && echo '--test OK--'",
+    "test:postgres": "vitest run --config vitest.postgres.config.ts && echo '--test:postgres OK--'",
     "build": "tsc -p tsconfig.build.json && echo '--build OK--'",
     "pack:check": "tsx scripts/check-pack.ts && echo '--pack:check OK--'",
+    "bench:types": "tsx scripts/bench-types/index.ts && echo '--bench:types OK--'",
     "format": "prettier --write .",
     "format:check": "prettier --check . && echo '--format:check OK--'",
     "duplicates": "jscpd && echo '--duplicates OK--'",
@@ -73,15 +82,17 @@
     "@eslint/js": "^10.0.1",
     "@faker-js/faker": "^10.5.0",
     "@prisma/adapter-better-sqlite3": "^7.8.0",
-    "@prisma/client": "7.8.0",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "@testcontainers/postgresql": "^12.2.1",
     "@types/node": "^26.1.1",
     "eslint": "^10.7.0",
     "jscpd": "^5.0.12",
     "prettier": "^3.9.5",
-    "prisma": "7.8.0",
+    "prisma": "7.10.1",
     "tsx": "^4.23.0",
     "typescript": "~6.0.3",
-    "typescript-eslint": "^8.63.0",
+    "typescript-eslint": "^8.71.2",
     "vitest": "^4.1.10"
   }
 }

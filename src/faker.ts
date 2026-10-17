@@ -26,7 +26,7 @@ export interface FactorioOptions {
    * Pins every value a bootstrap draws at random: the output faker generates, and the rows a recycle
    * pool picks. Each is a stream of its own, so one seed replays both, and neither moves the other
    * along. It does not make a run reproducible on its own, since a uid draws a fresh prefix in every
-   * process.
+   * process. `prismaFactorio.reseed(seed)` restarts both streams on a new seed later, between creates.
    *
    * @example
    * ```ts
@@ -48,6 +48,21 @@ export interface FactorioOptions {
 export type FakerProvider = () => Promise<FakerInstance>;
 
 /**
+ * A faker provider that can restart the instance it hands out on a new seed.
+ *
+ * After `reseed(seed)`, the instance generates exactly what a fresh provider on `seed` would, whether
+ * it had resolved yet or not; without a seed, it is reseeded at random. With `@faker-js/faker`
+ * absent, a reseed does nothing.
+ *
+ * @example
+ * ```ts
+ * const provider = createFakerProvider({ seed: 1234 });
+ * provider.reseed(5678);
+ * ```
+ */
+export type ReseedableFakerProvider = FakerProvider & { reseed: (seed?: number) => void };
+
+/**
  * Builds a provider that resolves `@faker-js/faker` on first use and reuses that instance after.
  *
  * `@faker-js/faker` is an optional peer dependency, so the import is deferred to the first call
@@ -62,14 +77,23 @@ export type FakerProvider = () => Promise<FakerInstance>;
  * faker.location.city(); // "Bordeaux"
  * ```
  */
-export function createFakerProvider(options: FactorioOptions = {}): FakerProvider {
+export function createFakerProvider(options: FactorioOptions = {}): ReseedableFakerProvider {
   let resolution: Promise<FakerInstance> | undefined;
+  let seed = options.seed;
+  let configured: FakerInstance | undefined;
 
-  return () =>
+  const provider: FakerProvider = () =>
     (resolution ??= import("@faker-js/faker").then(
-      (module) => configure(module, options),
+      (module) => (configured = configure(module, { locale: options.locale, seed })),
       (cause: unknown) => unavailableFaker(cause),
     ));
+
+  return Object.assign(provider, {
+    reseed(next?: number): void {
+      seed = next;
+      configured?.seed(next);
+    },
+  });
 }
 
 type FakerModule = typeof import("@faker-js/faker");

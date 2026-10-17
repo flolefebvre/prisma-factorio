@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   foreignKeyOf,
+  inverseForeignKeyOf,
   holdsManyRecords,
   inverseRelationField,
   namedRelationField,
@@ -8,10 +9,12 @@ import {
   relationFieldsTo,
   resolveRelationField,
   resolveRowRelationField,
+  targetIdentity,
   targetScalars,
   targetWhere,
 } from "./datamodel.js";
 import { disposableClient } from "./tests/factorio.js";
+import { withInlineSchema } from "./tests/inline-schema.js";
 
 const postShape = { id: 1, title: "Hello", authorId: 1, editorId: null };
 const userShape = { id: 1, email: "ada@example.com", name: null };
@@ -47,8 +50,8 @@ function relating(fields: Field[]): unknown {
   });
 }
 
-// The scratch schema holds no model relating to itself, the one shape putting both sides of a
-// pairing on one model.
+// A schema declares a self-relation with exactly two sides, so a pairing holding three relation
+// fields under one name is a shape no schema can declare, and needs a stand-in.
 function selfRelating(...names: string[]): unknown {
   return clientWith({ Node: names.map((name) => ({ name, kind: "object", type: "Node", relationName: "tree" })) });
 }
@@ -88,7 +91,7 @@ test("every relation field a model declares is read off the client, and none of 
   const prisma = await disposableClient();
 
   expect(relationFieldsOf(prisma, "post")).toEqual(["author", "editor", "comments", "tags"]);
-  expect(relationFieldsOf(prisma, "user")).toEqual(["posts", "edited", "memberships"]);
+  expect(relationFieldsOf(prisma, "user")).toEqual(["posts", "edited", "memberships", "profile"]);
   expect(relationFieldsOf(prisma, "comment")).toEqual(["post"]);
   expect(relationFieldsOf(prisma, "psot")).toEqual([]);
 });
@@ -125,6 +128,31 @@ test("a model pair with no relation at all is rejected, naming both models", asy
 
   expect(() => resolveRelationField(prisma, "comment", "user")).toThrow(
     'The model "comment" has no relation field pointing at "user". Declare the relation in the Prisma schema.',
+  );
+});
+
+const unknownGhost =
+  'The client knows no model "ghost". ' +
+  "Regenerate the client if the model was added to the schema after it was generated.";
+
+test("a target model the client knows nothing of is reported as unknown, suggesting regeneration", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => resolveRelationField(prisma, "post", "ghost")).toThrow(new TypeError(unknownGhost));
+  expect(() => resolveRelationField(prisma, "post", "ghost", "author")).toThrow(new TypeError(unknownGhost));
+});
+
+test("a model the client knows nothing of is reported as unknown, suggesting regeneration", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => resolveRelationField(prisma, "ghost", "user")).toThrow(new TypeError(unknownGhost));
+});
+
+test("a known model declaring no relation at all keeps the advice to declare one", () => {
+  const client = clientWith({ Log: [{ name: "message", kind: "scalar", type: "String" }], User: [] });
+
+  expect(() => resolveRelationField(client, "log", "user")).toThrow(
+    'The model "log" has no relation field pointing at "user". Declare the relation in the Prisma schema.',
   );
 });
 
@@ -173,7 +201,7 @@ test("a name the model declares as no relation field is rejected, naming it and 
 
   for (const name of ["illustrated", "email"]) {
     expect(() => namedRelationField(prisma, "user", name)).toThrow(
-      `The model "user" has no relation field "${name}". Relation fields on "user": "posts", "edited", "memberships".`,
+      `The model "user" has no relation field "${name}". Relation fields on "user": "posts", "edited", "memberships", "profile".`,
     );
   }
 });
@@ -209,7 +237,7 @@ function compoundClient(inlineSchema: string): unknown {
     Child: scalars("a", "b", "c"),
   });
 
-  return { ...(client as object), _engineConfig: { inlineSchema } };
+  return withInlineSchema(client, inlineSchema);
 }
 
 const child = { a: 1, b: 2, c: 3 };
@@ -318,6 +346,102 @@ test("a selector never overwrites a scalar the row already carries under its nam
   expect(targetWhere(client, "parent", "child", child)).toStrictEqual(child);
 });
 
+test("the identity of the model a relation field points at is its id, single or compound", async () => {
+  const prisma = await disposableClient();
+
+  expect(targetIdentity(prisma, "post", "tags")).toStrictEqual(["id"]);
+  expect(targetIdentity(prisma, "tag", "posts")).toStrictEqual(["id"]);
+  expect(targetIdentity(prisma, "user", "profile")).toStrictEqual(["id"]);
+  expect(targetIdentity(prisma, "user", "memberships")).toStrictEqual(["userId", "teamId"]);
+});
+
+test("an identity is read off a field's own @id or a block's @@id, arguments and comments aside", () => {
+  const cases: [string, string[]][] = [
+    ['model Child {\n  a Int @default(1) @id @map("x")\n  b Int\n  c String\n}', ["a"]],
+    ["model Child {\n  a Int\n  b Int\n  c String\n  @@id([b])\n}", ["b"]],
+    ['model Child {\n  a Int\n  b Int\n  c String\n  @@id(name: "pair", fields: [b, a(sort: Desc)])\n}', ["b", "a"]],
+    ['model Child {\n  a Int // @id\n  b Int @default("@id")\n  c String @id\n}', ["c"]],
+  ];
+
+  for (const [block, identity] of cases)
+    expect(targetIdentity(compoundClient(block), "parent", "child"), block).toStrictEqual(identity);
+});
+
+test("an identity the scanner cannot read whole, or none at all, answers undefined", () => {
+  const blocks = [
+    childBlock("  @@unique([a, b])"),
+    "model Child {\n  a Int @id\n  b Int @id\n  c String\n}",
+    "model Child {\n  a Int @id\n  b Int\n  c String\n  @@id([a, b])\n}",
+    childBlock("  @@id([, ])"),
+    childBlock("  @@id([a, b]"),
+  ];
+
+  for (const block of blocks) expect(targetIdentity(compoundClient(block), "parent", "child"), block).toBeUndefined();
+  expect(targetIdentity(withInlineSchema(compoundClient(""), undefined), "parent", "child")).toBeUndefined();
+  expect(targetIdentity(compoundClient(childBlock("  @@id([a, b])")), "parent", "missing")).toBeUndefined();
+});
+
+// SQLite declares no list column, so the scratch schema holds none: a stand-in carries `String[]`,
+// `Int[]` and an enum list beside a `Json` column, and the schema text is the only part a test varies.
+function listingClient(inlineSchema?: string): unknown {
+  const client = clientWith({
+    Parent: [{ name: "child", kind: "object", type: "Child", relationName: "kids" }],
+    Child: [
+      ...scalars("a", "tags"),
+      { name: "scores", kind: "scalar", type: "Int" },
+      { name: "roles", kind: "enum", type: "Role" },
+      { name: "meta", kind: "scalar", type: "Json" },
+      { name: "parents", kind: "object", type: "Parent", relationName: "kids" },
+    ],
+  });
+
+  return withInlineSchema(client, inlineSchema);
+}
+
+const listingBlock =
+  "model Child {\n  a String @id\n  tags String[]\n  scores Int [ ] @default([])\n  roles Role[]\n  meta Json?\n" +
+  "  parents Parent[]\n}";
+
+const listing = { a: "x", tags: ["t"], scores: [1, 2], roles: ["ADMIN"], meta: { a: 1 } };
+
+test("a Json column is left out of the where-clause whatever it holds, read off the runtime datamodel", async () => {
+  const prisma = await disposableClient();
+
+  expect(targetScalars(prisma, "post", "author", { ...userShape, meta: { a: 1 } })).toStrictEqual({
+    id: 1,
+    email: "ada@example.com",
+  });
+  expect(targetWhere(listingClient(), "parent", "child", { a: "x", meta: "a string" })).toStrictEqual({ a: "x" });
+});
+
+test("a column the schema text declares as a list is left out of the where-clause, enum lists included", () => {
+  const client = listingClient(listingBlock);
+
+  expect(targetScalars(client, "parent", "child", listing)).toStrictEqual({ a: "x" });
+  expect(targetWhere(client, "parent", "child", listing)).toStrictEqual({ a: "x" });
+});
+
+test("a client carrying no schema text keeps its list columns in the where-clause", () => {
+  expect(targetWhere(listingClient(), "parent", "child", listing)).toStrictEqual({
+    a: "x",
+    tags: ["t"],
+    scores: [1, 2],
+    roles: ["ADMIN"],
+  });
+});
+
+test("a list bracket later on a declaration line, in a comment or an attribute string, marks no column as a list", () => {
+  const block =
+    'model Child {\n  a String @id\n  tags String // String[]\n  scores Int @default(0) @map("scores[]")\n' +
+    "  roles Role[]\n  meta Json?\n}";
+
+  expect(targetWhere(listingClient(block), "parent", "child", listing)).toStrictEqual({
+    a: "x",
+    tags: ["t"],
+    scores: [1, 2],
+  });
+});
+
 test("the foreign key behind a relation field is read off the schema text the generated client carries", async () => {
   const prisma = await disposableClient();
 
@@ -344,68 +468,101 @@ test("a name the model declares as no relation field has no foreign key to read"
   expect(foreignKeyOf(prisma, "post", "illustrator")).toBeUndefined();
 });
 
-// The scratch schema holds no one-to-one, so a stand-in carries one: `Holder` keeps the foreign key,
-// `Owner` sits at the far end of it, and the schema text is the only part a test varies.
+// A stand-in carries a one-to-one whose schema text a test varies: `Holder` keeps the foreign key,
+// `Patron` sits at the far end of it.
 function keyedClient(inlineSchema?: string): unknown {
   const client = clientWith({
-    Owner: [...scalars("id", "code"), { name: "held", kind: "object", type: "Holder", relationName: "holding" }],
-    Holder: [...scalars("id", "ownerId"), { name: "owner", kind: "object", type: "Owner", relationName: "holding" }],
+    Patron: [...scalars("id", "code"), { name: "held", kind: "object", type: "Holder", relationName: "holding" }],
+    Holder: [...scalars("id", "patronId"), { name: "patron", kind: "object", type: "Patron", relationName: "holding" }],
   });
 
-  return inlineSchema === undefined ? client : { ...(client as object), _engineConfig: { inlineSchema } };
+  return withInlineSchema(client, inlineSchema);
 }
 
-function holderBlock(owner: string): string {
+function holderBlock(patron: string): string {
   return (
-    "model Owner {\n  id String @id\n  code String @unique\n  held Holder?\n}\n" +
-    `model Holder {\n  id String @id\n  ownerId String @unique\n  owner ${owner}\n}`
+    "model Patron {\n  id String @id\n  code String @unique\n  held Holder?\n}\n" +
+    `model Holder {\n  id String @id\n  patronId String @unique\n  patron ${patron}\n}`
   );
 }
 
 test("the inverse side of a one-to-one holds no foreign key, the far end holding it", () => {
-  const client = keyedClient(holderBlock('Owner @relation("holding", fields: [ownerId], references: [code])'));
+  const client = keyedClient(holderBlock('Patron @relation("holding", fields: [patronId], references: [code])'));
 
-  expect(foreignKeyOf(client, "owner", "held")).toBeNull();
-  expect(foreignKeyOf(client, "holder", "owner")).toStrictEqual({ fields: ["ownerId"], references: ["code"] });
+  expect(foreignKeyOf(client, "patron", "held")).toBeNull();
+  expect(foreignKeyOf(client, "holder", "patron")).toStrictEqual({ fields: ["patronId"], references: ["code"] });
 });
 
 test("a relation attribute spanning several lines is read whole", () => {
-  const client = keyedClient(holderBlock("Owner @relation(\n    fields: [ownerId],\n    references: [id],\n  )"));
+  const client = keyedClient(holderBlock("Patron @relation(\n    fields: [patronId],\n    references: [id],\n  )"));
 
-  expect(foreignKeyOf(client, "holder", "owner")).toStrictEqual({ fields: ["ownerId"], references: ["id"] });
+  expect(foreignKeyOf(client, "holder", "patron")).toStrictEqual({ fields: ["patronId"], references: ["id"] });
 });
 
 test("a relation attribute written in a comment or a string literal is no attribute", () => {
-  const decoy = 'model Decoy {\n  owner String @default("Owner @relation(fields: [ownerId], references: [id])")\n}\n';
-  const client = keyedClient(decoy + holderBlock("Owner // @relation(fields: [ownerId], references: [id])"));
+  const decoy =
+    'model Decoy {\n  patron String @default("Patron @relation(fields: [patronId], references: [id])")\n}\n';
+  const client = keyedClient(decoy + holderBlock("Patron // @relation(fields: [patronId], references: [id])"));
 
-  expect(foreignKeyOf(client, "holder", "owner")).toBeNull();
+  expect(foreignKeyOf(client, "holder", "patron")).toBeNull();
 });
 
-// A guessed key would write a column the model may not hold, where no answer leaves the relation on
-// `connect`, as it always was.
+// A guessed key could name a column the model does not hold; no answer leaves the relation on `connect`.
 test("a relation attribute the scanner cannot read whole yields no answer rather than guessing", () => {
-  for (const owner of [
-    "Owner @relation(fields: [ownerId])",
-    "Owner @relation(fields: [ownerId], references: [id, code])",
-    "Owner @relation(fields: ownerId, references: [id])",
-    "Owner @relation(fields: [], references: [])",
-    "Owner @relation(fields: [missing], references: [id])",
-    "Owner @relation(fields: [ownerId], references: [missing])",
-    "Owner @relation(fields: [ownerId], references: [id]",
+  for (const patron of [
+    "Patron @relation(fields: [patronId])",
+    "Patron @relation(fields: [patronId], references: [id, code])",
+    "Patron @relation(fields: patronId, references: [id])",
+    "Patron @relation(fields: [], references: [])",
+    "Patron @relation(fields: [missing], references: [id])",
+    "Patron @relation(fields: [patronId], references: [missing])",
+    "Patron @relation(fields: [patronId], references: [id]",
   ])
-    expect(foreignKeyOf(keyedClient(holderBlock(owner)), "holder", "owner"), owner).toBeUndefined();
+    expect(foreignKeyOf(keyedClient(holderBlock(patron)), "holder", "patron"), patron).toBeUndefined();
 });
 
 test("a field declared twice in one model yields no answer for it", () => {
-  const client = keyedClient(holderBlock("Owner @relation(fields: [ownerId], references: [id])\n  owner Owner"));
+  const client = keyedClient(holderBlock("Patron @relation(fields: [patronId], references: [id])\n  patron Patron"));
 
-  expect(foreignKeyOf(client, "holder", "owner")).toBeUndefined();
+  expect(foreignKeyOf(client, "holder", "patron")).toBeUndefined();
 });
 
 test("a client carrying no schema text yields no answer for any relation field", () => {
-  expect(foreignKeyOf(keyedClient(), "holder", "owner")).toBeUndefined();
-  expect(foreignKeyOf(keyedClient(), "owner", "held")).toBeUndefined();
+  expect(foreignKeyOf(keyedClient(), "holder", "patron")).toBeUndefined();
+  expect(foreignKeyOf(keyedClient(), "patron", "held")).toBeUndefined();
+});
+
+test("the inverse foreign key is the one the target model holds for the field pairing with the one asked", async () => {
+  const prisma = await disposableClient();
+
+  expect(inverseForeignKeyOf(prisma, "user", "posts")).toStrictEqual({ fields: ["authorId"], references: ["id"] });
+  expect(inverseForeignKeyOf(prisma, "user", "profile")).toStrictEqual({ fields: ["userId"], references: ["id"] });
+});
+
+test("a self-relation reads the inverse foreign key off its other side", async () => {
+  const prisma = await disposableClient();
+
+  expect(inverseForeignKeyOf(prisma, "category", "children")).toStrictEqual({
+    fields: ["parentId"],
+    references: ["id"],
+  });
+});
+
+test("the inverse of a field holding the key, or of an implicit many-to-many, holds none", async () => {
+  const prisma = await disposableClient();
+
+  expect(inverseForeignKeyOf(prisma, "post", "author")).toBeNull();
+  expect(inverseForeignKeyOf(prisma, "post", "tags")).toBeNull();
+});
+
+test("a field the target model pairs with nothing yields no inverse foreign key rather than throwing", async () => {
+  const prisma = await disposableClient();
+
+  expect(inverseForeignKeyOf(prisma, "post", "title")).toBeUndefined();
+  expect(
+    inverseForeignKeyOf(relating([{ name: "posts", kind: "object", type: "Post" }]), "user", "posts"),
+  ).toBeUndefined();
+  expect(inverseForeignKeyOf(keyedClient(), "patron", "held")).toBeUndefined();
 });
 
 // `include` hands back the loaded relation alongside the scalars, and the relation it names belongs
@@ -451,7 +608,20 @@ test("an explicit relation field names its target rather than reading the row's 
 test("an explicit relation field the model does not declare is rejected, naming it and the candidates", async () => {
   const prisma = await disposableClient();
 
-  expect(() => resolveRowRelationField(prisma, "post", userShape, "illustrator")).toThrow(unsharedField);
+  expect(() => resolveRowRelationField(prisma, "post", userShape, "illustrator")).toThrow(
+    'The model "post" has no relation field "illustrator". ' +
+      'Relation fields on "post": "author", "editor", "comments", "tags".',
+  );
+});
+
+// A row too narrow to single out a target model is never read once a field is named.
+test("an explicit relation field the model does not declare is rejected before the row is read", async () => {
+  const prisma = await disposableClient();
+
+  expect(() => resolveRowRelationField(prisma, "post", { id: 1 }, "editor2")).toThrow(
+    'The model "post" has no relation field "editor2". ' +
+      'Relation fields on "post": "author", "editor", "comments", "tags".',
+  );
 });
 
 // `comments` and `post` are paired by a label Prisma generates rather than one the schema names, so
@@ -470,7 +640,7 @@ test("a field the model does not declare is rejected, naming the relation fields
   const prisma = await disposableClient();
 
   expect(() => inverseRelationField(prisma, "user", "psots")).toThrow(
-    'The model "user" declares no field "psots". Relation fields on "user": "posts", "edited", "memberships".',
+    'The model "user" declares no field "psots". Relation fields on "user": "posts", "edited", "memberships", "profile".',
   );
 });
 
@@ -478,7 +648,7 @@ test("a field the model declares as something other than a relation is rejected"
   const prisma = await disposableClient();
 
   expect(() => inverseRelationField(prisma, "user", "email")).toThrow(
-    'The field "email" on the model "user" is not a relation field. Relation fields on "user": "posts", "edited", "memberships".',
+    'The field "email" on the model "user" is not a relation field. Relation fields on "user": "posts", "edited", "memberships", "profile".',
   );
 });
 
@@ -508,11 +678,11 @@ test("a relation field nothing on the target model pairs with is rejected", () =
   );
 });
 
-test("a self-relation pairs each of its two sides with the other rather than with itself", () => {
-  const client = selfRelating("parent", "children");
+test("a self-relation pairs each of its two sides with the other rather than with itself", async () => {
+  const prisma = await disposableClient();
 
-  expect(inverseRelationField(client, "node", "children")).toBe("parent");
-  expect(inverseRelationField(client, "node", "parent")).toBe("children");
+  expect(inverseRelationField(prisma, "category", "children")).toBe("parent");
+  expect(inverseRelationField(prisma, "category", "parent")).toBe("children");
 });
 
 test("more than one relation field pairing with the one the lookup starts from is rejected, naming them", () => {
@@ -648,7 +818,9 @@ function delegated(delegate?: object): unknown {
 
 test("a client carrying relation metadata but no delegate for the model is rejected", async () => {
   await expect(holdsManyRecords(delegated(), "user", "posts")).rejects.toThrow(
-    'The client carries no delegate for the model "user". Pass a generated Prisma client, not its relation metadata alone.',
+    'The client carries no delegate for the model "user". ' +
+      "Regenerate the client if the model was added to the schema after it was generated, " +
+      "or pass a generated Prisma client rather than its relation metadata alone.",
   );
 });
 

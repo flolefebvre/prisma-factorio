@@ -4,7 +4,7 @@ import type { FactorioOptions } from "./faker.js";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { Factory } from "./factory.js";
 import type { TestClient } from "./tests/client.js";
-import { disposableClient, factorioHarness, userDefinition } from "./tests/factorio.js";
+import { disposableClient, factorioHarness, userDefinition, type Harness } from "./tests/factorio.js";
 
 interface CountedBootstrap {
   resolutions: () => number;
@@ -34,6 +34,33 @@ async function seededNames(options: FactorioOptions): Promise<(string | null)[]>
   const rows = await namesFrom(prismaFactorio).create();
 
   return rows.map((row) => row.name);
+}
+
+function titledPostsFrom({ prismaFactorio, userFactory }: Harness): Factory<TestClient, "post"> {
+  return prismaFactorio.define("post", {
+    definition: ({ faker }) => ({ title: faker.lorem.words(3), author: userFactory }),
+  });
+}
+
+interface Run {
+  titles: string[];
+  picks: number[];
+}
+
+// Every run pools users of its own, so a pick is read as its position in the pool: ids differ from one
+// database to the next, and from one run to the next on the same one.
+async function drawnRun({ userFactory }: Harness, postFactory: Factory<TestClient, "post">): Promise<Run> {
+  const pool = await userFactory.count(3).create();
+  const ids = pool.map((user) => user.id);
+  const rows = await postFactory.count(6).recycle("user", pool).create();
+
+  return { titles: rows.map((post) => post.title), picks: rows.map((post) => ids.indexOf(post.authorId)) };
+}
+
+async function freshRun(options: FactorioOptions): Promise<Run> {
+  const harness = await factorioHarness(options);
+
+  return drawnRun(harness, titledPostsFrom(harness));
 }
 
 // A definition reaches @faker-js/faker through a deferred import, so a mock registered here still
@@ -91,6 +118,33 @@ test("the same seed replays the same values through a definition", async () => {
 
 test("a different seed produces different values through a definition", async () => {
   expect(await seededNames({ seed: 7 })).not.toStrictEqual(await seededNames({ seed: 8 }));
+});
+
+test("a reseed replays, through a factory defined before it, the values and picks of a fresh bootstrap on that seed", async () => {
+  const harness = await factorioHarness({ seed: 3 });
+  const postFactory = titledPostsFrom(harness);
+  await drawnRun(harness, postFactory);
+
+  harness.prismaFactorio.reseed(11);
+
+  expect(await drawnRun(harness, postFactory)).toStrictEqual(await freshRun({ seed: 11 }));
+});
+
+test("a reseed before faker first resolves is honoured", async () => {
+  const harness = await factorioHarness({ seed: 3 });
+  const postFactory = titledPostsFrom(harness);
+
+  harness.prismaFactorio.reseed(11);
+
+  expect(await drawnRun(harness, postFactory)).toStrictEqual(await freshRun({ seed: 11 }));
+});
+
+test("a reseed without a seed parts company with the seed the bootstrap held", async () => {
+  const harness = await factorioHarness({ seed: 7 });
+
+  harness.prismaFactorio.reseed();
+
+  expect(await drawnRun(harness, titledPostsFrom(harness))).not.toStrictEqual(await freshRun({ seed: 7 }));
 });
 
 test("the locale reaches the faker a definition reads", async () => {

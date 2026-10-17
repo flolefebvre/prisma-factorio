@@ -14,7 +14,7 @@ const team = await userFactory.count(3).vip().create();
 const author = await userFactory.has(postFactory.count(2), "posts").create();
 ```
 
-No generator, no build step, no schema parsing: the factory API reads model names, create inputs and row types straight off your generated client. A misspelled field, a state that does not exist, a `for()` between unrelated models — each one is a compile error, not a runtime surprise.
+No generator, no build step: the factory API reads model names, create inputs and row types straight off your generated client. A misspelled field, a state that does not exist, a `for()` between unrelated models — each one is a compile error, not a runtime surprise.
 
 ## Why factories?
 
@@ -54,6 +54,8 @@ The feature set is a port of [Laravel's model factories](https://laravel.com/doc
 - [Callbacks](#callbacks)
 - [Seeding](#seeding)
 - [Transactional tests](#transactional-tests)
+- [AI coding agents](#ai-coding-agents)
+- [Types](#types)
 - [Deviations from Laravel](#deviations-from-laravel)
 - [Gotchas](#gotchas)
 - [Status](#status)
@@ -69,7 +71,7 @@ pnpm add -D @flefebvre/prisma-factorio
 
 Requirements:
 
-- **Node ≥ 20**, ESM only — there is no CommonJS `require` entry.
+- **Node ^22.12 or ≥ 24**, ESM only — there is no CommonJS `require` entry.
 - **`@prisma/client` `>=7 <8`** — the only required peer. The only `prisma` import this package makes is type-only.
 - **Optional peers**: the `prisma` CLI (`>=7 <8`) — yours already if you run migrations or generation — and `@faker-js/faker` (`>=10 <11`), needed only by definitions that actually read `faker`.
 
@@ -122,6 +124,7 @@ How it fits together:
 - `initPrismaFactorio` takes a client instance or a thunk. **Prefer the thunk**: it is called on the first `create()` and never again, so importing a module full of factories constructs nothing.
 - prisma-factorio never builds a client; you pass your own. (A Prisma 7 client is constructed with a driver adapter.)
 - `seed` pins the values faker generates and the rows a [recycle](#recycle) pool picks, so the same seed replays both; `locale` is any locale name `@faker-js/faker` exports.
+- `prismaFactorio.reseed(seed)` restarts both on a new seed in place, for every factory the bootstrap defines, so a test harness can hand each test a seed of its own: after it, a run replays a fresh bootstrap seeded `seed`. Call it between creates; `reseed()` with no seed reseeds at random.
 
 > [!WARNING]
 > **A seed does not make a run reproducible.** Only faker's output replays. `uid` draws a fresh random prefix in every process — that is what keeps parallel test workers off each other's unique columns — so every `uid`-derived column differs from run to run. Do not snapshot them.
@@ -160,7 +163,7 @@ const once = await userFactory.state({ name: "Ada Lovelace" }).create();
   - `parent` — the row this record is being created for, when a [`has()`](#children) layer or a many-holding relation field brought one; `undefined` otherwise.
 - **Every `states` key becomes a typed method.** `userFactory.suspended()` autocompletes and `userFactory.suspnded()` is a compile error, as is a state naming a field the model does not have or giving one the wrong type. This is the compile-checked replacement for Laravel's magic state methods.
 - `.state(partialOrClosure)` applies a one-off transformation at the call site, typed exactly like a declared state.
-- **Layers apply in order**: the definition, then the states in the order they were applied, then `create(overrides)`. Last write wins per key — except the relation field a [`has()`](#children) layer adds to rather than replaces. A value of `undefined` is skipped at every layer, so the layer before it stands; a `null` is written.
+- **Layers apply in order**: the definition, then the states in the order they were applied, then `create(overrides)`. Last write wins per key — except the relation field a [`has()`](#children) layer adds to rather than replaces. A relation field and its foreign key columns count as one key: a layer writing any column of the key drops the relation an earlier layer set — factory, row or native input alike — and a layer writing the relation field drops the columns an earlier layer set, so `postFactory.create({ authorId: ada.id })` connects Ada and creates no user. Naming one column of a compound key drops the relation and leaves the rest of the key to you. Where another relation of the same create stays on `connect`, the columns reach Prisma as a `connect` on their own relation — `postFactory.create({ authorId: ada.id, editor: grace })` works too, in one object or split across layers — and a key whose every column is `null` leaves its relation out ([ADR 0006](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/adr/0006-relation-and-foreign-key-as-one-key.md)). A value of `undefined` is skipped at every layer, so the layer before it stands; a `null` is written.
 - States evaluate once per record, so a closure under `count(3)` sees each record's own `index` and `uid`.
 - A state may not be named `create`, `count`, `using`, `state`, `for`, `has`, `recycle`, `afterCreating` or `then` — the first eight are methods the factory already answers to, and a factory carrying a `then` would be thenable and never settle when awaited. The collision is a compile error and a `TypeError` at `define`.
 - Declare states inline in the object you pass to `define`. Annotating that object as `FactoryConfig<Client, "model">` erases the state names for the compiler, which is why a config typed that way accepts no `states` at all.
@@ -176,7 +179,7 @@ const ada = await userFactory.create({ name: "Ada Lovelace" });
 const byAda = await postFactory.for(ada, "author").create();
 ```
 
-- **The relation field is checked against the pair of models.** Leave it out where the two share exactly one belongs-to relation; name it where they share several. Where they share none, no value satisfies it — a `for()` between unrelated models is a compile error.
+- **The relation field is checked against the pair of models.** Leave it out where the two share exactly one belongs-to relation; name it where they share several, or `postFactory.for(ada)` reports `… not assignable to parameter of type '"ERROR: \"post\" has several belongs-to relations to \"user\": name one of \"author\" | \"editor\""'`. Where they share none, no value satisfies it — a `for()` between unrelated models is a compile error, read `ERROR: no belongs-to relation from "comment" to "user"`. A named field is read off the parent's model too, so `postFactory.for(teamRow, "author")` reports the no-relation message on the field, and a hand-built partial object — `postFactory.for({ id: 1 }, "author")` — reports `ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row`.
 - **A relation value matches the arity of the field it stands in.** A field holding a single record takes a value standing for one record. A field holding many takes a factory, a row or a list of rows, and treats what stands there as [children](#children) — in a definition, in a state and in `create()` overrides alike. That is `has()`'s own mechanism reached as a value rather than a method, and it sets the field where `has()` adds to it.
 - **`for()` returns a new factory, and states survive it in both chaining directions.** `postFactory.for(userFactory, "author").drafted()` and `postFactory.drafted().for(userFactory, "author")` both apply the state.
 
@@ -195,7 +198,7 @@ export const postFactory = prismaFactorio.define("post", {
 await postFactory.create({ author: ada });
 ```
 
-Such a value is a factory, an existing row, or Prisma's own relation input — `{ connect: … }` and `{ create: … }` reach the client untouched. A field holding many records takes a batched factory and a list of rows besides.
+Such a value is a factory, an existing row, or Prisma's own relation input — `{ connect: … }` and `{ create: … }` reach the client untouched. A field holding many records takes a batched factory and a list of rows besides. Each is checked against the model the field points at: a row or a factory of another model is a compile error, and so is a list holding a factory. Relation input has to name at least one of its keys, so an object naming none — a row-shaped `{ email, name }`, or an empty `{}`, which Prisma alone would take as a no-op — is refused too.
 
 **Ordering.** `for()` is a chain layer at the position it was called — in effect, an inline state that sets the relation field. So a relation default embedded in the definition loses to every layer above it, `for()` and states resolve against each other **by call order**, and the overrides `create()` was given beat both:
 
@@ -243,7 +246,7 @@ const author = await userFactory.has(postFactory.count(3), "posts").create();
 
 `create()` returns the **user**; the three posts are created after it, each reaching back to that user, and are not returned.
 
-- **The relation field is checked against the pair of models**, exactly as `for()` checks it: optional where the pair shares exactly one has-many relation, required where they share several, unsatisfiable where they share none.
+- **The relation field is checked against the pair of models**, exactly as `for()` checks it: optional where the pair shares exactly one has-many relation, required where they share several — `userFactory.has(postFactory)` reads `ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"` — and unsatisfiable where they share none. A named field is read off the children's model the same way.
 - **A child reads the record it was created for.** `parent` in a child's state closure is the created parent row — real `id`, database defaults included. Its type spans every model the client carries, so narrow it before reading a field only some of them declare.
 - **`has()` adds, every other layer replaces.** Two calls on one relation field both apply, and a `has()` after a state adds to what that state left standing. A state or a `create()` override naming that field replaces it whole — a child factory so replaced creates nothing.
 - **Ordering is depth-first.** Every child of one record is created before the next record of a batch, layer by layer in the order the calls were made.
@@ -343,6 +346,32 @@ const ada = await userFactory.has(membershipFactory.count(2).state({ role: "admi
 
 ## Recycle
 
+Each relation default builds a graph of its own, so two relations that must agree on one parent never agree by themselves. Here a booking's customer belongs to a venue, and the composite key holds the booking to that same venue:
+
+```prisma
+model Booking {
+  id         Int      @id @default(autoincrement())
+  seat       String
+  venue      Venue    @relation(fields: [venueId], references: [id])
+  venueId    Int
+  customer   Customer @relation(fields: [customerId, venueId], references: [id, venueId])
+  customerId Int
+}
+```
+
+```ts
+export const bookingFactory = prismaFactorio.define("booking", {
+  definition: ({ uid }) => ({ seat: uid, venue: venueFactory, customer: customerFactory }), // customerFactory brings its own venue
+});
+```
+
+`bookingFactory.create()` rejects with a `TypeError` before the booking reaches Prisma: the relation fields `venue` and `customer` disagree on the foreign key column `venueId`, the message naming the venue each holds. The venue and customer the defaults created are already written by then; under `.using(tx)` the rejection leaves your transaction callback and they roll back. The check covers every row the library holds in such a field — one created for it, handed over or drawn from a pool — and leaves native relation input to Prisma. Create the shared parent first and recycle it, and both legs draw the same venue, in either order:
+
+```ts
+const venue = await venueFactory.create();
+const booking = await bookingFactory.recycle("venue", venue).create();
+```
+
 `recycle()` pools rows that already exist: anywhere the graph would otherwise create a record of a pooled model, it connects a pooled row instead. The model is named outright — a row carries nothing that says which model it belongs to — and the name is a key of your client's models, so the row is checked against that model: one missing a required scalar is a compile error, and one loaded with `include` is accepted.
 
 Here `Post.author` and `Post.editor` both point at `User`, and a comment reaches a user through its post:
@@ -363,11 +392,12 @@ const comment = await commentFactory.recycle("user", ada).create();
 `create()` returns the **comment**; the post behind it holds `ada` in both `author` and `editor`, two levels down, and no user is created. The same graph without `recycle()` draws two distinct users.
 
 - **The pool covers the whole graph** — factories embedded in a definition or a state, `has()` children, and the graph under a `for()` parent, recursively; one call at the top reaches every level below it. It never self-populates: a record the graph creates is never adopted, so every pick comes from the rows you handed over. Nor does it stand in for the record you asked for — `commentFactory.recycle("comment", one)` still creates a comment.
+- **A pool reaches only the records the graph would create.** A pool naming a model the graph never creates is legal and ignored: it draws nothing and creates nothing — `postFactory.recycle("tag", tag).create()` writes a post and no tag, a post's definition creating none. Native relation input never draws from a pool either: `{ create: … }` and `{ connectOrCreate: … }` reach Prisma as written, so a model reached only that way is created, not recycled — under `recycle("user", ada)`, a definition holding `author: { create: { … } }` still writes a new user.
 - **`for()` and `create()` overrides beat the pool; a state does not.** What a call names outright — a parent, or the children of a relation field — is the caller's own choice and creates records of its own. A factory reaching a slot through the definition or through a state — declared or inline `.state()` — loses to the pool. Explicitness protects the immediate slot and nothing under it, so the pool still fills the sub-graph beneath a `for()` parent or an override factory.
 - **Picks are per record, drawn with replacement**, from the library's own PRNG rather than from faker. A pool of two rows under `count(3)` is legal and hands the same row out twice — **there is no distinctness guarantee**. Across an implicit many-to-many, repeated picks collapse into a single join row.
 - **Successive calls merge per model.** `recycle("user", a).recycle("user", b)` pools both, so a factory configured with a pool keeps its baseline rows when a call site adds more, and every model keeps a list of its own. A pool can be extended by an inner `recycle()` but never confined to a sub-graph: rows handed down from above reach the whole graph.
-- **`seed` pins the picks as well as faker's values**, so one seed replays the same spread run for run. The picks belong to the graph that resolves them rather than to the bootstrap that defined the factory, so a factory reached from another bootstrap's graph draws from that graph's stream.
-- **A pooled row can fill a relation field backed by a required foreign key once, and once only.** Connecting a row into such a field re-homes the record — Prisma rewrites the foreign key column it carries — while the pooled copy keeps the scalars it was pooled with, so the next record to draw that row matches on values the database no longer holds. The chain then fails with the library's own error naming this single-use rule, the raw Prisma error standing behind it as `cause` — where the field holds a single record instead, a one-to-one whose required foreign key sits on the child, the raw error arrives unretold. Both routes carry it, `has()` layers and relation defaults alike, and picks come with no distinctness guarantee — so `userFactory.count(2).recycle("post", onePost).has(postFactory, "posts")` fails on the second user. Pool such a relation one parent record at a time, or pass native relation input. An implicit many-to-many is untouched, its join table leaving the rows it pairs alone — the pool is a fit for tags and a trap for posts. The root cause is the match itself: no single field of a row is knowably the one Prisma would match on, so every non-null scalar of the row is the where-clause — values the rewrite left behind included.
+- **`seed` pins the picks as well as faker's values**, so one seed replays the same spread run for run, and `reseed(seed)` restarts the picks along with faker. The picks belong to the graph that resolves them rather than to the bootstrap that defined the factory, so a factory reached from another bootstrap's graph draws from that graph's stream.
+- **A pooled row can fill a relation field backed by a required foreign key once, and once only.** Connecting a row into such a field re-homes the record — Prisma rewrites the foreign key column it carries — while the pooled copy keeps the scalars it was pooled with, so the next record to draw that row matches on values the database no longer holds. The chain then fails with the library's own error naming this single-use rule, the raw Prisma error standing behind it as `cause` — and so does a field holding a single record, a one-to-one whose required foreign key sits on the child. Both routes carry it, `has()` layers and relation defaults alike, and picks come with no distinctness guarantee — so `userFactory.count(2).recycle("post", onePost).has(postFactory, "posts")` fails on the second user. Pool such a relation one parent record at a time, or pass native relation input. An implicit many-to-many is untouched, its join table leaving the rows it pairs alone — the pool is a fit for tags and a trap for posts. The root cause is the match itself: no single field of a row is knowably the one Prisma would match on, so every non-null scalar the where-clause can hold is matched on — values the rewrite left behind included.
 
 **Children.** A child factory of a pooled model is never created, whether a `has()` layer brings it or it stands in the relation field: the drawn rows are connected in the parent's own create, and that factory's definition, states and callbacks never run.
 
@@ -464,6 +494,58 @@ The sentinel is what commits nothing: the transaction callback only ever leaves 
 > [!NOTE]
 > An interactive transaction is capped in duration. A graph large enough to outrun the cap aborts and rolls back rather than merely running slow; `prisma.$transaction(fn, { timeout })` raises it. That cap is why a large seed is better run bare.
 
+For a suite that commits for real instead, on a Postgres harness that resets the database between tests, see [Using prisma-factorio with prisma-test-helper](docs/prisma-test-helper.md): the wiring, the lifecycle rules a factory graph must follow under a Reset, and a seed per test.
+
+## AI coding agents
+
+The docs ship inside the package, so an agent working in your project can read them at the installed version under `node_modules/@flefebvre/prisma-factorio/docs/`. The entry page for agents is [docs/for-agents.md](docs/for-agents.md): the model, the import map, the rules, and which section to read for which task.
+
+Point your agent at it once by adding this line to your project's `AGENTS.md` (or `CLAUDE.md`, `.cursorrules`, …):
+
+```md
+Before writing or changing Prisma factories, seeds or test data built with prisma-factorio, read `node_modules/@flefebvre/prisma-factorio/docs/for-agents.md`.
+```
+
+## Types
+
+A helper wrapping a factory — a test fixture, a seed step — names the factory's types itself. The package exports them, each read off your client type and a model name, so there is nothing to generate:
+
+```ts
+// helpers.ts
+import type { Overrides, Row } from "@flefebvre/prisma-factorio";
+import { prisma } from "./db.js";
+import { postFactory, userFactory } from "./factories.js";
+
+export type Client = typeof prisma;
+
+export async function makeAuthors(): Promise<Row<Client, "user">[]> {
+  return userFactory.count(3).create();
+}
+
+export async function makePost<O>(overrides?: Overrides<Client, "post", O>): Promise<Row<Client, "post">> {
+  return postFactory.create(overrides);
+}
+```
+
+A test then hands the helper its overrides:
+
+```ts
+// posts.test.ts
+import type { PartialAttributes } from "@flefebvre/prisma-factorio";
+import { makePost, type Client } from "./helpers.js";
+
+const drafted = { title: "Draft" } satisfies PartialAttributes<Client, "post">;
+
+const draft = await makePost(drafted);
+```
+
+- **`Row<Client, "post">`** is the row `create()` returns, and `Row<Client, "post">[]` the rows it returns under `count()` — what `Awaited<ReturnType<typeof postFactory.create>>` spells out at length.
+- **`Overrides<Client, "post", O>`** is what `create()` accepts. `O` is the type of the caller's own object, which the compiler infers at each call, and `Overrides` checks that object key by key against the create input — so `makePost({ titel: "Draft" })` is the same compile error `postFactory.create({ titel: "Draft" })` is. It is not usable without that `O`, which is why the helper forwarding to `create()` is generic.
+- **`PartialAttributes<Client, "post">`** is any subset of the create input, every key optional: the plain shape `Overrides` checks against, for a value a helper reads or builds. `satisfies` checks an object against it and leaves the object its own type, so `drafted` above forwards to `makePost()` like a literal; an annotation — `const attrs: PartialAttributes<Client, "post"> = …`, or a parameter so typed — replaces the object's type with `PartialAttributes` itself, a union of the create input's branches. Either value reaches `create()` and `state()` as it is.
+- **Not `Parameters<typeof postFactory.create>[0]`.** It is usable, and behaves as `PartialAttributes<Client, "post"> | undefined`, but prints as an `Overrides<…, unknown>` that says nothing of what it holds; name the exported types above instead.
+
+`CreateInput<Client, "post">` is the whole create input, its relation fields widened to factories and rows — [Typing edges](#typing-edges) has how that parts from Prisma's own — and `ModelName<Client>` is the union of the model names your client carries.
+
 ## Deviations from Laravel
 
 The feature set is Laravel's, ported to Prisma's semantics. Where the two part company it is a decision rather than a gap, and each one is here with the reason it was taken.
@@ -481,6 +563,8 @@ The feature set is Laravel's, ported to Prisma's semantics. Where the two part c
     .create();
   ```
 
+  `index` restarts at 0 in every batch, so it keeps values distinct within one `create()` call and never across two; a compound unique key over a few values has its recipe under [Runtime edges](#runtime-edges).
+
 - **No `trashed()`.** Prisma has no soft-delete concept for a built-in state to mean anything against. A model that implements one carries an ordinary column, which an ordinary state sets.
 - **No polymorphic relations.** Prisma has no native equivalent, so there is nothing here to port.
 - **No per-attribute lazy closures inside a definition.** The definition is one closure returning the whole attribute object, evaluated once per record — and everything a per-attribute closure would reach for, `faker` and `index` and `uid`, that one closure already holds.
@@ -495,16 +579,35 @@ Sharp edges worth knowing before they find you. The linked issues and ADRs carry
 
 ### Typing edges
 
-- **Attributes are typed, but the merge is not.** States and overrides replace values key by key, last write wins. An override whose value is `undefined` is skipped, so the definition's value stands — `create({ name: cond ? "Ada" : undefined })` falls back to the definition rather than blanking the column. And Prisma's mutually exclusive create-input branches are only checked within a single object, so a definition using `author: { create: … }` combined with overrides passing `authorId` type-checks and then fails at runtime with `Unknown argument 'authorId'`.
-- **A wrong-model row in a relation attribute is not caught.** A relation-valued attribute accepts Prisma's own nested relation input alongside a factory and a row, and that arm of the union leaves every key optional — so a row of the wrong model satisfies it vacuously. `postFactory.create({ author: teamRow })` compiles, at both arities and through every route an attribute is reached by. At runtime the row is filtered down to the target model's scalar names before it stands in the `connect` where-clause, so a `Team` row `{ id, slug }` collapses to `{ id }` — a perfectly good where-clause for a `User`. Where the target model holds no record of that id, the create fails loudly with Prisma's `P2025`; where it holds one — the ordinary case in a test database, ids starting at 1 per model — it silently connects the wrong record. What **is** caught: a wrong-model factory standing alone in the field (`postFactory.create({ author: teamFactory })` is a compile error, though one inside a list rides through), and a wrong-model row reaching a relation through `for()` or `has()` — `postFactory.for(teamRow, "author")` reports `ERROR: no belongs-to relation from "post" to "team"`. So prefer `for()` and `has()` where the choice exists; the structural fix is post-v1 research ([#48](https://github.com/flolefebvre/prisma-factorio/issues/48)).
-- **Error shape.** A misspelled field reports `Type 'string' is not assignable to type 'never'` on the offending property — the same shape Prisma's own errors take. A wrong-model factory reports the same thing at length: a dozen-odd lines of assignability cascade unfolding Prisma's named input aliases, whose first line and property name carry every actionable word. Where no branch of the create input survives the object at all — an `id` beside a belongs-to relation field, say — the diagnostic collapses the other way, to `TS2345: … is not assignable to parameter of type 'undefined'`; that `'undefined'` is the exactness check refusing the whole argument, not a claim about the value you passed.
+- **Attributes are typed, but the merge is not.** States and overrides replace values key by key, last write wins. An override whose value is `undefined` is skipped, so the definition's value stands — `create({ name: cond ? "Ada" : undefined })` falls back to the definition rather than blanking the column. A relation field and its foreign key columns merge as one key ([States](#states)), so a column override replaces a relation default rather than clashing with it. Each layer is still checked on its own, though, so naming one column of a compound key — `badgeFactory.create({ userId: ada.id })` — type-checks, drops the `membership` default, and then fails at runtime with Prisma's ``Argument `membership` is missing``, the `teamId` it needs being yours to supply. The same holds beside another relation field holding a key: `badgeFactory.create({ userId: ada.id, sponsor: team })` type-checks and fails the same way, a key named in part being left for Prisma to refuse.
+- **Error shape.** A misspelled field reports `Type 'string' is not assignable to type 'Record<"ERROR: \"nmae\" is not a field of \"user\"", true>'` on the offending property; `create()` and `state()` each carry two signatures, so there that line comes under a `TS2769: No overload matches this call` listing each signature's error. A declared field of the wrong type — `userFactory.create({ name: 1 })` — still reports `Type 'number' is not assignable to type 'never'`, the value meeting the field's own type in an intersection that leaves nothing; so does a misspelled field holding a value typed `any`, which would satisfy anything else. A `for()` or `has()` naming its relation field reports a mistake on the field — `postFactory.for({ id: 1 }, "author")` reads `ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row` — and one leaving it out reports it on the parent. A one-argument call fits only the signature without a field, so it reports a single `TS2345` on the parent — `postFactory.for(ada)` reads `ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"`; a two-argument call tries both signatures, so its line comes under `TS2769: No overload matches this call`, one per signature. A wrong-model factory reports the same thing at length: a dozen-odd lines of assignability cascade unfolding Prisma's named input aliases, whose first line and property name carry every actionable word. A key Prisma's create input refuses beside the relation fields the object names — a foreign key column beside the relation field it backs, or a database-generated `id` beside a belongs-to relation field, as in `postFactory.create({ id: 7, author: { connect: { id: 1 } } })` — reports `Type 'number' is not assignable to type 'Record<"ERROR: \"id\" cannot stand beside the relation fields this object names", true>'` on that key.
 - **Faker's typing has one edge.** `faker` in the evaluation context is typed by a direct `import type` from `@faker-js/faker`. Without the package installed and with `skipLibCheck: false`, you get one `TS2307` from this package's type declarations; with `skipLibCheck: true` (which `tsc --init` leaves active) it compiles cleanly and the `faker` type degrades. Definitions that never mention `faker` run fine without the package; reading anything off `faker` without it throws an error naming what to install.
 - **`CreateInput` is no longer a Prisma alias.** This package exports it, and changed what it means: a relation key now additionally accepts a `Factory`, a row, or a list of rows, so a value typed `CreateInput<Client, "model">` is no longer assignable to Prisma's own `create` `data` argument. If you imported it as a stand-in for Prisma's input type, it has stopped being one.
 
 ### Runtime edges
 
+- **Relation defaults never share a parent on their own.** Each builds a graph of its own, so a booking whose `venue` and `customer` must agree on one venue builds two of them; [recycle](#recycle) the shared parent to hand both legs the same row.
+- **A compound unique key over a few values collides across calls.** Where the key pairs a parent with columns over a few values — an enum, a small fixed set of parents — as a venue's opening hours keyed on day and service, or a team's memberships keyed on user, a definition naming one value succeeds once per parent and fails on the second `create()` for it. `index` is no way out, restarting at 0 in every batch. What to write instead depends on what the test needs:
+  - **The full set for a parent** is one batch under that parent, a state picking each record's value by `index`. A team's roster over a fixed list of users:
+
+    ```ts
+    const team = await teamFactory.create();
+    const users = await userFactory.count(3).create();
+
+    const roster = await membershipFactory
+      .count(users.length)
+      .for(team, "team")
+      .state(({ index }) => ({ user: users[index] }))
+      .create();
+    // three memberships under one team, one per user
+    ```
+
+    The count is read off the list rather than written as a literal, so every `index` names a user on it.
+
+  - **One or a few specific rows** are overrides — `membershipFactory.create({ team, user: ada })`. A second row with the same values collides, which is the schema being enforced, as [Many-to-many](#many-to-many) says of join rows.
+  - **A reference row that must exist, created or not**, is Prisma's own `upsert` rather than a factory: factories create, and there is deliberately no find-or-create verb, Laravel's factories having none either.
 - **An explicit database-generated `id` meets a belongs-to relation field only through a parent the build creates.** Where the database generates the id — `@default(autoincrement())` — Prisma's _checked_ create input carries no `id`, so naming one forces the record into the _unchecked_ branch, which drops every relation field whose foreign key the model itself holds and takes those raw columns instead. A client-side default (`uuid()`, `cuid()`) or a bare `@id` keeps `id` in the checked input, and none of this applies ([#60](https://github.com/flolefebvre/prisma-factorio/issues/60)). Under a database-generated id, a parent the factory creates in the same build is written as its raw foreign key ([ADR 0005](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/adr/0005-fresh-rows-as-foreign-keys.md)), so `postFactory.create({ id: 7 })` succeeds while the definition's `author: userFactory` creates the author. A parent handed over as a row, drawn from a recycle pool or given as native relation input stays a `connect`, which the unchecked branch refuses: `postFactory.create({ id: 7, author: { connect: { id: 1 } } })` is a compile error, and the same parent arriving through the definition or a state type-checks, then fails at runtime with Prisma's `Unknown argument \`id\``.
-- **A parent the build creates is written as its foreign key; an existing row is connected on its scalar fields.** A row a relation default or a `for(factory)` call creates, and the parent a `has()` child reaches back to, cannot have gone stale, so it reaches Prisma as the raw foreign key column — `authorId` rather than `author: { connect: … }` — which spares the implicit transaction and existence read Prisma runs for every nested `connect`. Prisma takes one create either way or the other, never both, so a create where any relation holding a key is filled by a row handed over, a pooled row or native relation input keeps every relation on `connect`, as does a client whose schema text the library cannot read ([ADR 0005](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/adr/0005-fresh-rows-as-foreign-keys.md)). A row parent's non-null scalars are splatted into the `connect` where-clause — a `null` is left out, Prisma refusing one under a nullable unique column, and so is a relation the row was loaded with, as `include` hands back — because the runtime datamodel marks no field unique and no subset of a row is knowably the one Prisma would match on. A compound unique constraint the row can name whole joins them as Prisma's generated selector — `{ userId_teamId: { … } }` — read off the schema text the client carries, which is what lets a model whose only unique constraint is compound connect at all. Every field still narrows the match, so a row read _before_ the record changed fails loudly with Prisma's `P2025` rather than silently connecting to whatever the record has since become.
+- **A parent the build creates is written as its foreign key; an existing row is connected on its scalar fields.** A row a relation default or a `for(factory)` call creates, and the parent a `has()` child reaches back to, cannot have gone stale, so it reaches Prisma as the raw foreign key column — `authorId` rather than `author: { connect: … }` — which spares the implicit transaction and existence read Prisma runs for every nested `connect`. Prisma takes one create either way or the other, never both, so a create where any relation holding a key is filled by a row handed over, a pooled row or native relation input keeps every relation on `connect`, as does a client whose schema text the library cannot read ([ADR 0005](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/adr/0005-fresh-rows-as-foreign-keys.md)). Where it must connect at all, a row the build creates connects on its key alone — the fields the foreign key references, or the model's `@id` where its side of the relation holds no foreign key (a many-to-many, or the far end of a one-to-one), joined by Prisma's compound selector where that key is compound — wherever the library can read that key, so a record changed since the build created it, by an `afterCreating` callback say, is still reached. A row parent's non-null scalars are splatted into the `connect` where-clause — a `null` is left out, Prisma refusing one under a nullable unique column; so is a `Json` or scalar-list column (`String[]`, `Int[]`, an enum list), which Prisma types in `WhereUniqueInput` as a filter a raw value is no valid match for, a list being recognised only where the client carries its schema text; and so is a relation the row was loaded with, as `include` hands back — because the runtime datamodel marks no field unique and no subset of a row is knowably the one Prisma would match on. A compound unique constraint the row can name whole joins them as Prisma's generated selector — `{ userId_teamId: { … } }` — read off the schema text the client carries, which is what lets a model whose only unique constraint is compound connect at all. Every field still narrows the match, so a row read _before_ the record changed fails loudly rather than silently connecting to whatever the record has since become — a changed `updatedAt` is enough. The library's error names the model and the relation field(s) the row stood in and says to re-read the row or pass native relation input, Prisma's not-found error standing behind it as `cause`.
 - **Reading a relation field's arity costs one query, once.** Prisma 7 publishes no arity at runtime, so the first time a factory or a list of rows stands in a given relation field the library puts the question to the query API instead. A field holding a single record answers for nothing — Prisma refuses the probe's filter before it reaches the database — and one holding many costs a single `SELECT … LIMIT 1`. The answer is held per field and per client, so the rest of the graph asks nothing, and a `.using(tx)` client asks once of its own ([ADR 0003](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/adr/0003-arity-through-the-query-surface.md)).
 - **A column named after a relation operation shadows the row.** A parent row whose only key is a column literally named `connect`, `create`, `connectOrCreate` or `createMany` is read as native relation input rather than as a row, so pass native `{ connect: { … } }` explicitly for a model declaring one.
 - **`.using(client)` rebinds the whole graph** — this factory's parents and children alike, however deep it goes; [Transactional tests](#transactional-tests) has the reach and the one thing the argument has to be. A factory that named a client through `.using()` of its own keeps it, and the factories it resolves in turn then run on that one. A factory that named none is rebound silently, one from a **different bootstrap** included: being bound at its own `initPrismaFactorio` counts for nothing here, exactly as a [recycle](#recycle) pool's picks belong to the graph resolving them rather than to the bootstrap that defined the factory.
@@ -512,9 +615,9 @@ Sharp edges worth knowing before they find you. The linked issues and ADRs carry
 
 ## Status
 
-**v1 scope complete, published as 0.1.0.** The scope [PRD #26](https://github.com/flolefebvre/prisma-factorio/issues/26) set for v1 is delivered, and this README documents the released surface rather than a plan. The version number is deliberately below 1.0.0 while the API meets its first consumers outside this repository; nothing on the list below is planned to change. What Laravel has and this does not is listed under [Deviations from Laravel](#deviations-from-laravel), each with the reason it was refused; the limitations that remain are named in the sections that own them.
+**v1 scope complete, released as 1.0.0.** The scope [PRD #26](https://github.com/flolefebvre/prisma-factorio/issues/26) set for v1 is delivered, and this README documents the released surface rather than a plan. That surface follows semantic versioning: a breaking change to it waits for a new major version. What Laravel has and this does not is listed under [Deviations from Laravel](#deviations-from-laravel), each with the reason it was refused; the limitations that remain are named in the sections that own them.
 
-The v1 surface: bootstrap from a client or a thunk with `seed` and `locale`, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for`, relation defaults on a field of either arity, `has` for the children on the other side, many-to-many in both shapes, `recycle` for reusing rows the graph would otherwise create, and `afterCreating` callbacks in the config and on the chain.
+The v1 surface: bootstrap from a client or a thunk with `seed` and `locale`, `reseed` per test, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for`, relation defaults on a field of either arity, `has` for the children on the other side, many-to-many in both shapes, `recycle` for reusing rows the graph would otherwise create, and `afterCreating` callbacks in the config and on the chain.
 
 ## Contributing
 
@@ -527,9 +630,9 @@ pnpm test       # vitest, against an in-memory SQLite database
 pnpm gates      # full validation: generate, typecheck, lint, format, duplicates, test, build, packed contents
 ```
 
-The project is developed test-first; tests sit next to the source they cover as `*.test.ts`. The domain vocabulary lives in [`CONTEXT.md`](CONTEXT.md) and the binding architecture decisions in [`docs/adr/`](docs/adr) — worth a read before proposing a change of direction. A pull request should pass `pnpm gates`.
+The project is developed test-first; tests sit next to the source they cover as `*.test.ts`. The domain vocabulary lives in [`CONTEXT.md`](https://github.com/flolefebvre/prisma-factorio/blob/main/CONTEXT.md) and the binding architecture decisions in [`docs/adr/`](https://github.com/flolefebvre/prisma-factorio/tree/main/docs/adr) — worth a read before proposing a change of direction. A pull request should pass `pnpm gates`.
 
-Releases are cut from a version tag; [`docs/releasing.md`](docs/releasing.md) has the procedure.
+Releases are cut from a version tag; [`docs/releasing.md`](https://github.com/flolefebvre/prisma-factorio/blob/main/docs/releasing.md) has the procedure.
 
 ## License
 

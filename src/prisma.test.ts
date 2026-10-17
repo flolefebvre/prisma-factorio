@@ -4,18 +4,21 @@ import type { Factory } from "./factory.js";
 import type {
   Child,
   ChildModel,
-  ChildValue,
+  NamedChildField,
   CreateInput,
-  HasManyArgs,
   ModelName,
+  NamedParentField,
+  Overrides,
   PartialAttributes,
-  RelationArgs,
   RelationKey,
   RelationsTo,
   Row,
+  SoleChild,
+  SoleParent,
   TargetModel,
 } from "./prisma.js";
 import type { TestClient } from "./tests/client.js";
+import type { Prisma } from "./tests/generated/client.js";
 import { factorioHarness } from "./tests/factorio.js";
 
 interface UserRow {
@@ -23,6 +26,7 @@ interface UserRow {
   email: string;
   name: string | null;
   handle: string | null;
+  meta: Prisma.JsonValue | null;
 }
 
 // Stands in for the options object `has` takes, which the factory owns.
@@ -34,7 +38,19 @@ type Batched<M extends ModelName<TestClient>> = Factory<TestClient, M, Row<TestC
 
 test("a model name is a delegate the client carries", () => {
   expectTypeOf<ModelName<TestClient>>().toEqualTypeOf<
-    "user" | "post" | "comment" | "tag" | "team" | "membership" | "badge"
+    | "user"
+    | "post"
+    | "comment"
+    | "tag"
+    | "team"
+    | "membership"
+    | "badge"
+    | "venue"
+    | "customer"
+    | "booking"
+    | "invite"
+    | "category"
+    | "profile"
   >();
 });
 
@@ -45,7 +61,7 @@ test("a row carries the model's scalars and none of its relations", () => {
 
 test("a relation key is a field pointing at another model, and never a scalar the model holds", () => {
   expectTypeOf<RelationKey<TestClient, "post">>().toEqualTypeOf<"author" | "editor" | "comments" | "tags">();
-  expectTypeOf<RelationKey<TestClient, "user">>().toEqualTypeOf<"posts" | "edited" | "memberships">();
+  expectTypeOf<RelationKey<TestClient, "user">>().toEqualTypeOf<"posts" | "edited" | "memberships" | "profile">();
   expectTypeOf<RelationKey<TestClient, "comment">>().toEqualTypeOf<"post">();
 });
 
@@ -70,22 +86,18 @@ test("an implicit many-to-many answers a has-many side at both ends and a belong
 
 // There is no sensible end to call `for()` from: the error is the type layer reporting that, and the
 // answer for a many-to-many is `has()` from whichever end reads better.
-test("for() takes an argument no relation field satisfies at either end of a many-to-many", () => {
-  expectTypeOf<RelationArgs<TestClient, "post", "tag">>().toEqualTypeOf<
-    [relationField: 'ERROR: no belongs-to relation from "post" to "tag"']
-  >();
-  expectTypeOf<RelationArgs<TestClient, "tag", "post">>().toEqualTypeOf<
-    [relationField: 'ERROR: no belongs-to relation from "tag" to "post"']
-  >();
+test("for() takes a parent no value satisfies at either end of a many-to-many", () => {
+  expectTypeOf<
+    SoleParent<TestClient, "post", Factory<TestClient, "tag">>
+  >().toEqualTypeOf<'ERROR: no belongs-to relation from "post" to "tag"'>();
+  expectTypeOf<
+    SoleParent<TestClient, "tag", Row<TestClient, "post">>
+  >().toEqualTypeOf<'ERROR: no belongs-to relation from "tag" to "post"'>();
 });
 
 test("has() leaves the relation field skippable at both ends of a many-to-many", () => {
-  expectTypeOf<HasManyArgs<TestClient, "post", "tag", InverseOption>>().toEqualTypeOf<
-    [relationField?: "tags", options?: InverseOption] | [options: InverseOption]
-  >();
-  expectTypeOf<HasManyArgs<TestClient, "tag", "post", InverseOption>>().toEqualTypeOf<
-    [relationField?: "posts", options?: InverseOption] | [options: InverseOption]
-  >();
+  expectTypeOf<SoleChild<TestClient, "post", Factory<TestClient, "tag">>>().toEqualTypeOf<Factory<TestClient, "tag">>();
+  expectTypeOf<SoleChild<TestClient, "tag", Row<TestClient, "post">[]>>().toEqualTypeOf<Row<TestClient, "post">[]>();
 });
 
 test("the relations a model pair shares are read at the arity asked for", () => {
@@ -102,29 +114,80 @@ test("a relation holding many records answers no belongs-to side, and neither do
   expectTypeOf<RelationsTo<TestClient, "comment", "user", true>>().toBeNever();
 });
 
-test("a relation field is optional where one relation answers and required where several do", () => {
-  expectTypeOf<RelationArgs<TestClient, "comment", "post">>().toEqualTypeOf<[relationField?: "post"]>();
-  expectTypeOf<RelationArgs<TestClient, "post", "user">>().toEqualTypeOf<[relationField: "author" | "editor"]>();
+test("a parent stands as it is where one relation answers, and names the fields to pick where several do", () => {
+  expectTypeOf<SoleParent<TestClient, "comment", Row<TestClient, "post">>>().toEqualTypeOf<Row<TestClient, "post">>();
+  expectTypeOf<SoleParent<TestClient, "comment", Factory<TestClient, "post">>>().toEqualTypeOf<
+    Factory<TestClient, "post">
+  >();
+  expectTypeOf<
+    SoleParent<TestClient, "post", Row<TestClient, "user">>
+  >().toEqualTypeOf<'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"'>();
+  expectTypeOf<
+    SoleParent<TestClient, "post", Factory<TestClient, "user">>
+  >().toEqualTypeOf<'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"'>();
 });
 
-test("a relation field argument reads the arity it is asked for, naming the side in its error", () => {
-  expectTypeOf<RelationArgs<TestClient, "post", "comment", true>>().toEqualTypeOf<[relationField?: "comments"]>();
-  expectTypeOf<RelationArgs<TestClient, "user", "post", true>>().toEqualTypeOf<[relationField: "posts" | "edited"]>();
-  expectTypeOf<RelationArgs<TestClient, "comment", "user", true>>().toEqualTypeOf<
-    [relationField: 'ERROR: no has-many relation from "comment" to "user"']
+test("the children a has() call takes read the has-many side, naming that side in their messages", () => {
+  expectTypeOf<SoleChild<TestClient, "post", Factory<TestClient, "comment">>>().toEqualTypeOf<
+    Factory<TestClient, "comment">
   >();
+  expectTypeOf<
+    SoleChild<TestClient, "user", Factory<TestClient, "post">>
+  >().toEqualTypeOf<'ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"'>();
+  expectTypeOf<
+    SoleChild<TestClient, "user", Row<TestClient, "post">[]>
+  >().toEqualTypeOf<'ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"'>();
+  expectTypeOf<
+    SoleChild<TestClient, "comment", Factory<TestClient, "user">>
+  >().toEqualTypeOf<'ERROR: no has-many relation from "comment" to "user"'>();
+  expectTypeOf<
+    SoleChild<TestClient, "comment", Factory<TestClient, "post">>
+  >().toEqualTypeOf<'ERROR: no has-many relation from "comment" to "post"'>();
+  expectTypeOf<
+    SoleChild<TestClient, "user", { id: number }[]>
+  >().toEqualTypeOf<"ERROR: the children are neither a factory nor full rows of any model; a partial object is not a row">();
 });
 
-// Left to itself the no-relation case degrades to `[relationField?: never]`, which every call
-// satisfies by passing nothing: `IsUnion<never>` is false, so the union branch does not catch it.
-test("a pair with no belongs-to relation takes an argument no relation field satisfies", () => {
-  expectTypeOf<RelationArgs<TestClient, "post", "comment">>().toEqualTypeOf<
-    [relationField: 'ERROR: no belongs-to relation from "post" to "comment"']
-  >();
-  expectTypeOf<RelationArgs<TestClient, "comment", "user">>().toEqualTypeOf<
-    [relationField: 'ERROR: no belongs-to relation from "comment" to "user"']
-  >();
-  expectTypeOf<RelationArgs<TestClient, "post", "comment">>().not.toEqualTypeOf<[relationField?: never]>();
+// Left to itself the no-relation case degrades to the value standing as it is: `IsUnion<never>` is
+// false, so the several-relations branch does not catch it.
+test("a pair with no belongs-to relation takes a parent no value satisfies", () => {
+  expectTypeOf<
+    SoleParent<TestClient, "post", Factory<TestClient, "comment">>
+  >().toEqualTypeOf<'ERROR: no belongs-to relation from "post" to "comment"'>();
+  expectTypeOf<
+    SoleParent<TestClient, "comment", Row<TestClient, "user">>
+  >().toEqualTypeOf<'ERROR: no belongs-to relation from "comment" to "user"'>();
+});
+
+test("a value no model answers for takes a parent no value satisfies, naming what a parent is", () => {
+  expectTypeOf<
+    SoleParent<TestClient, "post", { id: number }>
+  >().toEqualTypeOf<"ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row">();
+});
+
+test("a named field is one pointing at the value's model, at the arity the call reads", () => {
+  expectTypeOf<NamedParentField<TestClient, "post", Row<TestClient, "user">>>().toEqualTypeOf<"author" | "editor">();
+  expectTypeOf<NamedParentField<TestClient, "comment", Factory<TestClient, "post">>>().toEqualTypeOf<"post">();
+  expectTypeOf<NamedChildField<TestClient, "user", Factory<TestClient, "post">>>().toEqualTypeOf<"posts" | "edited">();
+  expectTypeOf<NamedChildField<TestClient, "post", Row<TestClient, "comment">[]>>().toEqualTypeOf<"comments">();
+});
+
+test("a named field reads as a message where the pair shares none, or the value stands for no record", () => {
+  expectTypeOf<
+    NamedParentField<TestClient, "post", Row<TestClient, "team">>
+  >().toEqualTypeOf<'ERROR: no belongs-to relation from "post" to "team"'>();
+  expectTypeOf<
+    NamedParentField<TestClient, "post", { id: number }>
+  >().toEqualTypeOf<"ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row">();
+  expectTypeOf<
+    NamedParentField<TestClient, "post", Factory<TestClient, "user", Row<TestClient, "user">[]>>
+  >().toEqualTypeOf<"ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row">();
+  expectTypeOf<
+    NamedChildField<TestClient, "comment", Factory<TestClient, "post">>
+  >().toEqualTypeOf<'ERROR: no has-many relation from "comment" to "post"'>();
+  expectTypeOf<
+    NamedChildField<TestClient, "user", { id: number }>
+  >().toEqualTypeOf<"ERROR: the children are neither a factory nor full rows of any model; a partial object is not a row">();
 });
 
 test("a child value is a factory of the model, batched or not, a row of it, or an array of rows", () => {
@@ -151,34 +214,27 @@ test("the model a child value stands for is recovered from the value's own type"
   expectTypeOf<ChildModel<TestClient, string>>().toBeNever();
 });
 
-// The relation field is the parent-side one, so a pair sharing exactly one has-many relation also
-// takes the options object on its own — which is what keeps the tuple a union rather than a spread.
-test("the has-many arguments carry a trailing options object, reachable with the relation field or without", () => {
-  expectTypeOf<HasManyArgs<TestClient, "post", "comment", InverseOption>>().toEqualTypeOf<
-    [relationField?: "comments", options?: InverseOption] | [options: InverseOption]
-  >();
-  expectTypeOf<HasManyArgs<TestClient, "user", "post", InverseOption>>().toEqualTypeOf<
-    [relationField: "posts" | "edited", options?: InverseOption]
-  >();
-});
-
-test("the has-many arguments reject a relation read at the wrong arity, and a pair sharing none", () => {
-  expectTypeOf<HasManyArgs<TestClient, "comment", "post", InverseOption>>().toEqualTypeOf<
-    [relationField: 'ERROR: no has-many relation from "comment" to "post"', options?: InverseOption]
-  >();
-  expectTypeOf<HasManyArgs<TestClient, "comment", "user", InverseOption>>().toEqualTypeOf<
-    [relationField: 'ERROR: no has-many relation from "comment" to "user"', options?: InverseOption]
-  >();
-});
-
 test("a relation field takes a factory of the model it points at, a row of it, or native relation input", () => {
   type Author = PartialAttributes<TestClient, "post">["author"];
 
   expectTypeOf<Factory<TestClient, "user">>().toExtend<Author>();
   expectTypeOf<Row<TestClient, "user">>().toExtend<Author>();
   expectTypeOf<{ connect: { id: number } }>().toExtend<Author>();
+  expectTypeOf<{ create: { email: string } }>().toExtend<Author>();
+  expectTypeOf<{ connectOrCreate: { where: { id: number }; create: { email: string } } }>().toExtend<Author>();
   expectTypeOf<Factory<TestClient, "post">>().not.toExtend<Author>();
   expectTypeOf<Row<TestClient, "post">>().not.toExtend<Author>();
+});
+
+// Prisma's nested relation input leaves every key optional, and a union holding a row is no weak
+// type, so the relation field needs one of those keys named for an object to stand as native input.
+test("a relation field takes no object that is neither native relation input nor a value of its model", () => {
+  type Author = PartialAttributes<TestClient, "post">["author"];
+
+  expectTypeOf<Row<TestClient, "team">>().not.toExtend<Author>();
+  expectTypeOf<{ totallyBogus: number }>().not.toExtend<Author>();
+  expectTypeOf<{ email: string; name: string }>().not.toExtend<Author>();
+  expectTypeOf<object>().not.toExtend<Author>();
 });
 
 test("a relation field holding many records takes a factory, a row, an array of rows, or native input", () => {
@@ -189,9 +245,23 @@ test("a relation field holding many records takes a factory, a row, an array of 
   expectTypeOf<Row<TestClient, "post">>().toExtend<Posts>();
   expectTypeOf<Row<TestClient, "post">[]>().toExtend<Posts>();
   expectTypeOf<{ connect: { id: number } }>().toExtend<Posts>();
+  expectTypeOf<{ create: { title: string } }>().toExtend<Posts>();
+  expectTypeOf<{ connectOrCreate: { where: { id: number }; create: { title: string } } }>().toExtend<Posts>();
+  expectTypeOf<{ createMany: { data: { title: string }[] } }>().toExtend<Posts>();
   expectTypeOf<Factory<TestClient, "user">>().not.toExtend<Posts>();
   expectTypeOf<Row<TestClient, "user">>().not.toExtend<Posts>();
   expectTypeOf<Row<TestClient, "user">[]>().not.toExtend<Posts>();
+});
+
+test("a relation field holding many records takes no wrong-model row, no list of them and no list of factories", () => {
+  type Posts = PartialAttributes<TestClient, "user">["posts"];
+
+  expectTypeOf<Row<TestClient, "team">>().not.toExtend<Posts>();
+  expectTypeOf<Row<TestClient, "team">[]>().not.toExtend<Posts>();
+  expectTypeOf<Factory<TestClient, "team">[]>().not.toExtend<Posts>();
+  expectTypeOf<Factory<TestClient, "post">[]>().not.toExtend<Posts>();
+  expectTypeOf<{ totallyBogus: number }>().not.toExtend<Posts>();
+  expectTypeOf<object>().not.toExtend<Posts>();
 });
 
 test("create() is typed as the model's row and count(n).create() as an array of them", async () => {
@@ -204,14 +274,6 @@ test("create() is typed as the model's row and count(n).create() as an array of 
   expectTypeOf(many).toEqualTypeOf<UserRow[]>();
   expect(many).toHaveLength(2);
 });
-
-// The argument tuple `has` takes, standing on its own: the tuple resolves the same wherever the
-// method it belongs to sits, and the factory it belongs to is declared elsewhere.
-declare function hasChildren<M extends ModelName<TestClient>, T extends ChildValue<TestClient>>(
-  model: M,
-  children: T,
-  ...args: HasManyArgs<TestClient, M, ChildModel<TestClient, T>, InverseOption>
-): void;
 
 // Held rather than written at the call site: excess property checking reaches a fresh object literal
 // only, so a literal would be rejected whether the options object is typed or not.
@@ -231,6 +293,8 @@ export function checkedByTheCompiler(
   statefulFactory: Factory<TestClient, "user", Row<TestClient, "user">, { suspended: unknown }>,
   commentFactory: Factory<TestClient, "comment">,
   commentRows: Row<TestClient, "comment">[],
+  teamFactory: Factory<TestClient, "team">,
+  inviteFactory: Factory<TestClient, "invite">,
 ): void {
   prismaFactorio.define("user", {
     definition: ({ uid }) => ({ email: `${uid}@example.com`, posts: { create: { title: "t" } } }),
@@ -286,6 +350,10 @@ export function checkedByTheCompiler(
   void userFactory.create({ name: 42 });
   // @ts-expect-error overrides naming both halves of a mutually exclusive relation input
   void postFactory.create({ authorId: 1, author: { connect: { id: 1 } } });
+  // @ts-expect-error both halves under an id the client generates, which keeps the checked input open
+  void inviteFactory.create({ teamId: 1, team: { connect: { id: 1 } } });
+  // @ts-expect-error both halves beside an explicit client-generated id
+  void inviteFactory.create({ id: "3f2c9e1a-0b7d-4c55-9a8e-6d1f2b3c4d5e", teamId: 1, team: { connect: { id: 1 } } });
   // @ts-expect-error a plain object carries no delegate
   void userFactory.using({});
 
@@ -301,6 +369,8 @@ export function checkedByTheCompiler(
   prismaFactorio.define("post", { definition: () => ({ title: userFactory, author: userFactory }) });
   // @ts-expect-error a factory on the relation half while the raw foreign key holds the other
   prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, authorId: 1, author: userFactory }) });
+  // @ts-expect-error the same clash on a model whose id the client generates
+  prismaFactorio.define("invite", { definition: ({ uid }) => ({ code: uid, teamId: 1, team: teamFactory }) });
   // @ts-expect-error a state naming a relation field of a model the relation does not point at
   void postFactory.state({ author: postFactory });
   // @ts-expect-error a batched factory creates a row each, so it stands for no one record
@@ -308,25 +378,182 @@ export function checkedByTheCompiler(
   // @ts-expect-error a batched factory in overrides stands for no one record either
   void postFactory.create({ author: userFactory.count(3) });
 
-  hasChildren("post", commentFactory);
-  hasChildren("post", commentFactory.count(3));
-  hasChildren("post", commentRows);
-  hasChildren("post", commentFactory, "comments");
-  hasChildren("post", commentFactory, inverseOption);
-  hasChildren("post", commentFactory, "comments", inverseOption);
-  hasChildren("user", postFactory.count(3), "posts");
-  hasChildren("user", postFactory.count(3), "edited", inverseOption);
+  void postFactory.has(commentFactory);
+  void postFactory.has(commentFactory.count(3));
+  void postFactory.has(commentRows);
+  void postFactory.has(commentFactory, "comments");
+  void postFactory.has(commentFactory, inverseOption);
+  void postFactory.has(commentFactory, "comments", inverseOption);
+  void userFactory.has(postFactory.count(3), "posts");
+  void userFactory.has(postFactory.count(3), "edited", inverseOption);
 
   // @ts-expect-error the pair shares two has-many relations, so the relation field has to be named
-  hasChildren("user", postFactory.count(3));
+  void userFactory.has(postFactory.count(3));
   // @ts-expect-error the options object stands in for no relation field where one has to be named
-  hasChildren("user", postFactory.count(3), inverseOption);
+  void userFactory.has(postFactory.count(3), inverseOption);
   // @ts-expect-error a relation field the parent model does not declare
-  hasChildren("post", commentFactory, "commnets");
+  void postFactory.has(commentFactory, "commnets");
   // @ts-expect-error an option key the options object does not declare
-  hasChildren("post", commentFactory, "comments", misspeltOption);
+  void postFactory.has(commentFactory, "comments", misspeltOption);
   // @ts-expect-error the relation the pair shares holds one record, not many
-  hasChildren("comment", postFactory, "post");
+  void commentFactory.has(postFactory, "post");
   // @ts-expect-error the pair shares no relation at either arity
-  hasChildren("comment", userFactory);
+  void commentFactory.has(userFactory);
+}
+
+test("overrides take a foreign key column beside a relation field of another key", () => {
+  interface Mixed {
+    authorId: number;
+    editor: Row<TestClient, "user">;
+  }
+  interface Paired {
+    authorId: number;
+    author: Row<TestClient, "user">;
+  }
+
+  expectTypeOf<Mixed>().toExtend<Overrides<TestClient, "post", Mixed>>();
+  expectTypeOf<Paired>().not.toExtend<Overrides<TestClient, "post", Paired>>();
+  expectTypeOf<PartialAttributes<TestClient, "post">>().toExtend<
+    Overrides<TestClient, "post", PartialAttributes<TestClient, "post">>
+  >();
+});
+
+// Never invoked: a helper wrapping a factory forwards its own overrides, typed the way `create` types
+// its parameter, with the parameter required or optional.
+export async function forwardRequiredOverrides<O>(
+  postFactory: Factory<TestClient, "post">,
+  overrides: O & Overrides<TestClient, "post", O>,
+): Promise<Row<TestClient, "post">> {
+  return postFactory.create(overrides);
+}
+
+export async function forwardOptionalOverrides<O>(
+  postFactory: Factory<TestClient, "post">,
+  overrides?: Overrides<TestClient, "post", O>,
+): Promise<Row<TestClient, "post">> {
+  return postFactory.create(overrides);
+}
+
+// Never invoked, like the functions above. Prisma's create input takes the relation fields holding a
+// foreign key or the raw columns, never both; a column a layer writes beside another key's relation
+// field reaches Prisma as a `connect` on its own relation field, so that mix is one object's to make.
+export function foreignKeyBesideRelation(
+  postFactory: Factory<TestClient, "post">,
+  userFactory: Factory<TestClient, "user">,
+  userRow: Row<TestClient, "user">,
+  categoryFactory: Factory<TestClient, "category">,
+  categoryRow: Row<TestClient, "category">,
+  bookingFactory: Factory<TestClient, "booking">,
+  customerRow: Row<TestClient, "customer">,
+  venueRow: Row<TestClient, "venue">,
+  badgeFactory: Factory<TestClient, "badge">,
+  teamRow: Row<TestClient, "team">,
+): void {
+  void postFactory.create({ authorId: 1, editor: userRow });
+  void postFactory.create({ editorId: null, author: userFactory });
+  void postFactory.create({ authorId: 1, editor: { connect: { id: 2 } }, title: "t" });
+  void postFactory.create({ authorId: 1, editorId: 2 });
+  void postFactory.create({ id: 7, authorId: 1 });
+  void postFactory.create({ authorId: 1, author: undefined, editor: userRow });
+  void postFactory.state({ authorId: 1, editor: userRow });
+  void postFactory.state(() => ({ editorId: 2, author: userRow }));
+  void categoryFactory.create({ parentId: categoryRow.id });
+  // One column of a compound key type-checks beside another relation field holding a key; Prisma
+  // refuses the key named in part at runtime, as it does on its own (README "Typing edges").
+  void badgeFactory.create({ userId: 1, sponsor: teamRow });
+
+  // @ts-expect-error a foreign key column beside the relation field it backs
+  void postFactory.create({ authorId: 1, author: userRow });
+  // @ts-expect-error the same pair, the relation field held by a factory
+  void postFactory.state({ editorId: 1, editor: userFactory });
+  // @ts-expect-error a database-generated id beside a relation field holding a key
+  void postFactory.create({ id: 7, authorId: 1, editor: userRow });
+  // @ts-expect-error a column two keys share, beside one of the relation fields it backs
+  void bookingFactory.create({ venueId: 1, customerId: 1, venue: venueRow });
+  // @ts-expect-error a compound key's column beside the relation field it backs
+  void bookingFactory.create({ customerId: 1, customer: customerRow });
+}
+
+// Never invoked, like the function above. A relation field is reached by four routes — a definition,
+// a declared state, `.state()` and `create()` overrides — and each is checked here at both arities.
+export function relationValuesByRoute(
+  prismaFactorio: Factorio<TestClient>,
+  userFactory: Factory<TestClient, "user">,
+  postFactory: Factory<TestClient, "post">,
+  teamFactory: Factory<TestClient, "team">,
+  userRow: Row<TestClient, "user">,
+  postRows: Row<TestClient, "post">[],
+  teamRow: Row<TestClient, "team">,
+  bogus: { totallyBogus: number },
+): void {
+  prismaFactorio.define("post", {
+    definition: ({ uid }) => ({
+      title: uid,
+      author: { connectOrCreate: { where: { id: 1 }, create: { email: uid } } },
+    }),
+    states: { native: { author: { connect: { id: 1 } } }, byRow: { author: userRow } },
+  });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({ email: uid, posts: { createMany: { data: [{ title: uid }] } } }),
+    states: { batched: { posts: postFactory.count(2) }, byRows: { posts: postRows } },
+  });
+  void postFactory.state({ author: { connectOrCreate: { where: { id: 1 }, create: { email: "a@e.com" } } } });
+  void postFactory.state({ author: userRow });
+  void userFactory.state({ posts: { createMany: { data: [{ title: "t" }] } } });
+  void userFactory.state({ posts: postRows });
+  void postFactory.create({ author: { connectOrCreate: { where: { id: 1 }, create: { email: "a@e.com" } } } });
+  void userFactory.create({ posts: { createMany: { data: [{ title: "t" }] } } });
+  void userFactory.create({ posts: { connect: [{ id: 1 }] } });
+
+  // @ts-expect-error a row of a model the belongs-to relation does not point at, in a definition
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: teamRow }) });
+  // @ts-expect-error an object that is neither native relation input nor a row, in a definition
+  prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, author: bogus }) });
+  // @ts-expect-error a list of rows of a model the has-many relation does not point at, in a definition
+  prismaFactorio.define("user", { definition: ({ uid }) => ({ email: uid, posts: [teamRow] }) });
+  // @ts-expect-error a list holding a factory, in a definition
+  prismaFactorio.define("user", { definition: ({ uid }) => ({ email: uid, posts: [postFactory] }) });
+
+  prismaFactorio.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: userFactory }),
+    // @ts-expect-error a row of a model the belongs-to relation does not point at, in a declared state
+    states: { byRow: { author: teamRow } },
+  });
+  prismaFactorio.define("post", {
+    definition: ({ uid }) => ({ title: uid, author: userFactory }),
+    // @ts-expect-error an object literal that is neither native relation input nor a row, in a declared state
+    states: { bogus: { author: { totallyBogus: 1 } } },
+  });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({ email: uid }),
+    // @ts-expect-error a row of a model the has-many relation does not point at, in a declared state
+    states: { byRow: { posts: teamRow } },
+  });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({ email: uid }),
+    // @ts-expect-error a list holding a factory, in a declared state
+    states: { byFactories: { posts: [teamFactory] } },
+  });
+
+  // @ts-expect-error an object that is neither native relation input nor a row, through a state
+  void postFactory.state({ author: bogus });
+  // @ts-expect-error an object literal that is neither native relation input nor a row, through a state
+  void postFactory.state({ author: { totallyBogus: 1 } });
+  // @ts-expect-error a list of rows of a model the has-many relation does not point at, through a state
+  void userFactory.state({ posts: [teamRow] });
+  // @ts-expect-error a list holding a factory of the model the has-many relation points at, through a state
+  void userFactory.state({ posts: [postFactory] });
+
+  // @ts-expect-error an object that is neither native relation input nor a row, in overrides
+  void postFactory.create({ author: bogus });
+  // @ts-expect-error an object literal that is neither native relation input nor a row, in overrides
+  void postFactory.create({ author: { totallyBogus: 1 } });
+  // @ts-expect-error attributes of the parent, which name no nested create, in overrides
+  void postFactory.create({ author: { email: "x@y.z", name: "X" } });
+  // @ts-expect-error native relation input naming none of its keys, in overrides
+  void postFactory.create({ author: {} });
+  // @ts-expect-error an object that is neither native relation input nor a row, at the has-many arity
+  void userFactory.create({ posts: bogus });
+  // @ts-expect-error a list holding a factory of the model the has-many relation points at, in overrides
+  void userFactory.create({ posts: [postFactory] });
 }

@@ -5,6 +5,8 @@ import {
   type Factorio,
   type FactorioOptions,
   type Factory,
+  type Overrides,
+  type PartialAttributes,
   type Row,
 } from "./index.js";
 import type { TestClient } from "./tests/client.js";
@@ -19,7 +21,7 @@ import { factorioHarness, userDefinition } from "./tests/factorio.js";
 // is the test harness's client. A block's module-scope `export const` declarations are locals of the
 // function that mirrors it, and a declaration a later block leans on is that function's parameter.
 //
-// Never invoked, save for the test at the foot of the file: these calls exist for `pnpm typecheck`,
+// Never invoked, save for the tests at the foot of the file: these calls exist for `pnpm typecheck`,
 // which reads this file. Each directive fails the gate the moment the type it names stops rejecting —
 // or stops accepting — what it is given.
 
@@ -90,7 +92,7 @@ export function statesSection(prismaFactorio: Factorio<TestClient>): void {
   // Read rather than called: a call on a member the compiler could not resolve is unsafe, and the
   // member is where the error the README claims already lands.
   // @ts-expect-error a state the config never declared
-  void userFactory.suspnded;
+  expectTypeOf(userFactory.suspnded);
   // @ts-expect-error a state named after a method the factory already answers to
   prismaFactorio.define("user", { definition: userDefinition, states: { create: { name: "Ada" } } });
   // @ts-expect-error a state named `then`, which would leave the factory thenable
@@ -222,9 +224,27 @@ export async function explicitManyToMany(
   prismaFactorio.define("membership", { definition: () => ({ role: "member", user: userFactory }) });
 }
 
+// README "Recycle", the opening blocks: a `bookingFactory` whose `venue` and `customer` defaults each bring
+// a venue of their own, and the recipe recycling one venue into both legs. The `Booking` model the
+// section shows is the scratch schema's own.
+export async function recycleSharedParentSection(
+  prismaFactorio: Factorio<TestClient>,
+  venueFactory: Factory<TestClient, "venue">,
+  customerFactory: Factory<TestClient, "customer">,
+): Promise<void> {
+  const bookingFactory = prismaFactorio.define("booking", {
+    definition: ({ uid }) => ({ seat: uid, venue: venueFactory, customer: customerFactory }),
+  });
+
+  const venue = await venueFactory.create();
+  const booking = await bookingFactory.recycle("venue", venue).create();
+  expectTypeOf(booking).toEqualTypeOf<Row<TestClient, "booking">>();
+}
+
 // README "Recycle", the block declaring `postFactory` and `commentFactory` with two user legs, the Children block
-// below it, and the bullets: the pool never stands in for the record asked for, successive calls merge
-// per model, and a row loaded with `include` is accepted where one missing a required scalar is not.
+// below it, and the bullets: the pool never stands in for the record asked for, a model the graph never
+// creates and native relation input draw nothing from it, successive calls merge per model, and a row
+// loaded with `include` is accepted where one missing a required scalar is not.
 export async function recycleSection(
   prismaFactorio: Factorio<TestClient>,
   userFactory: Factory<TestClient, "user">,
@@ -233,6 +253,7 @@ export async function recycleSection(
   loaded: Row<TestClient, "user"> & { posts: Row<TestClient, "post">[] },
   existingPosts: Row<TestClient, "post">[],
   onePost: Row<TestClient, "post">,
+  tag: Row<TestClient, "tag">,
 ): Promise<void> {
   /* jscpd:ignore-start — a transcription of the document restates what the suite declares; that is this file's purpose, not duplication to refactor away. */
   const postFactory = prismaFactorio.define("post", {
@@ -250,6 +271,11 @@ export async function recycleSection(
   void commentFactory.recycle("comment", comment);
   void commentFactory.recycle("user", ada).recycle("user", grace);
   void commentFactory.recycle("user", loaded);
+  void postFactory.recycle("tag", tag).create();
+  void postFactory
+    .state({ author: { create: { email: "grace@example.com", name: "Grace" } } })
+    .recycle("user", ada)
+    .create();
 
   await userFactory.recycle("post", existingPosts).has(postFactory.count(3), "posts").create();
 
@@ -309,41 +335,164 @@ export async function withoutSequence(userFactory: Factory<TestClient, "user">):
 // README "Runtime edges", the bullet "An explicit database-generated `id` meets a belongs-to relation
 // field only through a parent the build creates". Prisma's checked create input carries no `id` the
 // database generates, so naming one forces the record into the unchecked branch, which drops every
-// relation field whose foreign key the model holds and takes the raw column instead. A Prisma release
-// reshaping either branch falsifies the bullet, and these three lines are what says so; the runtime
-// half is pinned in `factory.test.ts`.
-export function explicitIdAndRelation(postFactory: Factory<TestClient, "post">): void {
+// relation field whose foreign key the model holds and takes the raw column instead. An id the client
+// generates stays in the checked input, so on `invite` the same pairing compiles. A Prisma release
+// reshaping either branch falsifies the bullet, and these lines are what says so; the runtime half is
+// pinned in `factory.test.ts`.
+export function explicitIdAndRelation(
+  postFactory: Factory<TestClient, "post">,
+  inviteFactory: Factory<TestClient, "invite">,
+  teamFactory: Factory<TestClient, "team">,
+  teamRow: Row<TestClient, "team">,
+): void {
   void postFactory.create({ id: 7 });
   void postFactory.create({ id: 7, authorId: 1 });
 
-  // @ts-expect-error no branch of the create input survives an id beside a belongs-to relation field
+  // @ts-expect-error a database-generated id cannot stand beside a belongs-to relation field
   void postFactory.create({ id: 7, author: { connect: { id: 1 } } });
+
+  void inviteFactory.create({ id: "3f2c9e1a-0b7d-4c55-9a8e-6d1f2b3c4d5e", team: { connect: { id: 1 } } });
+  void inviteFactory.create({ id: "3f2c9e1a-0b7d-4c55-9a8e-6d1f2b3c4d5e", team: teamFactory });
+  void inviteFactory.create({ id: "3f2c9e1a-0b7d-4c55-9a8e-6d1f2b3c4d5e", team: teamRow });
 }
 
-// README "Good to know", the bullet "A wrong-model row in a relation attribute is not caught". The
-// seven calls without a directive are that hole: they compile, and a directive on any of them would
-// fail this gate until the hole is closed (#48). A row rides through at both arities and by every route
-// an attribute is reached by; a factory rides through inside a list alone. What the bullet says *is*
-// caught follows them, and what a row that compiles then does to the database is pinned in
-// `factory.test.ts`.
+// README "Runtime edges", the bullet "A compound unique key over a few values collides across calls":
+// the recipe for the full set under one parent, a team's roster over a fixed list of users. The test
+// at the foot of the file runs it.
+export async function compoundKeyRoster(
+  userFactory: Factory<TestClient, "user">,
+  teamFactory: Factory<TestClient, "team">,
+  membershipFactory: Factory<TestClient, "membership">,
+): Promise<Row<TestClient, "membership">[]> {
+  const team = await teamFactory.create();
+  const users = await userFactory.count(3).create();
+
+  const roster = await membershipFactory
+    .count(users.length)
+    .for(team, "team")
+    .state(({ index }) => ({ user: users[index] }))
+    .create();
+
+  return roster;
+}
+
+// README "Typing edges", the bullet "Error shape": a misspelled field is reported on the offending
+// property against a type naming it, so each directive sits on that property's line rather than on
+// the call's. A declared field of the wrong type still reads `never`.
+test("a field the model does not declare reads as a type naming the field and the model", () => {
+  expectTypeOf<Overrides<TestClient, "user", { nmae: string }>["nmae"]>().toEqualTypeOf<{
+    'ERROR: "nmae" is not a field of "user"': true;
+  }>();
+});
+
+// `JSON.parse` is what hands a value typed `any` to most call sites.
+test("a value typed any under a field the model does not declare meets never, which nothing satisfies", () => {
+  expectTypeOf<Overrides<TestClient, "user", { nmae: ReturnType<typeof JSON.parse> }>["nmae"]>().toBeNever();
+});
+
+export function errorShape(prismaFactorio: Factorio<TestClient>, userFactory: Factory<TestClient, "user">): void {
+  void userFactory.create({
+    // @ts-expect-error a misspelled field in overrides
+    nmae: "Ada",
+  });
+  void userFactory.state({
+    // @ts-expect-error a misspelled field in a state
+    nmae: "Ada",
+  });
+  prismaFactorio.define("user", {
+    definition: ({ uid }) => ({
+      email: `${uid}@example.com`,
+      // @ts-expect-error a misspelled field in a definition
+      nmae: "Ada",
+    }),
+  });
+  void userFactory.create({
+    // @ts-expect-error a declared field of the wrong type
+    name: 1,
+  });
+  // @ts-expect-error a numeric key the model does not declare, reported on the call
+  void userFactory.create({ 1: "Ada" });
+}
+
+// README "States", the bullet "Layers apply in order": a foreign key column beside another relation's
+// field compiles in one object. README "Typing edges", the bullet "Error shape": a key refused beside
+// the relation fields the object names is reported on that key.
+export function columnBesideRelation(postFactory: Factory<TestClient, "post">, userRow: Row<TestClient, "user">): void {
+  void postFactory.create({ authorId: 1, editor: userRow });
+  void postFactory.state({ editor: userRow }).create({ authorId: 1 });
+  void postFactory.create({
+    // @ts-expect-error a database-generated id beside a belongs-to relation field, reported on the id
+    id: 7,
+    author: { connect: { id: 1 } },
+  });
+}
+
+// README "Relations", the paragraph "Such a value is a factory, an existing row, or Prisma's own
+// relation input": every value a relation field takes is checked against the model it points at, at
+// both arities and by every route an attribute is reached by, and relation input naming none of its
+// keys stands for nothing. The `for()` and `has()` calls pin the bullet "The relation field is checked
+// against the pair of models".
 export function wrongModelValues(
   userFactory: Factory<TestClient, "user">,
   postFactory: Factory<TestClient, "post">,
   teamFactory: Factory<TestClient, "team">,
   teamRow: Row<TestClient, "team">,
+  commentFactory: Factory<TestClient, "comment">,
+  ada: Row<TestClient, "user">,
 ): void {
+  // @ts-expect-error a row of a model the belongs-to relation does not point at
   void postFactory.create({ author: teamRow });
+  // @ts-expect-error a row of a model the has-many relation does not point at
   void userFactory.create({ posts: teamRow });
+  // @ts-expect-error a list of rows of a model the has-many relation does not point at
   void userFactory.create({ posts: [teamRow] });
+  // @ts-expect-error a row of a model the belongs-to relation does not point at, through a state
   void postFactory.state({ author: teamRow });
+  // @ts-expect-error a list holding a factory, which stands for no row
   void userFactory.create({ posts: [teamFactory] });
+  // @ts-expect-error a list holding a batched factory, which stands for no row either
   void userFactory.create({ posts: [teamFactory.count(2)] });
+  // @ts-expect-error a list holding a factory, through a state
   void userFactory.state({ posts: [teamFactory] });
+  // @ts-expect-error a row-shaped object names no key of the relation input
+  void postFactory.create({ author: { email: "x@y.z", name: "X" } });
+  // @ts-expect-error an empty relation input names none of its keys
+  void postFactory.create({ author: {} });
 
-  // @ts-expect-error no belongs-to relation from "post" to "team"
+  // @ts-expect-error no belongs-to relation from "post" to "team", named on the field
   void postFactory.for(teamRow, "author");
-  // @ts-expect-error no has-many relation from "user" to "team"
+  // @ts-expect-error a hand-built partial object is no row
+  void postFactory.for({ id: 1 }, "author");
+  // @ts-expect-error the pair shares several belongs-to relations
+  void postFactory.for(ada);
+  // @ts-expect-error the pair shares several belongs-to relations, a factory naming the pair the same
+  void postFactory.for(userFactory);
+  // @ts-expect-error no belongs-to relation from "comment" to "user"
+  void commentFactory.for(userFactory);
+  // @ts-expect-error no has-many relation from "user" to "team", named on the field
   void userFactory.has(teamRow, "posts");
+  // @ts-expect-error the pair shares several has-many relations
+  void userFactory.has(postFactory);
+
+  // The messages the bullets quote, read off the methods themselves: a field slot typed as a message
+  // takes that message, and the unnamed form's parent slot is the message once the parent's type is
+  // fixed.
+  void postFactory.for(teamRow, 'ERROR: no belongs-to relation from "post" to "team"');
+  void postFactory.for(
+    { id: 1 },
+    "ERROR: the parent is neither a factory of one record nor a full row of any model; a partial object is not a row",
+  );
+  void userFactory.has(teamRow, 'ERROR: no has-many relation from "user" to "team"');
+  type ForUser = typeof postFactory.for<Row<TestClient, "user">>;
+  expectTypeOf<
+    Parameters<ForUser>[0]
+  >().toEqualTypeOf<'ERROR: "post" has several belongs-to relations to "user": name one of "author" | "editor"'>();
+  type ForPoster = typeof commentFactory.for<Factory<TestClient, "user">>;
+  expectTypeOf<Parameters<ForPoster>[0]>().toEqualTypeOf<'ERROR: no belongs-to relation from "comment" to "user"'>();
+  type HasPosts = typeof userFactory.has<Factory<TestClient, "post">>;
+  expectTypeOf<
+    Parameters<HasPosts>[0]
+  >().toEqualTypeOf<'ERROR: "user" has several has-many relations to "post": name one of "posts" | "edited"'>();
   // @ts-expect-error a factory of a model the belongs-to relation does not point at
   void postFactory.create({ author: teamFactory });
   // @ts-expect-error a factory of a model the has-many relation does not point at
@@ -363,6 +512,66 @@ export function createInputIsNotPrismas(prisma: TestClient): void {
   // @ts-expect-error the widened relation keys leave no branch of Prisma's input assignable
   void prisma.user.create({ data: created });
 }
+
+// README "Types", the `helpers.ts` and `posts.test.ts` blocks and the bullets under them: each exported
+// type in the role the bullet gives it, a `satisfies`-checked value forwarding like a literal, the
+// excess-key check surviving the generic helper, and `Parameters<>` spelling out `PartialAttributes`.
+export async function typesSection({ userFactory, postFactory }: ReadmeFactories): Promise<void> {
+  async function makeAuthors(): Promise<Row<TestClient, "user">[]> {
+    return userFactory.count(3).create();
+  }
+
+  async function makePost<O>(overrides?: Overrides<TestClient, "post", O>): Promise<Row<TestClient, "post">> {
+    return postFactory.create(overrides);
+  }
+
+  const drafted = { title: "Draft" } satisfies PartialAttributes<TestClient, "post">;
+
+  const draft = await makePost(drafted);
+
+  expectTypeOf(draft).toEqualTypeOf<Row<TestClient, "post">>();
+  expectTypeOf(draft).toEqualTypeOf<Awaited<ReturnType<typeof postFactory.create>>>();
+  expectTypeOf(userFactory.count(3).create()).resolves.toEqualTypeOf<Row<TestClient, "user">[]>();
+  void makeAuthors();
+  void makePost();
+
+  // @ts-expect-error a field the model never declares, through the generic helper
+  void makePost({ titel: "Draft" });
+
+  type ViaParameters = Parameters<typeof postFactory.create>[0];
+  const viaParameters: ViaParameters = { title: "Draft" };
+  expectTypeOf(viaParameters);
+  expectTypeOf<ViaParameters>().toExtend<PartialAttributes<TestClient, "post"> | undefined>();
+  expectTypeOf<PartialAttributes<TestClient, "post"> | undefined>().toExtend<ViaParameters>();
+}
+
+// README "Types", the `PartialAttributes` bullet: a value annotated with that type, rather than
+// checked with `satisfies`, is a union of the create input's branches, and reaches `create()` and
+// `state()` as it is.
+export function partialAttributesForwarding(
+  postFactory: Factory<TestClient, "post">,
+  attrs: PartialAttributes<TestClient, "post">,
+): void {
+  expectTypeOf(postFactory.create(attrs)).resolves.toEqualTypeOf<Row<TestClient, "post">>();
+  expectTypeOf(postFactory.state(attrs)).toEqualTypeOf<Factory<TestClient, "post">>();
+}
+
+// README "Runtime edges", the compound-key roster: one batch under one team gives every user on the list
+// a membership of their own, where a second call for the same team would collide on the key.
+test("a roster batch writes one membership per listed user under the one team, each key distinct", async () => {
+  const { prisma, userFactory, teamFactory, membershipFactory } = await factorioHarness();
+
+  const roster = await compoundKeyRoster(userFactory, teamFactory, membershipFactory);
+
+  const [team] = await prisma.team.findMany();
+  const users = await prisma.user.findMany({ orderBy: { id: "asc" } });
+  const written = await prisma.membership.findMany({ orderBy: { userId: "asc" } });
+  expect(await prisma.team.count()).toBe(1);
+  expect(users).toHaveLength(3);
+  expect(roster).toHaveLength(3);
+  expect(written.map(({ userId, teamId }) => [userId, teamId])).toEqual(users.map(({ id }) => [id, team?.id]));
+  expect(new Set(written.map(({ userId, teamId }) => `${String(userId)}:${String(teamId)}`)).size).toBe(3);
+});
 
 // README "Transactional tests", the `posts.test.ts` block — run rather than merely compiled, the
 // recipe being the one the section tells a reader to copy. The sentinel is what commits nothing.

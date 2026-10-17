@@ -4,9 +4,10 @@ import { holdsManyRecords, inverseRelationField } from "./datamodel.js";
 import type { FactorioOptions } from "./faker.js";
 import { initPrismaFactorio, type Factorio } from "./factorio.js";
 import type { EvaluationContext, Factory, FactoryConfig, StateContext } from "./factory.js";
-import type { ModelName, Row } from "./prisma.js";
+import type { ModelName, PartialAttributes, Row } from "./prisma.js";
 import { disposableClient, factorioHarness, userDefinition, type Harness } from "./tests/factorio.js";
 import type { TestClient } from "./tests/client.js";
+import { withInlineSchema } from "./tests/inline-schema.js";
 
 // Every export keeps its own implementation and gains a spy, which is what lets one test replace the
 // inverse lookup alone while every other test in this file runs against the real module.
@@ -425,7 +426,7 @@ export function statesCheckedByTheCompiler(prismaFactorio: Factorio<TestClient>,
   });
 
   // @ts-expect-error a state the config does not declare
-  void userFactory.suspndd;
+  expectTypeOf(userFactory.suspndd);
   // @ts-expect-error a state naming a field the model does not have
   prismaFactorio.define("user", { definition: userDefinition, states: { bad: { nmae: "Ada" } } });
   // @ts-expect-error a state giving a field the wrong value type
@@ -452,7 +453,7 @@ export function statesCheckedByTheCompiler(prismaFactorio: Factorio<TestClient>,
   void userFactory.state(({ index }) => (index === 0 ? { name: "Ada" } : { nmae: "Grace" }));
   // @ts-expect-error a config annotated without its state names carries no states
   const annotated: FactoryConfig<TestClient, "user"> = { definition: userDefinition, states: { bad: held } };
-  void annotated;
+  expectTypeOf(annotated);
 
   // @ts-expect-error an inline state naming a field the model does not have
   void userFactory.state({ nmae: "Ada" });
@@ -462,6 +463,20 @@ export function statesCheckedByTheCompiler(prismaFactorio: Factorio<TestClient>,
   void userFactory.state(() => ({ nmae: "Ada" }));
   // @ts-expect-error an inline state closure returning an object excess property checking does not reach
   void userFactory.state(() => held);
+}
+
+// Never invoked, like the block above: a value typed `PartialAttributes` is a union of the create
+// input's checked and unchecked branches, and has to reach `create()` and `state()` as it is.
+export function partialAttributesForwarded(
+  userFactory: Factory<TestClient, "user">,
+  postFactory: Factory<TestClient, "post">,
+  user: PartialAttributes<TestClient, "user">,
+  post: PartialAttributes<TestClient, "post">,
+): void {
+  expectTypeOf(userFactory.create(user)).resolves.toEqualTypeOf<Row<TestClient, "user">>();
+  expectTypeOf(userFactory.state(user)).toEqualTypeOf<Factory<TestClient, "user">>();
+  expectTypeOf(postFactory.create(post)).resolves.toEqualTypeOf<Row<TestClient, "post">>();
+  expectTypeOf(postFactory.state(post)).toEqualTypeOf<Factory<TestClient, "post">>();
 }
 
 test("state(partial) applies attributes the config never declared", async () => {
@@ -503,10 +518,13 @@ test("state returns a new factory rather than changing the one it was called on"
 });
 
 // Everything a transaction client answers to that a factory of this harness reaches.
-type Transaction = Pick<TestClient, "user" | "post" | "comment" | "badge">;
+type Transaction = Pick<
+  TestClient,
+  "user" | "post" | "comment" | "badge" | "venue" | "customer" | "booking" | "team" | "invite"
+>;
 
 type Delegates = Record<
-  "user" | "post" | "badge",
+  "user" | "post" | "badge" | "booking" | "invite",
   { create: (args: { data: Record<string, unknown> }) => Promise<unknown> }
 >;
 
@@ -523,7 +541,7 @@ function filled(row: object): Record<string, unknown> {
 
 // The recorded delegate hangs off a real client, which is where relation metadata is read from: a
 // bare object of delegates carries none.
-function recording(base: Transaction, model: "user" | "post" | "badge"): Recording {
+function recording(base: Transaction, model: keyof Delegates): Recording {
   const written: Record<string, unknown>[] = [];
   const source = (base as unknown as Delegates)[model];
   const delegate = Object.create(source) as Delegates["user"];
@@ -584,6 +602,16 @@ test("a factory embedded in a state creates the parent, and the layer it replace
   await postFactory.byAda().create();
 
   await expect(prisma.user.findMany()).resolves.toMatchObject([{ name: "Ada" }]);
+});
+
+test("a self-relation default in a state creates one level of parent, which carries none of its own", async () => {
+  const { prisma, categoryFactory } = await factorioHarness();
+
+  const child = await categoryFactory.state({ parent: categoryFactory }).create();
+  const parent = await prisma.category.findUniqueOrThrow({ where: { id: child.parentId ?? -1 } });
+
+  expect(parent.parentId).toBeNull();
+  await expect(prisma.category.count()).resolves.toBe(2);
 });
 
 test("a factory embedded in create() overrides creates the parent and connects the record to it", async () => {
@@ -789,6 +817,7 @@ test("an array in a relation field holding a single record reaches Prisma, which
   const ada = await userFactory.create();
 
   for (const editor of [[], [ada]]) {
+    // @ts-expect-error a list stands for no record in a field holding one
     await expect(postFactory.create({ editor })).rejects.toThrow(
       "Argument `editor`: Invalid value provided. Expected UserCreateNestedOneWithoutEditedInput",
     );
@@ -819,7 +848,7 @@ test("a relation default in a definition evaluates once per record, so a batch d
 });
 
 // A row the build created a moment ago cannot have gone stale, so it is written as the foreign key it
-// stands for: a nested `connect` would cost Prisma an implicit transaction and an existence read.
+// stands for (ADR 0005).
 test("a row created for a relation field reaches create as its foreign key, never as connect", async () => {
   const { prisma, postFactory } = await factorioHarness();
   const { client, written } = recording(prisma, "post");
@@ -892,21 +921,18 @@ test("a row handed over or drawn from a pool reaches create as connect on every 
 
 // Prisma's create input is either the checked shape or the unchecked one, and a foreign key column
 // beside a `connect` on another relation field holding a key fits neither: one handed-over or pooled
-// row keeps every relation of that create on `connect`, the fresh ones included.
+// row keeps every relation of that create on `connect`, the fresh ones included, which match on their
+// key alone.
 test("a fresh row beside a handed-over or pooled one keeps the whole create on connect", async () => {
   const { harness, client, written, ada } = await besideAda();
-  const { prisma, postFactory, userFactory } = harness;
+  const { postFactory, userFactory } = harness;
 
   const handed = await postFactory.using(client).create({ editor: ada });
   const pooled = await postFactory.using(client).recycle("user", ada).create({ editor: userFactory });
-  const [author, editor] = await Promise.all([
-    prisma.user.findUniqueOrThrow({ where: { id: handed.authorId } }),
-    prisma.user.findUniqueOrThrow({ where: { id: pooled.editorId ?? 0 } }),
-  ]);
 
   expect(written).toStrictEqual([
-    { title: handed.title, author: { connect: filled(author) }, editor: { connect: filled(ada) } },
-    { title: pooled.title, author: { connect: filled(ada) }, editor: { connect: filled(editor) } },
+    { title: handed.title, author: { connect: { id: handed.authorId } }, editor: { connect: filled(ada) } },
+    { title: pooled.title, author: { connect: filled(ada) }, editor: { connect: { id: pooled.editorId } } },
   ]);
 });
 
@@ -917,7 +943,7 @@ test("a has() child whose other parent was handed over keeps both relations on c
   const user = await userFactory.using(client).has(postFactory.for(ada, "editor"), "posts").create();
 
   expect(written.map(({ author, editor }) => [author, editor])).toStrictEqual([
-    [{ connect: filled(user) }, { connect: filled(ada) }],
+    [{ connect: { id: user.id } }, { connect: filled(ada) }],
   ]);
 });
 
@@ -952,23 +978,144 @@ test("an explicit id beside a handed-over parent is refused, the parent staying 
   await expect(postFactory.state({ author: ada }).create({ id: 7 })).rejects.toThrow("Unknown argument `id`");
 });
 
-// The column the fresh row would fill is the caller's already, so the create is left exactly as it
-// stood, for Prisma to refuse the clash it has always refused.
-test("a foreign key column the caller wrote keeps the fresh row behind it on connect", async () => {
+// An id the client generates stays in the checked create input, so a handed-over parent connects
+// beside it and a fresh one is written as its key beside it: neither path refuses the explicit id.
+test("an explicit client-generated id beside a handed-over or a fresh parent persists with its foreign key", async () => {
+  const harness = await factorioHarness();
+  const { prisma, inviteFactory, teamFactory } = harness;
+  const { client, written } = recording(prisma, "invite");
+  const team = await teamFactory.create();
+  const handedId = "0b6f3a52-7c1e-4d8a-9f20-5e4b3c2a1d00";
+  const freshId = "0b6f3a52-7c1e-4d8a-9f20-5e4b3c2a1d01";
+
+  const handed = await inviteFactory.using(client).create({ id: handedId, team });
+  const fresh = await inviteFactory.using(client).create({ id: freshId, team: teamFactory });
+  const freshTeam = await prisma.team.findFirstOrThrow({ where: { id: { not: team.id } } });
+
+  expect(written).toStrictEqual([
+    { id: handedId, code: handed.code, team: { connect: filled(team) } },
+    { id: freshId, code: fresh.code, teamId: freshTeam.id },
+  ]);
+  expect([handed, fresh]).toMatchObject([
+    { id: handedId, teamId: team.id },
+    { id: freshId, teamId: freshTeam.id },
+  ]);
+  await expect(prisma.invite.findMany({ orderBy: { id: "asc" } })).resolves.toStrictEqual([
+    { id: handedId, code: handed.code, teamId: team.id },
+    { id: freshId, code: fresh.code, teamId: freshTeam.id },
+  ]);
+});
+
+// A relation field and the foreign key columns backing it are one key to the merge: a later layer
+// writing either drops what an earlier layer wrote under the other.
+test("a foreign key column in create() overrides drops the relation default, which creates no record", async () => {
   const { harness, client, written, ada } = await besideAda();
-  const { postFactory } = harness;
+  const { prisma, postFactory } = harness;
 
-  await expect(postFactory.using(client).create({ authorId: ada.id })).rejects.toThrow("Unknown argument `authorId`");
+  const post = await postFactory.using(client).create({ authorId: ada.id });
 
-  expect(written.map((data) => Object.keys(data))).toStrictEqual([["title", "author", "authorId"]]);
+  expect(post.authorId).toBe(ada.id);
+  expect(written).toStrictEqual([{ title: post.title, authorId: ada.id }]);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("a foreign key column drops a relation a state wrote, and a state's column drops the definition's", async () => {
+  const { harness, ada } = await besideAda();
+  const { prisma, postFactory, userFactory } = harness;
+
+  const overState = await postFactory.state({ author: userFactory }).create({ authorId: ada.id });
+  const fromState = await postFactory.state({ authorId: ada.id }).create();
+
+  expect([overState.authorId, fromState.authorId]).toStrictEqual([ada.id, ada.id]);
+  await expect(prisma.user.count()).resolves.toBe(1);
+});
+
+test("a relation field drops the foreign key column an earlier layer wrote", async () => {
+  const { harness, ada } = await besideAda();
+  const { prismaFactorio, userFactory } = harness;
+  const grace = await userFactory.create({ name: "Grace" });
+  const adasFactory = prismaFactorio.define("post", { definition: ({ uid }) => ({ title: uid, authorId: ada.id }) });
+
+  const toGrace = await adasFactory.create({ author: grace });
+  const toFresh = await adasFactory.create({ author: userFactory });
+  const viaFor = await adasFactory.for(grace, "author").create();
+
+  expect(toGrace.authorId).toBe(grace.id);
+  expect([ada.id, grace.id]).not.toContain(toFresh.authorId);
+  expect(viaFor.authorId).toBe(grace.id);
+});
+
+// A create kept on `connect` by a row the caller handed over cannot carry a raw column beside it, so
+// the column set becomes a `connect` on the key's referenced fields: the caller's own value, which
+// nothing could have made stale, and so matched on that value alone.
+test("a foreign key column beside a handed-over row reaches create as connect on the referenced field", async () => {
+  const { harness, client, written, ada } = await besideAda();
+  const grace = await harness.userFactory.create({ name: "Grace" });
+
+  const postFactory = harness.postFactory.using(client);
+
+  const layered = await postFactory.state({ editor: grace }).create({ authorId: ada.id });
+  const inline = await postFactory.create({ authorId: ada.id, editor: grace });
+
+  for (const post of [layered, inline]) expect([post.authorId, post.editorId]).toStrictEqual([ada.id, grace.id]);
+  expect(written).toStrictEqual(
+    [layered, inline].map(({ title }) => ({
+      title,
+      author: { connect: { id: ada.id } },
+      editor: { connect: filled(grace) },
+    })),
+  );
+});
+
+// A key whose every column is `null` names no record, which the checked input says by leaving the
+// relation field out.
+test("a foreign key column set to null beside a handed-over row leaves its relation unwritten", async () => {
+  const { harness, client, written, ada } = await besideAda();
+
+  const post = await harness.postFactory
+    .using(client)
+    .state({ editor: harness.userFactory, author: ada })
+    .create({ editorId: null });
+
+  expect(post.editorId).toBeNull();
+  expect(written).toStrictEqual([{ title: post.title, author: { connect: filled(ada) } }]);
+});
+
+// Naming one column hands the whole key to the caller, who then owes the rest of it.
+test("one column of a compound foreign key drops the relation default, the other left to the caller", async () => {
+  const { prisma, badgeFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create();
+
+  await expect(badgeFactory.create({ userId: ada.id })).rejects.toThrow("Argument `membership` is missing");
+  await expect(prisma.membership.count()).resolves.toBe(0);
+});
+
+test("a foreign key column valued undefined leaves the relation default standing", async () => {
+  const { harness, ada } = await besideAda();
+  const { prisma, postFactory } = harness;
+
+  const post = await postFactory.create({ authorId: undefined });
+
+  expect(post.authorId).not.toBe(ada.id);
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+test("every column of a compound foreign key drops the relation default, persisting against the given row", async () => {
+  const { prisma, membershipFactory, badgeFactory } = await factorioHarness();
+  const membership = await membershipFactory.create();
+
+  const badge = await badgeFactory.create({ userId: membership.userId, teamId: membership.teamId });
+
+  expect([badge.userId, badge.teamId]).toStrictEqual([membership.userId, membership.teamId]);
+  await expect(prisma.membership.count()).resolves.toBe(1);
 });
 
 // The foreign key is read off the schema text the client carries; a client carrying none leaves the
-// relation on `connect`, as it always was.
+// relation on `connect`.
 test("a client carrying no schema text keeps a fresh row on connect", async () => {
   const { prisma, postFactory } = await factorioHarness();
   const { client, written } = recording(prisma, "post");
-  const schemaless = Object.create(client, { _engineConfig: { value: {} } }) as typeof client;
+  const schemaless = withInlineSchema(client, undefined);
 
   const post = await postFactory.using(schemaless).create();
   const author = await prisma.user.findUniqueOrThrow({ where: { id: post.authorId } });
@@ -982,18 +1129,19 @@ function rekeyed(client: Transaction, from: string, to: string): Transaction {
   const schema = readFileSync(new URL("../prisma/schema.prisma", import.meta.url), "utf8");
   expect(schema).toContain(from);
 
-  return Object.create(client, { _engineConfig: { value: { inlineSchema: schema.replace(from, to) } } }) as Transaction;
+  return withInlineSchema(client, schema.replace(from, to));
 }
 
-// Two relations naming one column would write it twice, from two rows, so neither is written.
-test("two fresh rows writing one foreign key column keep the whole create on connect", async () => {
+// Two relations naming one column would write it twice, from two rows holding different values.
+test("two fresh rows writing different values to one foreign key column reject before Prisma", async () => {
   const { prisma, postFactory, userFactory } = await factorioHarness();
   const { client, written } = recording(prisma, "post");
   const shared = rekeyed(client, "fields: [editorId]", "fields: [authorId]");
 
-  await postFactory.using(shared).create({ editor: userFactory });
-
-  expect(written.map((data) => Object.keys(data))).toStrictEqual([["title", "author", "editor"]]);
+  await expect(postFactory.using(shared).create({ editor: userFactory })).rejects.toThrow(
+    'The relation fields "author" and "editor" on the model "post" disagree on the foreign key column "authorId"',
+  );
+  expect(written).toStrictEqual([]);
 });
 
 test("a fresh row holding null where its key references keeps the whole create on connect", async () => {
@@ -1006,6 +1154,18 @@ test("a fresh row holding null where its key references keeps the whole create o
   expect(written.map((data) => Object.keys(data))).toStrictEqual([["title", "author"]]);
 });
 
+// A key-only where-clause would name nothing there, so that row connects on every scalar instead.
+test("a fresh row holding null where its key references connects on its scalars", async () => {
+  const { prisma, postFactory } = await factorioHarness();
+  const { client, written } = recording(prisma, "post");
+  const nullable = rekeyed(client, "fields: [authorId], references: [id]", "fields: [authorId], references: [handle]");
+
+  const post = await postFactory.using(nullable).create();
+  const author = await prisma.user.findUniqueOrThrow({ where: { id: post.authorId } });
+
+  expect(written[0]?.author).toStrictEqual({ connect: filled(author) });
+});
+
 // A child factory of a duplicated package instance knows the brand and nothing of the mark the
 // parent's instance adds, which it drops along with every other symbol key: the `connect` beside the
 // mark is what it reaches back through.
@@ -1014,7 +1174,9 @@ test("a has() child of another package instance reaches its parent through the c
   const foreignFactory = {
     [Symbol.for("prisma-factorio.factory")]: "post",
     create: (overrides: { author: object }) =>
-      postFactory.create({ author: Object.fromEntries(Object.entries(overrides.author)) }),
+      postFactory.create({
+        author: Object.fromEntries(Object.entries(overrides.author)) as { connect: { id: number } },
+      }),
   } as unknown as Factory<TestClient, "post">;
 
   const user = await userFactory.has(foreignFactory, "posts").create();
@@ -1022,14 +1184,148 @@ test("a has() child of another package instance reaches its parent through the c
   await expect(prisma.post.findMany()).resolves.toMatchObject([{ authorId: user.id }]);
 });
 
+// The whole error a stale row is retold as: the entire message, and the raw Prisma error standing
+// behind it as the cause — `toMatchObject` reads the pair as a subset, leaving the cause's other
+// fields free.
+function stale(
+  fields: string | readonly string[],
+  model: string,
+  code: string,
+): { message: string; cause: { code: string } } {
+  const named = [fields].flat().map((field) => `"${field}"`);
+
+  return {
+    message:
+      `A row connected into ${named.join(" or ")} on the model "${model}" no longer matches the database: ` +
+      "it was read before its record changed, and every non-null scalar is matched on, so a changed " +
+      "`updatedAt` is enough. Re-read the row from the client before handing it over or pooling it, " +
+      "or pass native relation input ({ connect: { id } }) to match on the key alone.",
+    cause: { code },
+  };
+}
+
+// A user row read before its record changed, beside the factory a post is created through.
+async function staleUser(
+  attributes: { meta?: { a: number } } = {},
+): Promise<{ postFactory: Factory<TestClient, "post">; ada: Row<TestClient, "user"> }> {
+  const { prisma, postFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create(attributes);
+
+  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+
+  return { postFactory, ada };
+}
+
 // The row's scalars go into the `where`, so every field beyond the unique one narrows it: a row read
 // before the record changed no longer matches anything.
 test("connecting a row that has since changed fails rather than reaching the record it became", async () => {
-  const { prisma, postFactory, userFactory } = await factorioHarness();
-  const ada = await userFactory.create();
-  await prisma.user.update({ where: { id: ada.id }, data: { name: "Grace" } });
+  const { postFactory, ada } = await staleUser();
 
-  await expect(postFactory.create({ author: ada })).rejects.toMatchObject({ code: "P2025" });
+  await expect(postFactory.create({ author: ada })).rejects.toMatchObject(stale("author", "post", "P2025"));
+});
+
+test("a stale row handed to for() fails naming the relation field it stood in", async () => {
+  const { postFactory, ada } = await staleUser();
+
+  await expect(postFactory.for(ada, "author").create()).rejects.toMatchObject(stale("author", "post", "P2025"));
+});
+
+// A row the caller pools is matched like one it hands over, so changing its record before the draw
+// leaves it as stale.
+test("a pooled row whose record changed before the draw fails as a stale row", async () => {
+  const { postFactory, ada } = await staleUser();
+
+  await expect(postFactory.recycle("user", ada).create()).rejects.toMatchObject(stale("author", "post", "P2025"));
+});
+
+// Native relation input matches on the key alone, so a connect it names that finds nothing is no stale
+// row: Prisma's own error reaches the caller as it was thrown.
+test("a connect from native relation input that matches nothing keeps Prisma's own error", async () => {
+  const { postFactory } = await factorioHarness();
+
+  const failure = postFactory.create({ author: { connect: { id: 999999 } } });
+
+  await expect(failure).rejects.toMatchObject({ code: "P2025" });
+  await expect(failure).rejects.not.toThrow("no longer matches the database");
+});
+
+// A user factory whose own callback changes the record it just created, leaving the row the build
+// holds behind it.
+function renamingUsers(userFactory: Factory<TestClient, "user">): Factory<TestClient, "user"> {
+  return userFactory.afterCreating(async (user, { client }) => {
+    await client.user.update({ where: { id: user.id }, data: { name: `${user.name ?? ""}!` } });
+  });
+}
+
+// A handed row keeps every relation of the create on `connect`, and a row the build created connects
+// there on its key alone, so its own callback changing the record leaves nothing stale (#89).
+test("a fresh row its own callback changed connects beside a handed row", async () => {
+  const { prisma, postFactory, userFactory } = await factorioHarness();
+  const grace = await userFactory.create({ name: "Grace" });
+
+  const post = await postFactory.state({ author: renamingUsers(userFactory) }).create({ editor: grace });
+  const author = await prisma.user.findUniqueOrThrow({ where: { id: post.authorId } });
+
+  expect([author.name, post.editorId]).toStrictEqual(["Ada!", grace.id]);
+});
+
+// A compound key is matched through Prisma's generated selector, which the key-only where-clause still
+// carries.
+test("a fresh row with a compound key connects on that key beside a handed row", async () => {
+  const { prisma, badgeFactory, teamFactory } = await factorioHarness();
+  const { client, written } = recording(prisma, "badge");
+  const team = await teamFactory.create();
+
+  const badge = await badgeFactory.using(client).create({ sponsor: team });
+  const key = { userId: badge.userId, teamId: badge.teamId };
+
+  expect(written[0]?.membership).toStrictEqual({ connect: { ...key, userId_teamId: key } });
+  expect(badge.sponsorId).toBe(team.id);
+});
+
+// A record's own callbacks run once its children exist, so what changes the parent before a later
+// child reaches back is an earlier sibling's callback; the child still connects on the parent's key.
+test("a has() child reaches a parent an earlier sibling's callback changed, beside a handed row", async () => {
+  const { prisma, postFactory, userFactory } = await factorioHarness();
+  const grace = await userFactory.create({ name: "Grace" });
+  const renamingPostFactory = postFactory
+    .count(2)
+    .state({ editor: grace })
+    .afterCreating(async (post, { client }) => {
+      await client.user.update({ where: { id: post.authorId }, data: { name: `renamed by ${post.title}` } });
+    });
+
+  const ada = await userFactory.has(renamingPostFactory, "posts").create();
+  const posts = await prisma.post.findMany({ where: { authorId: ada.id } });
+
+  expect(posts).toHaveLength(2);
+});
+
+// An implicit many-to-many holds no foreign key on either side, so the child reaches back to the
+// parent on the parent model's id.
+test("a has() child reaches a parent an earlier sibling's callback changed, across a many-to-many", async () => {
+  const { prisma, postFactory, tagFactory } = await factorioHarness();
+  const retitlingTagFactory = tagFactory.count(2).afterCreating(async (tag, { client }) => {
+    await client.post.updateMany({ where: { tags: { some: { id: tag.id } } }, data: { title: tag.label } });
+  });
+
+  const post = await postFactory.has(retitlingTagFactory).create();
+  const tags = await prisma.tag.findMany({ where: { posts: { some: { id: post.id } } } });
+
+  expect(tags).toHaveLength(2);
+});
+
+// The far end of a one-to-one holds the key, so the row created for the field connects on its own id.
+test("a fresh row its own callback changed connects through a field whose key the far end holds", async () => {
+  const { prisma, userFactory, profileFactory } = await factorioHarness();
+  const rewritingProfileFactory = profileFactory.afterCreating(async (profile, { client }) => {
+    await client.profile.update({ where: { id: profile.id }, data: { bio: `${profile.bio}!` } });
+  });
+
+  const ada = await userFactory.create({ profile: rewritingProfileFactory });
+  const profile = await prisma.profile.findUniqueOrThrow({ where: { userId: ada.id } });
+
+  expect(profile.bio).toMatch(/!$/);
 });
 
 // Prisma types a nullable unique column in `WhereUniqueInput` as a bare selector, never a nullable
@@ -1043,6 +1339,28 @@ test("a row whose nullable unique column is null connects, handed over or drawn 
   const drawn = await postFactory.recycle("user", ada).create();
 
   expect([handed.authorId, drawn.authorId]).toStrictEqual([ada.id, ada.id]);
+});
+
+// Prisma types a Json column in `WhereUniqueInput` as a filter, so a value standing in one is read as
+// filter arguments and refused: a row holding one connects on its other scalars, by every route a row
+// reaches `connect` through (#65).
+test("a row whose Json column holds a value connects, through for, an attribute or a pool", async () => {
+  const { postFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create({ meta: { a: 1 } });
+
+  const followed = await postFactory.for(ada, "author").create();
+  const handed = await postFactory.create({ author: ada });
+  const drawn = await postFactory.recycle("user", ada).create();
+
+  expect([followed.authorId, handed.authorId, drawn.authorId]).toStrictEqual([ada.id, ada.id, ada.id]);
+});
+
+// Leaving the Json column out narrows the match by nothing else: a row read before the record
+// changed still fails loudly rather than connecting to what the record has become.
+test("a stale row whose Json column holds a value still fails to connect", async () => {
+  const { postFactory, ada } = await staleUser({ meta: { a: 1 } });
+
+  await expect(postFactory.for(ada, "author").create()).rejects.toMatchObject(stale("author", "post", "P2025"));
 });
 
 // The same row created fresh in the build, alone in the create and beside a caller's row, which keeps
@@ -1061,38 +1379,6 @@ test("a fresh row whose nullable unique column is null connects, alone or beside
     handle: null,
   });
   expect(beside.editorId).toBe(grace.id);
-});
-
-// The same filter read the other way: a row is cut down to the target model's scalar names before it
-// stands in the `where`, so a `Team` row `{ id, slug }` collapses to `{ id }`, which a `User` satisfies
-// as readily. Ids start at 1 per model, so a wrong-model row the type system let through finds a record
-// to connect rather than failing. The README bullet "A wrong-model row in a relation attribute is not
-// caught" rests on this test and the one under it for what happens at runtime; `readme.test.ts` pins
-// the half the compiler answers for.
-test("a wrong-model row in a belongs-to attribute connects the record that shares its id", async () => {
-  const { postFactory, teamFactory, userFactory } = await factorioHarness();
-  const ada = await userFactory.create();
-  const team = await teamFactory.create();
-  expect(team.id).toBe(ada.id);
-
-  const post = await postFactory.create({ author: team });
-
-  expect(post.authorId).toBe(ada.id);
-});
-
-// The same collapse at the other arity, where the connect rewrites a foreign key the record already
-// carries: the wrong-model row re-homes a post that belonged to somebody else.
-test("a wrong-model row in a has-many attribute re-homes the record that shares its id", async () => {
-  const { prisma, postFactory, teamFactory, userFactory } = await factorioHarness();
-  const post = await postFactory.create();
-  const team = await teamFactory.create();
-  expect(team.id).toBe(post.id);
-
-  const stranger = await userFactory.create({ posts: team });
-
-  await expect(prisma.post.findUniqueOrThrow({ where: { id: post.id } })).resolves.toMatchObject({
-    authorId: stranger.id,
-  });
 });
 
 test("a factory carrying no value that could stand in a relation field never reads the relation metadata", async () => {
@@ -1327,6 +1613,16 @@ test("for(row) connects to a record that already exists rather than creating one
   await expect(prisma.user.count()).resolves.toBe(1);
 });
 
+test("for(row) across a self-relation connects the record to a row of its own model", async () => {
+  const { prisma, categoryFactory } = await factorioHarness();
+  const root = await categoryFactory.create();
+
+  const child = await categoryFactory.for(root, "parent").create();
+
+  expect(child.parentId).toBe(root.id);
+  await expect(prisma.category.count()).resolves.toBe(2);
+});
+
 test("for(factory) resolves the one relation the model pair shares when the name is left out", async () => {
   const { prisma, commentFactory, postFactory } = await factorioHarness();
 
@@ -1506,6 +1802,17 @@ test("for() rejects a relation field the model pair does not share, naming it an
   );
 });
 
+// A row names no model of its own, so the field is checked against the ones the model declares alone.
+test("for() rejects a relation field the model does not declare beside a row, naming it and the candidates", async () => {
+  const { postFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create();
+
+  await expect(postFactory.for(ada, "illustrator" as unknown as "author").create()).rejects.toThrow(
+    'The model "post" has no relation field "illustrator". ' +
+      'Relation fields on "post": "author", "editor", "comments", "tags".',
+  );
+});
+
 // The type layer rejects the omitted name here; the runtime says the same thing to a caller who
 // compiles nothing, and names the escape hatch, which the runtime alone cannot narrow down to one.
 test("for() rejects an omitted relation field where the model pair shares several, naming them", async () => {
@@ -1530,6 +1837,51 @@ test("for() rejects a relation field holding many records, naming it and the ari
       "Attach the records with has() instead.",
   );
   await expect(prisma.post.count()).resolves.toBe(0);
+});
+
+const undelegated =
+  'The client carries no delegate for the model "ghost". ' +
+  "Regenerate the client if the model was added to the schema after it was generated, " +
+  "or pass a generated Prisma client rather than its relation metadata alone.";
+
+// A client generated before a model was added carries neither its delegate nor its metadata, which
+// only a model name cast past the type surface reaches.
+function ghostFactoryOf(prismaFactorio: Factorio<TestClient>): Factory<TestClient, "user"> {
+  return prismaFactorio.define("ghost" as "user", { definition: userDefinition });
+}
+
+test("create() on a model the client carries no delegate for names it and suggests regenerating", async () => {
+  const { prismaFactorio } = await factorioHarness();
+
+  await expect(ghostFactoryOf(prismaFactorio).create()).rejects.toThrow(new TypeError(undelegated));
+});
+
+test("a relation default on a model the client carries no delegate for names it and suggests regenerating", async () => {
+  const { prisma, prismaFactorio, postFactory } = await factorioHarness();
+
+  await expect(postFactory.create({ author: ghostFactoryOf(prismaFactorio) })).rejects.toThrow(undelegated);
+  await expect(prisma.post.count()).resolves.toBe(0);
+});
+
+test("for() and has() on a model the client carries no delegate for name it and suggest regenerating", async () => {
+  const { prismaFactorio, postFactory, userFactory } = await factorioHarness();
+  const ghostFactory = ghostFactoryOf(prismaFactorio) as unknown as Factory<TestClient, "post">;
+  const ada = await userFactory.create();
+
+  await expect(ghostFactory.for(ada, "author").create()).rejects.toThrow(undelegated);
+  await expect(ghostFactoryOf(prismaFactorio).has(postFactory, "posts").create()).rejects.toThrow(undelegated);
+});
+
+test("for() and has() toward a model the client knows nothing of name it and suggest regenerating", async () => {
+  const { prisma, prismaFactorio, postFactory, userFactory } = await factorioHarness();
+  const unknown =
+    'The client knows no model "ghost". ' +
+    "Regenerate the client if the model was added to the schema after it was generated.";
+  const ghostPostFactory = ghostFactoryOf(prismaFactorio) as unknown as Factory<TestClient, "post">;
+
+  await expect(postFactory.for(ghostFactoryOf(prismaFactorio), "author").create()).rejects.toThrow(unknown);
+  await expect(userFactory.has(ghostPostFactory, "posts").create()).rejects.toThrow(unknown);
+  await expect(prisma.user.count()).resolves.toBe(0);
 });
 
 test("for() hands create the relation field as connect and never a foreign key column", async () => {
@@ -1727,12 +2079,12 @@ test("has(rows) resolves the one has-many relation the model pair shares when th
   });
 });
 
-test("has() rejects a relation field the model pair does not share, naming it and the candidates", async () => {
+test("has() rejects a relation field the model does not declare beside a row, naming it and the candidates", async () => {
   const { harness, first } = await attachable();
 
   await expect(harness.userFactory.has([first], "illustrated" as unknown as "posts").create()).rejects.toThrow(
-    'The model "user" has no relation field "illustrated" pointing at "post". ' +
-      'Relation fields on "user" pointing at "post": "posts", "edited".',
+    'The model "user" has no relation field "illustrated". ' +
+      'Relation fields on "user": "posts", "edited", "memberships", "profile".',
   );
 });
 
@@ -1742,7 +2094,7 @@ test("has([]) rejects a relation field the model does not declare, naming it and
   const { userFactory } = await factorioHarness();
 
   await expect(userFactory.has([], "illustrated" as unknown as "posts").create()).rejects.toThrow(
-    'The model "user" has no relation field "illustrated". Relation fields on "user": "posts", "edited", "memberships".',
+    'The model "user" has no relation field "illustrated". Relation fields on "user": "posts", "edited", "memberships", "profile".',
   );
 });
 
@@ -1859,6 +2211,15 @@ test("has(factory) creates the children through their own factory and connects t
   await expect(prisma.user.count()).resolves.toBe(1);
 });
 
+test("has(factory) across a self-relation hangs the children off the parent, its inverse read off the client", async () => {
+  const { prisma, categoryFactory } = await factorioHarness();
+
+  const root = await categoryFactory.has(categoryFactory.count(2), "children").create();
+
+  await expect(prisma.category.count({ where: { parentId: root.id } })).resolves.toBe(2);
+  expect(root.parentId).toBeNull();
+});
+
 // The deliberate opposite of `for`, where one parent is shared by the whole batch.
 test("has(factory) creates the children per parent record, so every record of a batch draws its own", async () => {
   const { prisma, postFactory, userFactory } = await factorioHarness();
@@ -1949,7 +2310,7 @@ test("a child factory's own has() reaches the level below it", async () => {
 
 // `parent` spans every model the client carries, and the join model declares no `id` of its own, so
 // a closure reading one narrows before it reaches the column.
-function parentId(parent: Row<TestClient, ModelName<TestClient>> | undefined): number | undefined {
+function parentId(parent: Row<TestClient, ModelName<TestClient>> | undefined): number | string | undefined {
   return parent !== undefined && "id" in parent ? parent.id : undefined;
 }
 
@@ -1969,7 +2330,7 @@ test("a child state closure reads the created parent row through parent", async 
 // they declared: a record it goes on to create for no one reads the record of a run already over.
 test("a child factory reused after a has() chain reads no parent of its own", async () => {
   const { prisma, prismaFactorio, userFactory } = await factorioHarness();
-  const seen: (number | undefined)[] = [];
+  const seen: (number | string | undefined)[] = [];
   const creditedFactory = prismaFactorio.define("post", {
     definition: ({ uid }) => ({ title: uid, author: userFactory }),
     states: {
@@ -2121,12 +2482,9 @@ test("the options stand alone where the relation field may be left out, the look
   );
 });
 
-// The cast is what `exactOptionalPropertyTypes` costs: this package compiles under it, so the slot a
-// skippable relation field leaves takes no explicit `undefined` here. A caller compiling without it —
-// the default — or compiling nothing at all reaches this call as written.
 test("a relation field passed as undefined leaves the options at the tail, the lookup never reached", async () => {
   await commentedWithoutTheLookup(({ commentFactory, postFactory }) =>
-    postFactory.has(commentFactory, undefined as unknown as "comments", { inverse: "post" }),
+    postFactory.has(commentFactory, undefined, { inverse: "post" }),
   );
 });
 
@@ -2393,6 +2751,143 @@ test("a pooled join-model row fills a single-record field on its compound key", 
   await expect(harness.prisma.membership.count()).resolves.toBe(1);
 });
 
+interface Booked {
+  harness: Harness;
+  bookingFactory: Factory<TestClient, "booking">;
+}
+
+// `Booking.venueId` belongs to both the `venue` key and the composite `customer` key, and each relation
+// default brings a venue of its own, so the two disagree on it whichever field the definition lists first.
+async function booked(order: "venue first" | "customer first"): Promise<Booked> {
+  const harness = await factorioHarness();
+  const { venueFactory, customerFactory } = harness;
+  const bookingFactory = harness.prismaFactorio.define("booking", {
+    definition: ({ uid }) =>
+      order === "venue first"
+        ? { seat: uid, venue: venueFactory, customer: customerFactory }
+        : { seat: uid, customer: customerFactory, venue: venueFactory },
+  });
+
+  return { harness, bookingFactory };
+}
+
+function disagreement(first: string, held: unknown, second: string, other: unknown): TypeError {
+  return new TypeError(
+    `The relation fields "${first}" and "${second}" on the model "booking" disagree on the foreign key column ` +
+      `"venueId": "${first}" holds ${String(held)} and "${second}" holds ${String(other)}. Pool the shared parent ` +
+      "with recycle(), or hand the same row to both fields.",
+  );
+}
+
+// A fresh database numbers venues from 1 in creation order: the default listed first creates its venue
+// first, the customer's default creating the venue it belongs to.
+test.each([
+  ["venue first", disagreement("venue", 1, "customer", 2)],
+  ["customer first", disagreement("customer", 1, "venue", 2)],
+] as const)(
+  "relation defaults disagreeing on a shared foreign key column reject before Prisma, leaving their parents (%s)",
+  async (order, error) => {
+    const { harness, bookingFactory } = await booked(order);
+    const { prisma } = harness;
+
+    await expect(bookingFactory.create()).rejects.toStrictEqual(error);
+    await expect(prisma.booking.count()).resolves.toBe(0);
+    await expect(prisma.venue.count()).resolves.toBe(2);
+    await expect(prisma.customer.count()).resolves.toBe(1);
+  },
+);
+
+test("relation defaults disagreeing on a shared foreign key column under using(tx) roll their parents back", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const { prisma } = harness;
+
+  const outcome: unknown = await prisma
+    .$transaction((tx) => bookingFactory.using(tx).create())
+    .catch((error: unknown) => error);
+
+  expect(outcome).toBeInstanceOf(TypeError);
+  await expect(prisma.venue.count()).resolves.toBe(0);
+  await expect(prisma.customer.count()).resolves.toBe(0);
+});
+
+test("a handed-over row disagreeing with a fresh one on a shared foreign key column rejects", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const other = await harness.venueFactory.create();
+
+  await expect(bookingFactory.create({ venue: other })).rejects.toStrictEqual(
+    disagreement("venue", other.id, "customer", other.id + 1),
+  );
+});
+
+test("a pooled row disagreeing with a fresh one on a shared foreign key column rejects", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const customer = await harness.customerFactory.create();
+
+  await expect(bookingFactory.recycle("customer", customer).create()).rejects.toStrictEqual(
+    disagreement("venue", customer.venueId + 1, "customer", customer.venueId),
+  );
+});
+
+// Native relation input carries no row to compare, so the shared column is Prisma's to settle: here the
+// later connect wins it, and the booking lands on the customer's venue.
+test("native relation input on one leg of a shared foreign key column is not checked, Prisma deciding", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const other = await harness.venueFactory.create();
+
+  const booking = await bookingFactory.create({ venue: { connect: { id: other.id } } });
+  const customer = await harness.prisma.customer.findUniqueOrThrow({ where: { id: booking.customerId } });
+
+  expect(booking.venueId).toBe(customer.venueId);
+  expect(booking.venueId).not.toBe(other.id);
+});
+
+test("a handed-over row agreeing with a fresh one on a shared foreign key column connects both", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const { prisma, venueFactory, customerFactory } = harness;
+  const venue = await venueFactory.create();
+  const { client, written } = recording(prisma, "booking");
+
+  const booking = await bookingFactory
+    .using(client)
+    .for(venue, "venue")
+    .create({ customer: customerFactory.for(venue, "venue") });
+
+  expect([booking.venueId, written[0]?.venue]).toStrictEqual([venue.id, { connect: filled(venue) }]);
+  await expect(prisma.venue.count()).resolves.toBe(1);
+});
+
+// Two rows this build created that agree on the shared column write it once, as the foreign key both
+// stand for: the booking's parent venue, and a customer the state hangs off that same venue.
+test("fresh rows agreeing on a shared foreign key column write it once as a raw column", async () => {
+  const { harness, bookingFactory } = await booked("venue first");
+  const { prisma, venueFactory, customerFactory } = harness;
+  const { client, written } = recording(prisma, "booking");
+  const sharedFactory = bookingFactory.state(({ parent }) => ({
+    customer: customerFactory.for(parent as Row<TestClient, "venue">, "venue"),
+  }));
+
+  const venue = await venueFactory.using(client).has(sharedFactory, "bookings").create();
+  const [booking] = await prisma.booking.findMany();
+
+  expect(written).toStrictEqual([{ seat: booking?.seat, venueId: venue.id, customerId: booking?.customerId }]);
+  await expect(prisma.venue.count()).resolves.toBe(1);
+});
+
+test.each(["venue first", "customer first"] as const)(
+  "recycle() hands relation defaults sharing a foreign key column one venue (%s)",
+  async (order) => {
+    const { harness, bookingFactory } = await booked(order);
+    const { prisma, venueFactory } = harness;
+    const venue = await venueFactory.create();
+
+    const booking = await bookingFactory.recycle("venue", venue).create();
+    const customer = await prisma.customer.findUniqueOrThrow({ where: { id: booking.customerId } });
+
+    expect([booking.venueId, customer.venueId]).toStrictEqual([venue.id, venue.id]);
+    await expect(prisma.venue.count()).resolves.toBe(1);
+  },
+);
+
 // Pending children reach back to the row that now exists through the same where-clause: badges hung
 // off a membership by a `has` layer name it on the compound selector.
 test("has() children of a compound-keyed parent reach back on its compound key", async () => {
@@ -2518,6 +3013,35 @@ test("recycle(model, []) leaves the graph creating the related records it always
   await expect(prisma.user.count()).resolves.toBe(2);
 });
 
+// The pool stands in for records the graph would create, so one naming a model the graph never
+// reaches has nothing to stand in for: legal, and inert.
+test("a pool naming a model the graph never creates draws nothing and creates nothing", async () => {
+  const { prisma, postFactory, tagFactory } = await factorioHarness();
+  const tag = await tagFactory.create();
+
+  const post = await postFactory.recycle("tag", tag).create();
+  const joined = await prisma.post.findUniqueOrThrow({ where: { id: post.id }, include: { tags: true } });
+
+  expect(joined.tags).toStrictEqual([]);
+  await expect(prisma.tag.count()).resolves.toBe(1);
+  await expect(prisma.post.count()).resolves.toBe(1);
+});
+
+// A state loses to the pool where it holds a factory; native relation input is Prisma's own, and the
+// pool has no reading for it.
+test("native relation input under a pool creates its record rather than connecting a pooled row", async () => {
+  const { prisma, postFactory, userFactory } = await factorioHarness();
+  const ada = await userFactory.create();
+
+  const post = await postFactory
+    .state({ author: { create: { email: "grace@example.com", name: "Grace" } } })
+    .recycle("user", ada)
+    .create();
+
+  expect(post.authorId).not.toBe(ada.id);
+  await expect(prisma.user.count()).resolves.toBe(2);
+});
+
 // The pool stands for the related records a graph reaches, which the record a create was called for
 // is not: a factory pooling rows of its own model creates all the same.
 test("the model a factory creates is never drawn from its own pool", async () => {
@@ -2528,6 +3052,17 @@ test("the model a factory creates is never drawn from its own pool", async () =>
 
   expect(second.id).not.toBe(first.id);
   await expect(prisma.comment.count()).resolves.toBe(2);
+});
+
+test("a factory pooling its own model across a self-relation draws the parent and creates the record", async () => {
+  const { prisma, categoryFactory } = await factorioHarness();
+  const root = await categoryFactory.create();
+
+  const child = await categoryFactory.state({ parent: categoryFactory }).recycle("category", root).create();
+
+  expect(child.parentId).toBe(root.id);
+  expect(child.id).not.toBe(root.id);
+  await expect(prisma.category.count()).resolves.toBe(2);
 });
 
 // A slot the call named outright creates a record of its own — the second user row of the graph —
@@ -2870,14 +3405,14 @@ test("a pooled has() child is drawn per parent record, the whole batch of them",
 // The whole error a stale pooled draw is retold as: the entire message, and the raw Prisma error
 // standing behind it as the cause — `toMatchObject` reads the pair as a subset, leaving the cause's
 // other fields free.
-function singleUse(field: string, model: string): { message: string; cause: { code: string } } {
+function singleUse(field: string, model: string, code = "P2018"): { message: string; cause: { code: string } } {
   return {
     message:
       `A pooled row drawn into "${field}" on the model "${model}" no longer matches the database: ` +
       "a connect into a relation field backed by a required foreign key re-homes the record, " +
       "rewriting the column the pooled copy still carries, so a pooled row fills such a relation once. " +
       "Pool one row per parent record, or pass native relation input.",
-    cause: { code: "P2018" },
+    cause: { code },
   };
 }
 
@@ -2932,16 +3467,80 @@ test("a pooled has() child drawn again by a later create() fails in the pool's o
   );
 });
 
+// A one-to-one whose required foreign key sits on the child re-homes a pooled child as a to-many
+// relation does, and Prisma answers the next record's connect with `P2025` rather than `P2018`: the
+// failure is the pool's own all the same.
+test("a pooled one-to-one default fails the second parent record in the pool's own terms", async () => {
+  const { userFactory, profileFactory } = await factorioHarness();
+  const profile = await profileFactory.create();
+
+  await expect(
+    userFactory.count(2).recycle("profile", profile).state({ profile: profileFactory }).create(),
+  ).rejects.toMatchObject(singleUse("profile", "user", "P2025"));
+});
+
+// An implicit many-to-many writes its join table and leaves the rows it pairs alone, so a pooled tag
+// that matches nothing went stale by the caller's own doing, never by the pool's.
+test("a pooled many-to-many child whose record changed fails as a stale row, not a single-use one", async () => {
+  const { prisma, postFactory, tagFactory } = await factorioHarness();
+  const tag = await tagFactory.create();
+
+  await prisma.tag.update({ where: { id: tag.id }, data: { label: "Changed" } });
+
+  await expect(postFactory.recycle("tag", tag).has(tagFactory).create()).rejects.toMatchObject(
+    stale("tags", "post", "P2025"),
+  );
+});
+
+// Prisma answers an unmatched connect with a code of the failing field's arity, so a re-homing draw
+// into a field of the other arity cannot be what failed: a stale row beside it keeps its own terms.
+test("a stale handed to-many row beside a pooled one-to-one draw fails as a stale row", async () => {
+  const { prisma, userFactory, postFactory, profileFactory } = await factorioHarness();
+  const profile = await profileFactory.create();
+  const post = await postFactory.create();
+
+  await prisma.post.update({ where: { id: post.id }, data: { title: "Changed" } });
+
+  await expect(
+    userFactory
+      .recycle("profile", profile)
+      .state({ profile: profileFactory })
+      .create({ posts: [post] }),
+  ).rejects.toMatchObject(stale(["profile", "posts"], "user", "P2018"));
+});
+
+test("a stale pooled tag beside a pooled to-many draw fails as a stale row", async () => {
+  const { prisma, postFactory, commentFactory, tagFactory } = await factorioHarness();
+  const comment = await commentFactory.create();
+  const tag = await tagFactory.create();
+
+  await prisma.tag.update({ where: { id: tag.id }, data: { label: "Changed" } });
+
+  await expect(
+    postFactory.recycle("comment", comment).recycle("tag", tag).has(commentFactory).has(tagFactory).create(),
+  ).rejects.toMatchObject(stale(["comments", "tags"], "post", "P2025"));
+});
+
 // The pool's terms belong to the pool: a row the caller hands over went stale by the caller's own
-// doing, and Prisma's error reaches it unretold.
-test("rows the caller hands has() keep Prisma's own error when stale", async () => {
+// doing, and is retold as a stale row rather than a single-use one.
+test("rows the caller hands has() fail as stale rows, not single-use ones", async () => {
   const { prisma, userFactory, postFactory } = await factorioHarness();
   const ada = await userFactory.create();
   const post = await postFactory.create({ author: ada });
   await userFactory.has([post], "posts").create();
 
-  await expect(userFactory.has([post], "posts").create()).rejects.toMatchObject({ code: "P2018" });
+  await expect(userFactory.has([post], "posts").create()).rejects.toMatchObject(stale("posts", "user", "P2018"));
   await expect(prisma.user.count()).resolves.toBe(2);
+});
+
+// A list standing in a relation field holding many records is a hand-over too, matched row by row.
+test("stale rows handed in a to-many relation attribute fail as stale rows", async () => {
+  const { prisma, userFactory, postFactory } = await factorioHarness();
+  const post = await postFactory.create();
+
+  await prisma.post.update({ where: { id: post.id }, data: { title: "Changed" } });
+
+  await expect(userFactory.create({ posts: [post] })).rejects.toMatchObject(stale("posts", "user", "P2018"));
 });
 
 // A caller pools rows it loaded itself, and an `include`d relation is no field to match a record on.
@@ -3595,6 +4194,8 @@ export function relationsCheckedByTheCompiler(
   tagRow: Row<TestClient, "tag">,
   teamFactory: Factory<TestClient, "team">,
   membershipFactory: Factory<TestClient, "membership">,
+  badgeFactory: Factory<TestClient, "badge">,
+  teamRow: Row<TestClient, "team">,
 ): void {
   void postFactory.for(userFactory, "author").create();
   void postFactory.for(userRow, "editor").create();
@@ -3624,6 +4225,22 @@ export function relationsCheckedByTheCompiler(
   void postFactory.for(42, "author");
   // @ts-expect-error a batched factory creates a row each, so it stands for no one parent
   void postFactory.for(userFactory.count(3), "author");
+  // @ts-expect-error a hand-built partial object is no row, so no field is named for it
+  void postFactory.for({ id: 1 }, "author");
+  // @ts-expect-error a named field has to point at the parent row's model
+  void postFactory.for(commentRow, "author");
+  // @ts-expect-error a named field has to point at the parent factory's model
+  void postFactory.for(commentFactory, "editor");
+  // @ts-expect-error a field union spanning two models takes no parent of just one of them
+  expectTypeOf((field: "membership" | "sponsor"): unknown => badgeFactory.for(teamRow, field));
+
+  // A helper forwarding an optional relation field reaches the call with the field typed as possibly
+  // `undefined`, which a pair sharing one relation takes.
+  const attach = (field?: "post"): Factory<TestClient, "comment"> => commentFactory.for(postRow, field);
+  void attach();
+  void commentFactory.for(postFactory, undefined).create();
+  // @ts-expect-error the forwarded field still has to be one the pair shares
+  expectTypeOf((field?: "author"): Factory<TestClient, "comment"> => commentFactory.for(postRow, field));
 
   void userFactory.has(postFactory, "posts").create();
   void userFactory.has(draftable, "posts").create();
@@ -3664,6 +4281,19 @@ export function relationsCheckedByTheCompiler(
   void userFactory.has(postFactory, "posts", { inverze: "author" });
   // @ts-expect-error the options stand alone only where the relation field may be left out
   void userFactory.has(postFactory, { inverse: "author" });
+  // @ts-expect-error a hand-built partial object is no row, so no field is named for it
+  void userFactory.has({ id: 1 }, "posts");
+  // @ts-expect-error a named field has to point at the children factory's model
+  void userFactory.has(commentFactory, "edited");
+
+  // A helper forwarding an optional relation field reaches the call with the field typed as possibly
+  // `undefined`, which a pair sharing one relation takes, the options trailing it.
+  const attachComments = (field?: "comments"): Factory<TestClient, "post"> =>
+    postFactory.has(commentFactory, field, { inverse: "post" });
+  void attachComments();
+  void postFactory.has(commentRow, undefined).create();
+  // @ts-expect-error the forwarded field still has to be one the pair shares
+  expectTypeOf((field?: "posts"): Factory<TestClient, "post"> => postFactory.has(commentFactory, field));
 
   void postFactory.has(tagFactory).create();
   void postFactory.has(tagFactory.count(3), "tags").create();
