@@ -615,7 +615,7 @@ Sharp edges worth knowing before they find you. The linked issues and ADRs carry
 
 ## Status
 
-**v1 scope complete, published as 0.1.0.** The scope [PRD #26](https://github.com/flolefebvre/prisma-factorio/issues/26) set for v1 is delivered, and this README documents the released surface rather than a plan. The version number is deliberately below 1.0.0 while the API meets its first consumers outside this repository; nothing on the list below is planned to change. What Laravel has and this does not is listed under [Deviations from Laravel](#deviations-from-laravel), each with the reason it was refused; the limitations that remain are named in the sections that own them.
+**v1 scope complete, released as 1.0.0.** The scope [PRD #26](https://github.com/flolefebvre/prisma-factorio/issues/26) set for v1 is delivered, and this README documents the released surface rather than a plan. That surface follows semantic versioning: a breaking change to it waits for a new major version. What Laravel has and this does not is listed under [Deviations from Laravel](#deviations-from-laravel), each with the reason it was refused; the limitations that remain are named in the sections that own them.
 
 The v1 surface: bootstrap from a client or a thunk with `seed` and `locale`, `reseed` per test, `define`, `create` with overrides, `count`, `using`, named states with inline `.state()`, the `{ faker, index, uid }` evaluation context, `for`, relation defaults on a field of either arity, `has` for the children on the other side, many-to-many in both shapes, `recycle` for reusing rows the graph would otherwise create, and `afterCreating` callbacks in the config and on the chain.
 

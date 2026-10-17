@@ -1,6 +1,6 @@
 {
   "name": "@flefebvre/prisma-factorio",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Laravel-style model factories for Prisma, fully typed",
   "license": "MIT",
   "author": "Florian Lefebvre <florian.lefebvre.contact@gmail.com>",

@@ -10,15 +10,15 @@ The package is published to npm as [`@flefebvre/prisma-factorio`](https://www.np
 
    ```bash
    git checkout main && git pull
-   git tag v0.2.0
-   git push origin v0.2.0
+   git tag v1.1.0
+   git push origin v1.1.0
    ```
 
 The workflow then checks the tag against `package.json`, runs the full `ci.yml` gate, rebuilds `dist/` from that exact commit through `prepublishOnly`, publishes with npm [provenance](https://docs.npmjs.com/generating-provenance-statements), and cuts the GitHub release with generated notes.
 
 The gate runs in full on Node 22, and its generate, typecheck and test steps again on Node 24 and Node 26: the Node 24 lane is required, the Node 26 lane advisory, so a failure there never holds back a release.
 
-A tag that fails the gate publishes nothing. Delete it (`git push --delete origin v0.2.0`), fix the problem, and tag again.
+A tag that fails the gate publishes nothing. Delete it (`git push --delete origin v1.1.0`), fix the problem, and tag again.
 
 ## One-time setup
 
@@ -43,7 +43,7 @@ Claiming is stricter than configuring: the claim modal's submission accepts a `c
 Two things to keep current:
 
 - **`rules`** state the constraints an assistant most often gets wrong — ESM only, immutable factories, no transaction of its own. They are the Rules section of `docs/for-agents.md`, one entry per numbered rule in the same order, so a change to either belongs in both.
-- **`previousVersions`** takes the outgoing version's tag when a new one goes out, so an assistant pinned to an older release still gets that release's documentation. Add `{ "tag": "v0.1.0" }` when 0.2.0 ships.
+- **`previousVersions`** takes the outgoing version's tag when a new one goes out, so an assistant pinned to an older release still gets that release's documentation. It lists `v0.1.0` since 1.0.0; add `{ "tag": "v1.0.0" }` when the next version ships.
 
 ## What ships
 
