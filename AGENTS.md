@@ -36,7 +36,7 @@ docs/
   for-agents.md   Entry page for coding agents in consumer projects (shipped in the package)
   prisma-test-helper.md  Pairing guide for @flefebvre/prisma-test-helper (shipped in the package)
   adr/            Architectural decision records
-  agents/         Agent workflow docs (issue tracker, labels, domain)
+  agents/         Agent workflow docs (issue tracker, labels, domain, the lanes outside the gate)
   releasing.md    How a version reaches npm, and the one-time npm setup
   laravel-factories.md   Laravel factories docs (original reference)
 ```
@@ -60,15 +60,13 @@ pnpm duplicates     jscpd copy-paste detection
 pnpm bench:types    Regenerate the synthetic schema and type-check a factory per model; fails over budget
 ```
 
-`pnpm bench:types` is not part of `pnpm gates`; CI runs it as its own job. It prints the instantiation count, check time and memory of the factory file beside a control that only constructs the client, and fails when the factory file's instantiations exceed `scripts/bench-types/budget.json` (the measured baseline plus 20%). A change that lowers the count lowers the budget; a change that raises it past the budget states the measured cost in its pull request body.
-
-`pnpm test:postgres` is not part of `pnpm gates`, which needs no Docker; CI runs it as its own job. It starts a `postgres:17-alpine` container through Testcontainers, with autovacuum off, unless `POSTGRES_URL` holds a connection string, in which case that server is used instead. With neither, it fails naming both. `POSTGRES_URL` must name Postgres 15 or later (`pg_stat_force_next_flush()`), on a role allowed to create and drop databases; on a server with autovacuum on, the exact commit-count tests can see one extra commit.
-
 Each script echoes a `--<name> OK--` marker on success.
 A fresh clone runs `pnpm install` and `pnpm generate` before a bare `pnpm test` or `pnpm typecheck`; both need the generated test client, and only `pnpm gates` supplies it on its own.
 Run `pnpm format` after making changes so the diff stays limited to what you actually touched.
 
 **Before considering a change done, it must pass the gate:** `pnpm gates` — generate, typecheck, lint, format check, duplicates, test, build, packed contents. CI runs the same list, step by step, on every pull request.
+
+Two lanes sit outside `pnpm gates`, each a CI job of its own: a change to the exported types also passes `pnpm bench:types`, and a change to how rows are written or connected also passes `pnpm test:postgres`. When either fails, or its budget or server is in question, read `docs/agents/extra-lanes.md`.
 
 ## Testing
 
@@ -76,7 +74,7 @@ The project uses [Vitest](https://vitest.dev), Node-only. Tests are colocated wi
 
 Tests run against the scratch client generated from `prisma/schema.prisma` into `src/tests/generated/`, on a throwaway in-memory SQLite database opened through `@prisma/adapter-better-sqlite3`; `src/tests/client.ts` provides that client. Run `pnpm generate` after changing the scratch schema.
 
-The Postgres lane covers what SQLite cannot: scalar lists, native enums, `@db.*` native types, and the transactions and reads Postgres counts per build. Its tests sit beside the code they cover as `*.postgres.test.ts`, which `vitest.config.ts` excludes and `vitest.postgres.config.ts` alone includes. They run against the client generated from `prisma/postgres.prisma` into `src/tests/postgres/generated/`; `src/tests/postgres/client.ts` creates a database of its own per client on the lane's server, applies the Postgres DDL, and drops it on dispose.
+A test needing what SQLite cannot express — scalar lists, native enums, `@db.*` native types, the transactions and reads Postgres counts per build — goes beside the code it covers as `*.postgres.test.ts`, against `src/tests/postgres/client.ts` and the schema in `prisma/postgres.prisma`; `pnpm test` skips it.
 
 Type-level assertions (`expectTypeOf`, `@ts-expect-error`) sit in the same test files and are enforced by the `typecheck` gate, so they need no extra Vitest configuration.
 
@@ -99,7 +97,7 @@ This governs the repository — its README, its JSDoc examples and its tests. It
 
 The package ships `README.md`, `docs/for-agents.md` and `docs/prisma-test-helper.md`; `package.json` `files` lists the two pages by name, and `pnpm pack:check` fails on any other `docs/` file in the tarball or on a relative link in a shipped page that resolves to no shipped file. A shipped page links repo-internal paths — `CONTEXT.md`, `docs/adr/`, `docs/releasing.md` — by absolute GitHub URL.
 
-When the public API, the README or a shipped page changes, update `docs/for-agents.md`'s import map, Rules and By-task table where affected. Its Rules section and `context7.json`'s `rules` carry the same rules in the same order, one numbered rule per entry: a change to one is a change to both.
+When the public API, the README or a shipped page changes, update `docs/for-agents.md`'s import map, Rules and By-task table where affected. Its Rules section is `context7.json`'s `rules`, entry for entry, each under Context7's 255-character limit; `src/for-agents.test.ts` and `src/context7.test.ts` fail on a drift or an overlong rule.
 
 ## Language
 
